@@ -1,0 +1,11 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for implementation context"}
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "Executable contracts for windows-agent to orchestrator event and state flow"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Backend module layout guidance for new orchestrator persistence files"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Backend error handling expectations"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Backend quality checklist for implementation"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Logging expectations for orchestrator and recorder flow"}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared thinking guide index"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Avoid duplicating persistence and event parsing logic"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Track event -> session -> recording job data flow"}
+{"file": ".trellis/tasks/04-23-auto-live-recording-pipeline/info.md", "reason": "Current MVP architecture and data-flow notes"}

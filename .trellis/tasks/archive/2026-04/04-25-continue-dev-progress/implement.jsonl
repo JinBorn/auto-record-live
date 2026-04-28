@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "Recorder/recovery/orchestrator event-flow contracts and monotonic ordering rules"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Reliability-focused backend coding and regression expectations"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Audit/log message conventions for degraded and ignored paths"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Resilience-first handling for malformed/unknown runtime events"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Cross-stage data flow consistency across recorder/recovery/orchestrator"}

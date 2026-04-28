@@ -1,0 +1,14 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Verify backend bootstrap docs are complete and aligned"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Review backend structure guidance against codebase"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Review database/storage guidelines for practical correctness"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Review error-handling conventions for consistency"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Review logging guidance for required operational signals"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Review quality bar and testing requirements"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Verify frontend bootstrap docs are complete and aligned"}
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "Review frontend structure guidance"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Review component conventions"}
+{"file": ".trellis/spec/frontend/hook-guidelines.md", "reason": "Review hook conventions"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Review state-management guidance"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Review frontend type-safety rules"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Review frontend quality/testing standards"}
+{"file": "AGENTS.md", "reason": "Validate spec wording stays aligned with project-level workflow constraints"}

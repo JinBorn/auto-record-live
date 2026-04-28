@@ -1,0 +1,5 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for orchestrator/recorder/live pipeline constraints"}
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "Defines event payload/session-job contracts for stream_url propagation"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Ensure logging style for probe/recorder error and fallback paths"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Quality guardrails and forbidden patterns for backend changes"}

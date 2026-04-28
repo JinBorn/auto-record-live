@@ -1,0 +1,2 @@
+[console_scripts]
+arl = arl.cli:main

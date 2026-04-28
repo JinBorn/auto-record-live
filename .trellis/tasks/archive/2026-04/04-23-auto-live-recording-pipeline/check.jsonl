@@ -1,0 +1,11 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for code review and verification"}
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "Review event, state, and lifecycle contracts against implementation"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Ensure new orchestrator files follow repo structure"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Review runtime logging coverage"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Review backend quality against task changes"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Review error handling choices in orchestration flow"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Review for duplicated orchestration logic"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Review event to persistence contract boundaries"}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared verification thinking guides"}
+{"file": ".trellis/tasks/04-23-auto-live-recording-pipeline/info.md", "reason": "Architecture reference for verification"}

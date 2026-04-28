@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Verification entrypoint for backend quality rules"}
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "Verify recorder/exporter contract compliance including ffmpeg fallback"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Verify non-fatal error handling and continue-on-fallback behavior"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Verify required observability for skip/fail/fallback paths"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify tests and implementation standards"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Verify file-backed persistence conventions are preserved"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Review duplicated patterns and shared helpers"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Review cross-stage data and error propagation consistency"}

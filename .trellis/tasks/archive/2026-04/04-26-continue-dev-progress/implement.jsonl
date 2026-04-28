@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "Recovery action/requeue contracts and validation matrix for recorder-recovery-orchestrator flow"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "State-transition reliability and regression-test quality bar"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Consistent audit/log semantics for recovery status and readiness decisions"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Resilient handling rules when runtime state includes mixed historical action rows"}

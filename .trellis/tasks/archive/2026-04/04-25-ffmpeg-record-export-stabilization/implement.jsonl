@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for implementation scope and linked quality rules"}
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "Executable contracts for recorder/exporter manifests and ffmpeg fallback behavior"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Resilience-first runtime behavior and non-fatal processing expectations"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Required log message shape for skip/failure/fallback visibility"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Implementation quality constraints and test expectations"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Current file-backed persistence conventions and schema evolution constraints"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Avoid duplicating ffmpeg invocation and fallback logic patterns"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Keep orchestrator->recorder->exporter data flow and contracts aligned"}

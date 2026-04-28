@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend review scope and guideline index for quality validation."}
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "Validate event payload and state-machine contract compliance on changed core events."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Verify canonical log field names/semantics and structured payload consistency."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Apply backend anti-pattern checks and mandatory quality bars."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Audit deterministic retryability classification and reason-code behavior."}

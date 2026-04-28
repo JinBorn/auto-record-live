@@ -1,0 +1,13 @@
+{
+  "name": "auto-record-live",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser-side helpers for auto-record-live.",
+  "scripts": {
+    "probe:douyin": "node scripts/probe_douyin_room.mjs",
+    "test:probe": "node --test scripts/__tests__/probe_douyin_room.test.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.54.0"
+  }
+}

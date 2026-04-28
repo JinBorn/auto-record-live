@@ -1,0 +1,26 @@
+{
+  "champion_select": [
+    "champion select",
+    "英雄选择",
+    "bp阶段",
+    "draft room"
+  ],
+  "loading": [
+    "game loading",
+    "加载中",
+    "准备就绪",
+    "game ready"
+  ],
+  "in_game": [
+    "in game",
+    "对局中",
+    "击杀",
+    "laning phase"
+  ],
+  "post_game": [
+    "victory",
+    "结算",
+    "游戏结束",
+    "final whistle"
+  ]
+}
