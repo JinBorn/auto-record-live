@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 12
-- **Last Active**: 2026-04-28
+- **Total Sessions**: 13
+- **Last Active**: 2026-04-29
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~380 | Active |
+| `journal-1.md` | ~413 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 13 | 2026-04-29 | save-windows-wsl-run-scripts progress checkpoint | `ca7b6ba` | `main` |
 | 12 | 2026-04-28 | Finish next-dev-iteration-prd | n/a | `-` |
 | 11 | 2026-04-27 | 2026-04-27 PRD进度保存（ffmpeg retry/recovery） | - | `-` |
 | 10 | 2026-04-27 | 2026-04-27 任务收尾与归档 | - | `-` |

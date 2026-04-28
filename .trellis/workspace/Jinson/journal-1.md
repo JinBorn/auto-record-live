@@ -378,3 +378,36 @@ Ran finish-work quality gate manually: node test:probe and python unittest both 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 13: save-windows-wsl-run-scripts progress checkpoint
+
+**Date**: 2026-04-29
+**Task**: save-windows-wsl-run-scripts progress checkpoint
+**Branch**: `main`
+
+### Summary
+
+整理并提交了 Windows+WSL 混合运行脚本相关内容，补充中文 README 与任务 PRD 上下文；当前任务保持 in_progress，后续继续实现与校验流程。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ca7b6ba` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
