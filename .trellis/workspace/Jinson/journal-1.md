@@ -411,3 +411,34 @@ Ran finish-work quality gate manually: node test:probe and python unittest both 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 14: Finish task: save windows wsl run scripts
+
+**Date**: 2026-04-29
+**Task**: Finish task: save windows wsl run scripts
+**Branch**: `main`
+
+### Summary
+
+Validated quality gate (Python tests + probe test), confirmed PRD-aligned Chinese README state, archived completed task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
