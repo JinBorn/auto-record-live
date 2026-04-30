@@ -57,7 +57,7 @@ src/arl/
 - 抖音直链采集在页面变动/风控下的稳健性
 - LoL 语义阶段识别生产化
 - `faster-whisper` 离线 ASR 的工程化加固
-- `ffmpeg` 失败场景的生产级重试与恢复
+- `ffmpeg` 失败场景已具备基础重试/恢复能力，但仍需生产级强化
 
 ## 快速开始
 
@@ -100,6 +100,18 @@ export ARL_STREAMER_NAME="<streamer>"
 
 ## 常用命令（MVP 阶段）
 
+- Windows + WSL 联动常驻（推荐）：
+
+```bash
+# WSL 终端 1：编排
+bash scripts/wsl-orchestrator.sh /mnt/d/code/auto-record-live
+
+# WSL 终端 2：录制循环（每 5 秒扫描一次）
+bash scripts/wsl-recorder-loop.sh /mnt/d/code/auto-record-live 5
+```
+
+> 说明：WSL 脚本默认使用独立虚拟环境 `.venv-wsl`，避免与 Windows 的 `.venv` 互相污染。
+
 - `recovery` 系列：
 
 ```bash
@@ -123,6 +135,19 @@ export ARL_STREAMER_NAME="<streamer>"
 ```bash
 .venv/bin/python -m arl.cli subtitles
 ```
+
+## 浏览器采集配置说明（ffmpeg）
+
+- `ARL_BROWSER_CAPTURE_FORMAT=auto` 时按平台自动选择：
+  - Windows：`gdigrab`
+  - macOS：`avfoundation`
+  - Linux/其他：`x11grab`
+- `ARL_BROWSER_CAPTURE_FORMAT` 若配置为不支持值，会自动回落到当前平台默认值并记录日志。
+- `ARL_BROWSER_CAPTURE_INPUT` 为空时会按采集格式自动解析输入：
+  - `gdigrab`：`desktop`
+  - `avfoundation`：`default:none`
+  - `x11grab`：优先 `DISPLAY`，并在需要时探测 `:0 -> :0.0` 兜底候选。
+- 若浏览器采集输入最终不可用，录制器会记录结构化跳过原因并降级为 placeholder 资产，避免流程阻塞。
 
 ## 说明
 
