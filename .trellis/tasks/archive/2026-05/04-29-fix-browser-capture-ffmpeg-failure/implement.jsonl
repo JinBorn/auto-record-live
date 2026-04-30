@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend checklist and required conventions for this bugfix."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Failure handling and fallback behavior must align with backend error policy."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Need explicit operational logs for selected capture input/format and failures."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Guardrails for tests and quality checks after implementation."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Avoid duplicating fallback/input selection logic when adjusting recorder behavior."}

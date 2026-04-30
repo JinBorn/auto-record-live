@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/index.md","reason":"Check agent should verify checklist compliance for backend changes."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Validate failure classification and fallback behavior stay compliant."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Verify meaningful logs for runtime diagnosis are present."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Run and verify required quality gates for modified backend code."}
