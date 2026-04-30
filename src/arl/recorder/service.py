@@ -23,7 +23,6 @@ from arl.shared.contracts import RecordingAsset, SourceType
 from arl.shared.failure_contracts import (
     FAILURE_CATEGORY_FFMPEG_PROCESS_ERROR_RETRYABLE,
     CANONICAL_FAILURE_CATEGORIES,
-    REASON_CODE_FFMPEG_PROCESS_ERROR,
     classify_failure_reason,
 )
 from arl.shared.jsonl_store import append_model
@@ -45,6 +44,7 @@ class RecorderService:
         self.recovery_actions_path = (
             settings.storage.temp_dir / "recorder-recovery-actions.jsonl"
         )
+        self._x11_probe_cache: dict[str, tuple[bool, str]] = {}
 
     def run(self) -> None:
         log("recorder", "starting")
@@ -221,6 +221,7 @@ class RecorderService:
         ffmpeg_path = shutil.which("ffmpeg")
         capture_format = self._resolve_browser_capture_format()
         capture_input = self._resolve_browser_capture_input(capture_format)
+        configured_capture_input = self.settings.recording.browser_capture_input.strip()
         if self.settings.recording.enable_ffmpeg and ffmpeg_path is not None:
             if source_type == SourceType.DIRECT_STREAM and stream_url is not None:
                 result_path, failure_reason = self._record_with_ffmpeg(
@@ -240,11 +241,43 @@ class RecorderService:
                 source_type == SourceType.BROWSER_CAPTURE
                 and capture_input
             ):
+                selected_input = capture_input
+                if capture_format == "x11grab" and not configured_capture_input:
+                    selected_input, display_ready, probe_reason = self._select_x11_capture_input(
+                        capture_input
+                    )
+                    if not display_ready:
+                        log(
+                            "recorder",
+                            (
+                                "ffmpeg skipped due to unavailable_browser_capture_display "
+                                f"session_id={session_id} format={capture_format} "
+                                f"input={selected_input} reason={probe_reason}"
+                            ),
+                        )
+                        unavailable_reason = f"unavailable_browser_capture_display:{probe_reason}"
+                        self._append_audit(
+                            "ffmpeg_skipped",
+                            session_id=session_id,
+                            job_id=job_id,
+                            source_type=source_type,
+                            reason=unavailable_reason,
+                        )
+                        return RecordingBuildOutcome(
+                            output_path=self._create_placeholder_recording(session_id, source_type),
+                        )
+                log(
+                    "recorder",
+                    (
+                        "browser_capture_input_selected "
+                        f"session_id={session_id} format={capture_format} input={selected_input}"
+                    ),
+                )
                 result_path, failure_reason = self._record_browser_capture_with_ffmpeg(
                     session_id=session_id,
                     job_id=job_id,
                     capture_format=capture_format,
-                    capture_input=capture_input,
+                    capture_input=selected_input,
                 )
                 return self._resolve_ffmpeg_result(
                     session_id=session_id,
@@ -255,7 +288,7 @@ class RecorderService:
                     retry_attempt_count=retry_attempt_count,
                 )
 
-        skip_reason = None
+        skip_reason: str | None = None
         if self.settings.recording.enable_ffmpeg and ffmpeg_path is None:
             log("recorder", f"ffmpeg skipped due to missing_binary session_id={session_id}")
             skip_reason = "missing_binary"
@@ -271,7 +304,15 @@ class RecorderService:
             and source_type == SourceType.BROWSER_CAPTURE
             and not capture_input
         ):
-            log("recorder", f"ffmpeg skipped due to missing_browser_capture_input session_id={session_id}")
+            log(
+                "recorder",
+                (
+                    "ffmpeg skipped due to missing_browser_capture_input "
+                    f"session_id={session_id} format={capture_format} "
+                    f"configured_input={configured_capture_input or '<empty>'} "
+                    f"resolved_input={capture_input or '<empty>'}"
+                ),
+            )
             skip_reason = "missing_browser_capture_input"
 
         if skip_reason is not None:
@@ -618,10 +659,26 @@ class RecorderService:
     def _resolve_browser_capture_format(self) -> str:
         configured = self.settings.recording.browser_capture_format.strip().lower()
         if configured and configured != "auto":
-            return configured
+            supported_formats = {"gdigrab", "x11grab", "avfoundation"}
+            if configured in supported_formats:
+                return configured
+            fallback = self._default_browser_capture_format()
+            log(
+                "recorder",
+                (
+                    "unsupported_browser_capture_format "
+                    f"configured={configured} fallback={fallback}"
+                ),
+            )
+            return fallback
 
+        return self._default_browser_capture_format()
+
+    def _default_browser_capture_format(self) -> str:
         if sys.platform.startswith("win"):
             return "gdigrab"
+        if sys.platform == "darwin":
+            return "avfoundation"
         return "x11grab"
 
     def _resolve_browser_capture_input(self, capture_format: str) -> str:
@@ -633,7 +690,62 @@ class RecorderService:
             return "desktop"
         if capture_format == "x11grab":
             return os.getenv("DISPLAY", "").strip()
+        if capture_format == "avfoundation":
+            return "default:none"
         return ""
+
+    def _probe_x11_display_ready(self, capture_input: str) -> tuple[bool, str]:
+        cached = self._x11_probe_cache.get(capture_input)
+        if cached is not None:
+            return cached
+
+        command = [
+            "ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "x11grab",
+            "-video_size",
+            "16x16",
+            "-framerate",
+            "1",
+            "-i",
+            capture_input,
+            "-frames:v",
+            "1",
+            "-f",
+            "null",
+            "-",
+        ]
+        try:
+            subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            outcome = (True, "ok")
+        except (subprocess.SubprocessError, OSError) as error:
+            outcome = (False, self._format_ffmpeg_failure_reason(error))
+        self._x11_probe_cache[capture_input] = outcome
+        return outcome
+
+    def _select_x11_capture_input(self, initial_input: str) -> tuple[str, bool, str]:
+        candidate_inputs: list[str] = []
+        for candidate in (initial_input.strip(), ":0", ":0.0"):
+            if candidate and candidate not in candidate_inputs:
+                candidate_inputs.append(candidate)
+
+        last_reason = "missing_browser_capture_input"
+        for candidate in candidate_inputs:
+            display_ready, probe_reason = self._probe_x11_display_ready(candidate)
+            if display_ready:
+                return candidate, True, "ok"
+            last_reason = probe_reason
+        return (candidate_inputs[0] if candidate_inputs else initial_input), False, last_reason
 
     def _append_audit(
         self,

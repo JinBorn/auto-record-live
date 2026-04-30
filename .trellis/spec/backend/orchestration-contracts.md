@@ -305,7 +305,7 @@ class ExportAsset(BaseModel):
   - `ARL_RECORDING_FFMPEG_MAX_RETRIES` (int >= 0, default `1`)
   - `ARL_RECORDING_AUTO_RETRY_MAX_ATTEMPTS` (int >= 0, default `2`)
   - `ARL_BROWSER_CAPTURE_INPUT` (string, default empty)
-  - `ARL_BROWSER_CAPTURE_FORMAT` (string, default `auto`; resolves to `gdigrab` on Windows, `x11grab` otherwise)
+- `ARL_BROWSER_CAPTURE_FORMAT` (string, default `auto`; resolves to `gdigrab` on Windows, `avfoundation` on macOS, `x11grab` on Linux/other)
   - `ARL_BROWSER_CAPTURE_RESOLUTION` (string, default `1920x1080`)
   - `ARL_BROWSER_CAPTURE_FPS` (int >= 1, default `30`)
   - `ARL_BROWSER_CAPTURE_TIMEOUT_SECONDS` (int >= 1, default `20`)
@@ -463,7 +463,7 @@ class ExportAsset(BaseModel):
   - `ffmpeg` available on PATH
   - and one source-specific prerequisite set:
     - direct stream mode: non-empty `stream_url`
-    - browser capture mode: non-empty `recording.browser_capture_input`
+    - browser capture mode: non-empty resolved capture input after format-specific defaults/fallbacks
 - Exporter `ffmpeg` path activation requires all of:
   - `export.enable_ffmpeg == True`
   - matching `RecordingAsset` exists for the session
@@ -519,7 +519,7 @@ class ExportAsset(BaseModel):
 | Export input references a missing subtitle file | Fail the export step deterministically instead of silently skipping subtitle burn-in |
 | A stage receives an unknown asset format or status | Reject or audit explicitly; do not guess |
 | `ARL_RECORDING_ENABLE_FFMPEG=1` but `stream_url` missing | Recorder logs skip reason and writes placeholder recording artifact |
-| `ARL_RECORDING_ENABLE_FFMPEG=1`, source is `browser_capture`, but `ARL_BROWSER_CAPTURE_INPUT` missing | Recorder logs skip reason and writes placeholder recording artifact |
+| `ARL_RECORDING_ENABLE_FFMPEG=1`, source is `browser_capture`, and resolved capture input is empty/unavailable | Recorder logs skip reason and writes placeholder recording artifact |
 | ffmpeg fails with retryable reason and retry budget remains | Recorder emits `recording_retry_scheduled` and defers placeholder/asset emission until a later run |
 | ffmpeg retry budget exhausted | Recorder emits `recording_retry_exhausted`, writes placeholder artifact, and emits recording asset |
 | ffmpeg fails with clear HTTP 4xx input-side errors (`401/403/404/410`, `server returned 4xx`) | Treat as non-recoverable input/configuration failure; do not schedule cross-run retry; emit placeholder/manual path |

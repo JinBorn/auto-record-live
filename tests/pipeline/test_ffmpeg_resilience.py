@@ -983,6 +983,328 @@ class FfmpegResilienceTest(unittest.TestCase):
         self.assertIn("gdigrab", command)
         self.assertIn("desktop", command)
 
+    def test_recorder_browser_capture_auto_macos_defaults_to_avfoundation(self) -> None:
+        started_at = datetime(2026, 4, 25, 2, 16, tzinfo=timezone.utc)
+        ended_at = datetime(2026, 4, 25, 2, 19, tzinfo=timezone.utc)
+        state = OrchestratorStateFile(
+            sessions=[
+                SessionRecord(
+                    session_id="session-bc-mac",
+                    streamer_name="streamer-a",
+                    room_url="https://live.douyin.com/room",
+                    source_type=SourceType.BROWSER_CAPTURE,
+                    stream_url=None,
+                    status=SessionStatus.STOPPED,
+                    started_at=started_at,
+                    ended_at=ended_at,
+                )
+            ],
+            recording_jobs=[
+                RecordingJobRecord(
+                    job_id="job-bc-mac",
+                    session_id="session-bc-mac",
+                    source_type=SourceType.BROWSER_CAPTURE,
+                    stream_url=None,
+                    status=RecordingJobStatus.STOPPED,
+                    created_at=started_at,
+                    ended_at=ended_at,
+                )
+            ],
+        )
+        self.orchestrator_state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.orchestrator_state_path.write_text(
+            state.model_dump_json(indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        self.settings.recording.browser_capture_input = ""
+        self.settings.recording.browser_capture_format = "auto"
+        self.settings.recording.browser_capture_timeout_seconds = 3
+
+        captured_commands: list[list[str]] = []
+
+        def _fake_ffmpeg(*args, **kwargs):
+            command = args[0]
+            captured_commands.append(command)
+            Path(command[-1]).write_text("fake video bytes", encoding="utf-8")
+            return subprocess.CompletedProcess(args=command, returncode=0)
+
+        with patch("arl.recorder.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+            "arl.recorder.service.sys.platform",
+            "darwin",
+        ), patch("arl.recorder.service.subprocess.run", side_effect=_fake_ffmpeg):
+            RecorderService(self.settings).run()
+
+        self.assertEqual(len(captured_commands), 1)
+        command = captured_commands[0]
+        self.assertIn("avfoundation", command)
+        self.assertIn("default:none", command)
+
+    def test_recorder_unsupported_browser_capture_format_falls_back_to_platform_default(self) -> None:
+        started_at = datetime(2026, 4, 25, 2, 19, tzinfo=timezone.utc)
+        ended_at = datetime(2026, 4, 25, 2, 20, tzinfo=timezone.utc)
+        state = OrchestratorStateFile(
+            sessions=[
+                SessionRecord(
+                    session_id="session-bc-format-fallback",
+                    streamer_name="streamer-a",
+                    room_url="https://live.douyin.com/room",
+                    source_type=SourceType.BROWSER_CAPTURE,
+                    stream_url=None,
+                    status=SessionStatus.STOPPED,
+                    started_at=started_at,
+                    ended_at=ended_at,
+                )
+            ],
+            recording_jobs=[
+                RecordingJobRecord(
+                    job_id="job-bc-format-fallback",
+                    session_id="session-bc-format-fallback",
+                    source_type=SourceType.BROWSER_CAPTURE,
+                    stream_url=None,
+                    status=RecordingJobStatus.STOPPED,
+                    created_at=started_at,
+                    ended_at=ended_at,
+                )
+            ],
+        )
+        self.orchestrator_state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.orchestrator_state_path.write_text(
+            state.model_dump_json(indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        self.settings.recording.browser_capture_input = ""
+        self.settings.recording.browser_capture_format = "invalid-format"
+        self.settings.recording.browser_capture_timeout_seconds = 3
+
+        with patch("arl.recorder.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+            "arl.recorder.service.sys.platform",
+            "linux",
+        ), patch("arl.recorder.service.os.getenv", return_value=""), patch(
+            "arl.recorder.service.subprocess.run",
+            side_effect=subprocess.CalledProcessError(1, ["ffmpeg"]),
+        ):
+            RecorderService(self.settings).run()
+
+        audit_payloads = [
+            json.loads(line)
+            for line in (self.temp_root / "recorder-events.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        skipped_events = [item for item in audit_payloads if item["event_type"] == "ffmpeg_skipped"]
+        self.assertEqual(len(skipped_events), 1)
+        self.assertEqual(skipped_events[0]["reason"], "missing_browser_capture_input")
+
+    def test_recorder_skips_auto_x11grab_when_display_unavailable(self) -> None:
+        started_at = datetime(2026, 4, 25, 2, 20, tzinfo=timezone.utc)
+        ended_at = datetime(2026, 4, 25, 2, 25, tzinfo=timezone.utc)
+        state = OrchestratorStateFile(
+            sessions=[
+                SessionRecord(
+                    session_id="session-bc-linux",
+                    streamer_name="streamer-a",
+                    room_url="https://live.douyin.com/room",
+                    source_type=SourceType.BROWSER_CAPTURE,
+                    stream_url=None,
+                    status=SessionStatus.STOPPED,
+                    started_at=started_at,
+                    ended_at=ended_at,
+                )
+            ],
+            recording_jobs=[
+                RecordingJobRecord(
+                    job_id="job-bc-linux",
+                    session_id="session-bc-linux",
+                    source_type=SourceType.BROWSER_CAPTURE,
+                    stream_url=None,
+                    status=RecordingJobStatus.STOPPED,
+                    created_at=started_at,
+                    ended_at=ended_at,
+                )
+            ],
+        )
+        self.orchestrator_state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.orchestrator_state_path.write_text(
+            state.model_dump_json(indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        self.settings.recording.enable_ffmpeg = True
+        self.settings.recording.browser_capture_input = ""
+        self.settings.recording.browser_capture_format = "x11grab"
+
+        probe_failure = subprocess.CalledProcessError(
+            1,
+            ["ffmpeg"],
+            stderr="[x11grab] Cannot open display :0, error 1.\nError opening input files: Input/output error",
+        )
+        with patch("arl.recorder.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+            "arl.recorder.service.os.getenv",
+            return_value=":0",
+        ), patch("arl.recorder.service.subprocess.run", side_effect=probe_failure):
+            RecorderService(self.settings).run()
+
+        audit_payloads = [
+            json.loads(line)
+            for line in (self.temp_root / "recorder-events.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        skipped_events = [item for item in audit_payloads if item["event_type"] == "ffmpeg_skipped"]
+        self.assertEqual(len(skipped_events), 1)
+        self.assertIn("unavailable_browser_capture_display", skipped_events[0]["reason"])
+
+    def test_recorder_auto_x11grab_uses_fallback_display_candidate(self) -> None:
+        started_at = datetime(2026, 4, 25, 2, 30, tzinfo=timezone.utc)
+        ended_at = datetime(2026, 4, 25, 2, 35, tzinfo=timezone.utc)
+        state = OrchestratorStateFile(
+            sessions=[
+                SessionRecord(
+                    session_id="session-bc-linux-fallback",
+                    streamer_name="streamer-a",
+                    room_url="https://live.douyin.com/room",
+                    source_type=SourceType.BROWSER_CAPTURE,
+                    stream_url=None,
+                    status=SessionStatus.STOPPED,
+                    started_at=started_at,
+                    ended_at=ended_at,
+                )
+            ],
+            recording_jobs=[
+                RecordingJobRecord(
+                    job_id="job-bc-linux-fallback",
+                    session_id="session-bc-linux-fallback",
+                    source_type=SourceType.BROWSER_CAPTURE,
+                    stream_url=None,
+                    status=RecordingJobStatus.STOPPED,
+                    created_at=started_at,
+                    ended_at=ended_at,
+                )
+            ],
+        )
+        self.orchestrator_state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.orchestrator_state_path.write_text(
+            state.model_dump_json(indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        self.settings.recording.enable_ffmpeg = True
+        self.settings.recording.browser_capture_input = ""
+        self.settings.recording.browser_capture_format = "x11grab"
+        self.settings.recording.browser_capture_timeout_seconds = 3
+
+        captured_commands: list[list[str]] = []
+        probe_attempt_inputs: list[str] = []
+
+        def _fake_run(*args, **kwargs):
+            command = args[0]
+            if "-f" in command and "null" in command and command[-1] == "-":
+                input_value = command[command.index("-i") + 1]
+                probe_attempt_inputs.append(input_value)
+                if input_value == ":0":
+                    raise subprocess.CalledProcessError(
+                        1,
+                        command,
+                        stderr=(
+                            "[x11grab] Cannot open display :0, error 1.\n"
+                            "Error opening input files: Input/output error"
+                        ),
+                    )
+                return subprocess.CompletedProcess(args=command, returncode=0)
+
+            captured_commands.append(command)
+            Path(command[-1]).write_text("fake video bytes", encoding="utf-8")
+            return subprocess.CompletedProcess(args=command, returncode=0)
+
+        with patch("arl.recorder.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+            "arl.recorder.service.os.getenv",
+            return_value=":0",
+        ), patch("arl.recorder.service.subprocess.run", side_effect=_fake_run):
+            RecorderService(self.settings).run()
+
+        self.assertEqual(probe_attempt_inputs, [":0", ":0.0"])
+        self.assertEqual(len(captured_commands), 1)
+        command = captured_commands[0]
+        self.assertIn("x11grab", command)
+        self.assertIn(":0.0", command)
+
+    def test_x11_probe_result_is_cached_per_input_in_single_run(self) -> None:
+        started_at = datetime(2026, 4, 25, 2, 31, tzinfo=timezone.utc)
+        ended_at = datetime(2026, 4, 25, 2, 36, tzinfo=timezone.utc)
+        state = OrchestratorStateFile(
+            sessions=[
+                SessionRecord(
+                    session_id="session-bc-cache-a",
+                    streamer_name="streamer-a",
+                    room_url="https://live.douyin.com/room/a",
+                    source_type=SourceType.BROWSER_CAPTURE,
+                    stream_url=None,
+                    status=SessionStatus.STOPPED,
+                    started_at=started_at,
+                    ended_at=ended_at,
+                ),
+                SessionRecord(
+                    session_id="session-bc-cache-b",
+                    streamer_name="streamer-b",
+                    room_url="https://live.douyin.com/room/b",
+                    source_type=SourceType.BROWSER_CAPTURE,
+                    stream_url=None,
+                    status=SessionStatus.STOPPED,
+                    started_at=started_at,
+                    ended_at=ended_at,
+                ),
+            ],
+            recording_jobs=[
+                RecordingJobRecord(
+                    job_id="job-bc-cache-a",
+                    session_id="session-bc-cache-a",
+                    source_type=SourceType.BROWSER_CAPTURE,
+                    stream_url=None,
+                    status=RecordingJobStatus.STOPPED,
+                    created_at=started_at,
+                    ended_at=ended_at,
+                ),
+                RecordingJobRecord(
+                    job_id="job-bc-cache-b",
+                    session_id="session-bc-cache-b",
+                    source_type=SourceType.BROWSER_CAPTURE,
+                    stream_url=None,
+                    status=RecordingJobStatus.STOPPED,
+                    created_at=started_at,
+                    ended_at=ended_at,
+                ),
+            ],
+        )
+        self.orchestrator_state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.orchestrator_state_path.write_text(
+            state.model_dump_json(indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        self.settings.recording.enable_ffmpeg = True
+        self.settings.recording.browser_capture_input = ""
+        self.settings.recording.browser_capture_format = "x11grab"
+        self.settings.recording.browser_capture_timeout_seconds = 3
+
+        probe_call_count = 0
+
+        def _fake_run(*args, **kwargs):
+            nonlocal probe_call_count
+            command = args[0]
+            if "-f" in command and "null" in command and command[-1] == "-":
+                probe_call_count += 1
+                return subprocess.CompletedProcess(args=command, returncode=0)
+            Path(command[-1]).write_text("fake video bytes", encoding="utf-8")
+            return subprocess.CompletedProcess(args=command, returncode=0)
+
+        with patch("arl.recorder.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+            "arl.recorder.service.os.getenv",
+            return_value=":0",
+        ), patch("arl.recorder.service.subprocess.run", side_effect=_fake_run):
+            RecorderService(self.settings).run()
+
+        self.assertEqual(probe_call_count, 1)
+
     def test_exporter_retries_ffmpeg_then_falls_back(self) -> None:
         boundary = MatchBoundary(
             session_id="session-e",
