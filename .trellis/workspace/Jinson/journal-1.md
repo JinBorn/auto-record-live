@@ -442,3 +442,36 @@ Validated quality gate (Python tests + probe test), confirmed PRD-aligned Chines
 ### Next Steps
 
 - None - task complete
+
+
+## Session 15: Fix browser capture ffmpeg failure
+
+**Date**: 2026-05-01
+**Task**: Fix browser capture ffmpeg failure
+**Branch**: `main`
+
+### Summary
+
+Hardened browser-capture ffmpeg path: platform-aware auto format defaults (win/mac/linux), unsupported format fallback with logs, x11 probe caching and fallback candidate selection, improved missing-input diagnostics, plus resilience tests and spec contract alignment.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `40e8ec6` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
