@@ -98,42 +98,68 @@ export ARL_STREAMER_NAME="<streamer>"
 .venv/bin/python -m arl.cli windows-agent --once
 ```
 
-## 常用命令（MVP 阶段）
+## 录制命令执行流程（MVP）
 
-- Windows + WSL 联动常驻（推荐）：
+### 1) 先做单次链路验证（建议首次必跑）
 
 ```bash
-# WSL 终端 1：编排
-bash scripts/wsl-orchestrator.sh /mnt/d/code/auto-record-live
+# 1. Windows 侧：探测一次，产出 windows-agent 事件
+.venv/bin/python -m arl.cli windows-agent --once
 
-# WSL 终端 2：录制循环（每 5 秒扫描一次）
+# 2. WSL 侧：消费事件并生成/推进录制任务
+.venv-wsl/bin/python -m arl.cli orchestrator --once
+
+# 3. WSL 侧：执行一次录制
+.venv-wsl/bin/python -m arl.cli recorder
+```
+
+### 2) 再切换到常驻运行（推荐）
+
+Windows 终端（会循环执行 `windows-agent --once`）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows-agent-loop.ps1 `
+    -RoomUrl "https://live.douyin.com/742070406673" `
+    -StreamerName "WEI（乱斗阿伟）" `
+    -ProjectPath "D:\code\auto-record-live" `
+    -IntervalSeconds 15
+```
+
+WSL 终端 1（编排循环）：
+
+```bash
+bash scripts/wsl-orchestrator.sh /mnt/d/code/auto-record-live
+```
+
+WSL 终端 2（录制循环，每 5 秒扫描一次）：
+
+```bash
 bash scripts/wsl-recorder-loop.sh /mnt/d/code/auto-record-live 5
 ```
 
 > 说明：WSL 脚本默认使用独立虚拟环境 `.venv-wsl`，避免与 Windows 的 `.venv` 互相污染。
 
-- `recovery` 系列：
+### 3) 录制完成后的后处理顺序（按需手动执行）
 
 ```bash
-.venv/bin/python -m arl.cli recovery
-.venv/bin/python -m arl.cli recovery --list-pending
-.venv/bin/python -m arl.cli recovery --summary
+# 1. 对局切分相关（可选：自动/语义/字幕驱动信号）
+.venv-wsl/bin/python -m arl.cli stage-hints-auto
+.venv-wsl/bin/python -m arl.cli stage-hints-semantic
+.venv-wsl/bin/python -m arl.cli stage-signals-from-subtitles
+
+# 2. 字幕
+.venv-wsl/bin/python -m arl.cli subtitles
+
+# 3. 导出
+.venv-wsl/bin/python -m arl.cli exporter
 ```
 
-- stage hint / signal：
+### 4) 故障恢复与排查命令
 
 ```bash
-.venv/bin/python -m arl.cli stage-hints-auto
-.venv/bin/python -m arl.cli stage-hints-semantic
-.venv/bin/python -m arl.cli stage-signals-from-subtitles
-.venv/bin/python -m arl.cli stage-signal --session-id <session_id> --text "in game scoreboard" --at-seconds 95
-.venv/bin/python -m arl.cli stage-hint --session-id <session_id> --stage in_game --at-seconds 120
-```
-
-- subtitles：
-
-```bash
-.venv/bin/python -m arl.cli subtitles
+.venv-wsl/bin/python -m arl.cli recovery
+.venv-wsl/bin/python -m arl.cli recovery --list-pending
+.venv-wsl/bin/python -m arl.cli recovery --summary
 ```
 
 ## 浏览器采集配置说明（ffmpeg）
