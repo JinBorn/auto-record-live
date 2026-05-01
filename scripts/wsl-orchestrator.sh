@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_PATH="${1:-/mnt/d/auto-record-live}"
+PROJECT_PATH="${1:-/www/auto-record-live}"
 ENABLE_FFMPEG="${ARL_RECORDING_ENABLE_FFMPEG:-1}"
 VENV_DIR="${ARL_WSL_VENV_DIR:-.venv-wsl}"
+INSTALL_MODE="${ARL_WSL_INSTALL_MODE:-if-missing}"
+
+if [ ! -d "$PROJECT_PATH" ]; then
+  echo "[ARL][error] project path not found: $PROJECT_PATH" >&2
+  echo "[ARL][hint] pass path explicitly: bash scripts/wsl-orchestrator.sh /www/auto-record-live" >&2
+  exit 1
+fi
 
 cd "$PROJECT_PATH"
 
@@ -18,7 +25,10 @@ if ! "$VENV_PYTHON" -m pip --version >/dev/null 2>&1; then
   "$VENV_PYTHON" -m ensurepip --upgrade
 fi
 
-"$VENV_PYTHON" -m pip install -e .
+if [ "$INSTALL_MODE" = "always" ] || [ ! -f "$VENV_DIR/.deps-ready" ]; then
+  "$VENV_PYTHON" -m pip install -e .
+  touch "$VENV_DIR/.deps-ready"
+fi
 
 export ARL_RECORDING_ENABLE_FFMPEG="$ENABLE_FFMPEG"
 
@@ -32,6 +42,8 @@ export ARL_RECORDING_ENABLE_FFMPEG="$ENABLE_FFMPEG"
 
 echo "[ARL] orchestrator loop started"
 echo "[ARL] project: $PROJECT_PATH"
+echo "[ARL] install mode: $INSTALL_MODE"
+echo "[ARL] venv dir: $VENV_DIR"
 echo "[ARL] ARL_RECORDING_ENABLE_FFMPEG=$ARL_RECORDING_ENABLE_FFMPEG"
 
 exec "$VENV_PYTHON" -m arl.cli orchestrator

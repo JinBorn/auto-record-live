@@ -6,14 +6,14 @@ param(
   [string]$StreamerName,
 
   [int]$IntervalSeconds = 15,
-  [string]$ProjectPath = "D:\auto-record-live"
+  [string]$ProjectPath = "D:\code\auto-record-live"
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 if (!(Test-Path $ProjectPath)) {
-  throw "Project path not found: $ProjectPath"
+  throw "Project path not found: $ProjectPath`nHint: pass -ProjectPath explicitly, e.g. D:\code\auto-record-live"
 }
 Set-Location $ProjectPath
 
@@ -49,9 +49,14 @@ $env:ARL_DOUYIN_ROOM_URL = $RoomUrl
 $env:ARL_STREAMER_NAME = $StreamerName
 
 Write-Host "[ARL] windows-agent loop started"
+Write-Host "[ARL] project: $ProjectPath"
+Write-Host "[ARL] venv: $venvPython"
 Write-Host "[ARL] room: $RoomUrl"
 Write-Host "[ARL] streamer: $StreamerName"
 Write-Host "[ARL] interval: ${IntervalSeconds}s"
+if ($ProjectPath -like "\\wsl$\*") {
+  Write-Warning "Using a UNC WSL path from Windows may be slower; prefer Windows-local path (e.g. D:\code\auto-record-live) for the Windows agent loop."
+}
 
 while ($true) {
   try {
