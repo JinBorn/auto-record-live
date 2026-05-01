@@ -509,3 +509,38 @@ Updated README runbook flow for browser-capture workflow and completed session w
 ### Next Steps
 
 - None - task complete
+
+
+## Session 17: Finish task: harden /www migration startup flow
+
+**Date**: 2026-05-01
+**Task**: Finish task: harden /www migration startup flow
+**Branch**: `main`
+
+### Summary
+
+Hardened WSL/Windows startup scripts after /www migration, aligned README runbook paths, and recorded task context for implement/check flow.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c11bb76` | (see git log) |
+| `f4e842d` | (see git log) |
+| `98a2c03` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
