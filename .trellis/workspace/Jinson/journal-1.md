@@ -475,3 +475,37 @@ Hardened browser-capture ffmpeg path: platform-aware auto format defaults (win/m
 ### Next Steps
 
 - None - task complete
+
+
+## Session 16: Update README browser-capture docs
+
+**Date**: 2026-05-01
+**Task**: Update README browser-capture docs
+**Branch**: `main`
+
+### Summary
+
+Updated README runbook flow for browser-capture workflow and completed session wrap-up after workspace checkpoint commit.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c195193` | (see git log) |
+| `c8ea539` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 15
+- **Total Sessions**: 16
 - **Last Active**: 2026-05-01
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~477 | Active |
+| `journal-1.md` | ~511 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 16 | 2026-05-01 | Update README browser-capture docs | `c195193`, `c8ea539` | `main` |
 | 15 | 2026-05-01 | Fix browser capture ffmpeg failure | `40e8ec6` | `main` |
 | 14 | 2026-04-29 | Finish task: save windows wsl run scripts | - | `main` |
 | 13 | 2026-04-29 | save-windows-wsl-run-scripts progress checkpoint | `ca7b6ba` | `main` |
