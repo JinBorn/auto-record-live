@@ -1,0 +1,3 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend runtime and script-layer conventions for startup flow consistency."}
+{"file":".trellis/spec/backend/orchestration-contracts.md","reason":"Avoid breaking windows-agent/orchestrator runtime contract while adjusting startup scripts."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Apply project quality constraints while editing shell/powershell and docs-adjacent runtime behavior."}
