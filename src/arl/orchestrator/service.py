@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from arl.config import Settings
+from arl.shared.contracts import SourceType
 from arl.shared.failure_contracts import (
     FAILURE_CATEGORY_UNKNOWN_UNCLASSIFIED_NON_RETRYABLE,
     classify_failure_reason,
@@ -139,14 +140,76 @@ class OrchestratorService:
         snapshot = event.snapshot
         active_session = self._active_session(state)
         if active_session is not None and active_session.ended_at is None:
+            # Different streamer/room means the previous live session became stale.
+            if (
+                active_session.room_url != snapshot.room_url
+                or active_session.streamer_name != snapshot.streamer_name
+            ):
+                active_session.ended_at = snapshot.detected_at
+                active_session.status = SessionStatus.STOPPED
+                active_session.stop_reason = "superseded_by_new_live_started"
+                self.state_store.append_audit(
+                    "session_replaced_by_new_live_started",
+                    session_id=active_session.session_id,
+                    message=(
+                        f"next_streamer={snapshot.streamer_name} "
+                        f"next_room={snapshot.room_url}"
+                    ),
+                )
+                active_job = self._active_job(state)
+                if active_job is not None and active_job.ended_at is None:
+                    active_job.status = RecordingJobStatus.STOPPED
+                    active_job.ended_at = snapshot.detected_at
+                    active_job.stop_reason = "superseded_by_new_live_started"
+                    self.state_store.append_audit(
+                        "recording_job_stopped",
+                        session_id=active_job.session_id,
+                        job_id=active_job.job_id,
+                        message=f"reason={active_job.stop_reason}",
+                    )
+                state.active_session_id = None
+                state.active_recording_job_id = None
+                active_session = None
+
+        if active_session is not None and active_session.ended_at is None:
+            lock_browser_capture = self._session_has_http_4xx_failure(
+                state, active_session.session_id
+            )
+            if lock_browser_capture:
+                active_session.source_type = SourceType.BROWSER_CAPTURE
+                active_session.stream_url = None
             # Avoid duplicate session starts on repeated live_started events.
-            if active_session.stream_url is None and snapshot.stream_url is not None:
+            if (
+                not lock_browser_capture
+                and active_session.stream_url is None
+                and snapshot.stream_url is not None
+            ):
                 active_session.stream_url = snapshot.stream_url
                 active_session.source_type = snapshot.source_type
                 self.state_store.append_audit(
                     "active_session_enriched",
                     session_id=active_session.session_id,
                     message="updated stream_url from duplicate live_started event",
+                )
+            active_job = self._active_job(state)
+            if (
+                active_job is not None
+                and active_job.ended_at is None
+                and snapshot.stream_url is not None
+                and not lock_browser_capture
+                and (
+                    active_job.stream_url is None
+                    or active_job.stream_url != snapshot.stream_url
+                    or active_job.source_type != snapshot.source_type
+                )
+            ):
+                active_job.stream_url = snapshot.stream_url
+                active_job.source_type = snapshot.source_type
+                self.state_store.append_audit(
+                    "active_recording_job_enriched",
+                    session_id=active_job.session_id,
+                    job_id=active_job.job_id,
+                    message="updated source/stream_url from duplicate live_started event",
                 )
             self.state_store.append_audit(
                 "duplicate_live_started_ignored",
@@ -157,6 +220,35 @@ class OrchestratorService:
                 "orchestrator",
                 f"duplicate live_started ignored session_id={active_session.session_id}",
             )
+            if self.settings.orchestrator.auto_create_recording_job and (
+                active_job is None or active_job.ended_at is not None
+            ):
+                if lock_browser_capture:
+                    active_session.source_type = SourceType.BROWSER_CAPTURE
+                    active_session.stream_url = None
+                    snapshot.source_type = active_session.source_type
+                    snapshot.stream_url = None
+                    self.state_store.append_audit(
+                        "direct_stream_disabled_for_session",
+                        session_id=active_session.session_id,
+                        message="locked_to_browser_capture_after_http_4xx",
+                    )
+                if snapshot.stream_url is not None:
+                    active_session.stream_url = snapshot.stream_url
+                    active_session.source_type = snapshot.source_type
+                job = self._create_recording_job(
+                    state=state,
+                    session_id=active_session.session_id,
+                    source_type=snapshot.source_type,
+                    stream_url=snapshot.stream_url,
+                    created_at=snapshot.detected_at,
+                )
+                self.state_store.append_audit(
+                    "recording_job_recreated_for_active_session",
+                    session_id=active_session.session_id,
+                    job_id=job.job_id,
+                    message=f"source={job.source_type or 'none'}",
+                )
             return
 
         session_id = self._build_id("session", snapshot.detected_at)
@@ -182,27 +274,46 @@ class OrchestratorService:
         )
 
         if self.settings.orchestrator.auto_create_recording_job:
-            job_id = self._build_id("recording", snapshot.detected_at)
-            job = RecordingJobRecord(
-                job_id=job_id,
+            job = self._create_recording_job(
+                state=state,
                 session_id=session_id,
                 source_type=snapshot.source_type,
                 stream_url=snapshot.stream_url,
-                status=RecordingJobStatus.QUEUED,
                 created_at=snapshot.detected_at,
             )
-            state.recording_jobs.append(job)
-            state.active_recording_job_id = job_id
             self.state_store.append_audit(
                 "recording_job_created",
                 session_id=session_id,
-                job_id=job_id,
+                job_id=job.job_id,
                 message=f"source={job.source_type or 'none'}",
             )
             log(
                 "orchestrator",
-                f"recording job queued job_id={job_id} session_id={session_id}",
+                f"recording job queued job_id={job.job_id} session_id={session_id}",
             )
+
+    def _create_recording_job(
+        self,
+        *,
+        state: OrchestratorStateFile,
+        session_id: str,
+        source_type,
+        stream_url: str | None,
+        created_at: datetime,
+    ) -> RecordingJobRecord:
+        job_id = self._build_id("recording", created_at)
+        job = RecordingJobRecord(
+            job_id=job_id,
+            session_id=session_id,
+            source_type=source_type,
+            stream_url=stream_url,
+            status=RecordingJobStatus.QUEUED,
+            created_at=created_at,
+        )
+        state.recording_jobs.append(job)
+        state.active_recording_job_id = job_id
+        return job
+
 
     def _on_live_stopped(
         self,
@@ -360,6 +471,14 @@ class OrchestratorService:
                 mode="manual",
                 origin_event=event.event_type,
             )
+            # When direct-stream access is denied (HTTP 4xx), keep the live session but
+            # drop active job linkage so the next live_started event can recreate a job
+            # and pick up refreshed source_type/stream_url (for example browser_capture).
+            if (
+                job.failure_category == "http_4xx_non_retryable"
+                and state.active_session_id == job.session_id
+            ):
+                state.active_recording_job_id = None
             self._mark_recorder_event_applied(state, event)
             return
 
@@ -450,6 +569,18 @@ class OrchestratorService:
             if job.job_id == job_id:
                 return job
         return None
+
+    def _session_has_http_4xx_failure(
+        self,
+        state: OrchestratorStateFile,
+        session_id: str,
+    ) -> bool:
+        for job in reversed(state.recording_jobs):
+            if job.session_id != session_id:
+                continue
+            if job.failure_category == "http_4xx_non_retryable":
+                return True
+        return False
 
     def _is_stale_recorder_event(
         self,

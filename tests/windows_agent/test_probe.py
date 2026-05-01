@@ -105,6 +105,42 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
         self.assertEqual(snapshot.source_type, SourceType.DIRECT_STREAM)
         self.assertEqual(snapshot.stream_url, "https://cdn.example/live.m3u8")
 
+    def test_playwright_none_stdout_is_handled_without_attribute_error(self) -> None:
+        result = subprocess.CompletedProcess(
+            args=["node"],
+            returncode=1,
+            stdout=None,
+            stderr=None,
+        )
+
+        with patch("arl.windows_agent.probe.subprocess.run", return_value=result):
+            snapshot = self.probe._probe_with_playwright(
+                room_url=self.settings.douyin.room_url,
+                streamer_name=self.settings.douyin.streamer_name,
+                now=self.now,
+            )
+
+        self.assertEqual(snapshot.state, LiveState.OFFLINE)
+        self.assertTrue((snapshot.reason or "").startswith("playwright_error:returncode:1"))
+
+    def test_playwright_subprocess_uses_utf8_replace_decoding(self) -> None:
+        result = subprocess.CompletedProcess(
+            args=["node"],
+            returncode=0,
+            stdout='{"ok":false,"error":"probe_failed"}',
+            stderr="",
+        )
+        with patch("arl.windows_agent.probe.subprocess.run", return_value=result) as run_mock:
+            self.probe._probe_with_playwright(
+                room_url=self.settings.douyin.room_url,
+                streamer_name=self.settings.douyin.streamer_name,
+                now=self.now,
+            )
+
+        _, kwargs = run_mock.call_args
+        self.assertEqual(kwargs.get("encoding"), "utf-8")
+        self.assertEqual(kwargs.get("errors"), "replace")
+
     def test_playwright_invalid_source_type_with_stream_url_falls_back_to_direct_stream(self) -> None:
         payload = (
             '{"ok":true,"state":"live","sourceType":"unexpected_type",'

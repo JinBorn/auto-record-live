@@ -187,6 +187,8 @@ class DouyinRoomProbe:
                 check=False,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 cwd=Path.cwd(),
                 timeout=(self.settings.douyin.playwright_timeout_ms / 1000) + 10,
             )
@@ -199,11 +201,11 @@ class DouyinRoomProbe:
                 detected_at=now,
             )
 
-        stdout = result.stdout.strip()
+        stdout = (result.stdout or "").strip()
         payload = self._parse_playwright_payload(stdout)
 
         if payload is None:
-            error_detail = result.stderr.strip() or f"returncode:{result.returncode}"
+            error_detail = (result.stderr or "").strip() or f"returncode:{result.returncode}"
             return AgentSnapshot(
                 state=LiveState.OFFLINE,
                 streamer_name=streamer_name,

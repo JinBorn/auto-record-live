@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "backend documentation and quality conventions relevant to CLI/script usage docs"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "project-wide documentation and quality conventions in single-repo context"}
+{"file": ".trellis/spec/guides/index.md", "reason": "cross-layer/code-reuse thinking checklist before touching command docs"}

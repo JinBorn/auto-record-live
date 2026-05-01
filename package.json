@@ -7,7 +7,10 @@
     "probe:douyin": "node scripts/probe_douyin_room.mjs",
     "test:probe": "node --test scripts/__tests__/probe_douyin_room.test.mjs"
   },
+  "devDependencies": {
+    "@types/node": "^25.6.0"
+  },
   "dependencies": {
-    "playwright": "^1.54.0"
+    "@playwright/test": "^1.48.0"
   }
 }

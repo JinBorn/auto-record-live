@@ -14,11 +14,14 @@ class WindowsAgentStateStore:
     def load(self) -> AgentStateFile:
         if not self.state_path.exists():
             return AgentStateFile()
-        return AgentStateFile.model_validate_json(self.state_path.read_text())
+        raw = self.state_path.read_text(encoding="utf-8")
+        if not raw.strip():
+            return AgentStateFile()
+        return AgentStateFile.model_validate_json(raw)
 
     def save(self, state: AgentStateFile) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(state.model_dump_json(indent=2) + "\n")
+        self.state_path.write_text(state.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
     def append_event(self, event: AgentEvent) -> None:
         self.event_log_path.parent.mkdir(parents=True, exist_ok=True)

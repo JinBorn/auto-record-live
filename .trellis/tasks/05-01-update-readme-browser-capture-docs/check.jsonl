@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "validate documentation consistency with backend command and script conventions"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "validate repository-wide doc consistency and quality checks"}
+{"file": ".trellis/spec/guides/index.md", "reason": "cross-layer consistency review guidance for command workflow docs"}

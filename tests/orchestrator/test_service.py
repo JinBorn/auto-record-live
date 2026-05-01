@@ -78,6 +78,10 @@ def _recorder_event_line(
             failure_category = "http_4xx_non_retryable"
             is_retryable = False
             reason_code = "http_4xx"
+        elif "server returned 403" in reason_text:
+            failure_category = "http_4xx_non_retryable"
+            is_retryable = False
+            reason_code = "http_4xx"
         elif "server returned 503" in reason_text:
             failure_category = "http_5xx_retryable"
             is_retryable = True
@@ -177,6 +181,129 @@ class OrchestratorServiceTest(unittest.TestCase):
         self.assertIsNotNone(state.active_recording_job_id)
         self.assertEqual(state.sessions[0].status, SessionStatus.LIVE)
         self.assertEqual(state.recording_jobs[0].status, RecordingJobStatus.QUEUED)
+
+    def test_duplicate_live_started_enriches_active_job_stream_url(self) -> None:
+        lines = [
+            _event_line(
+                "live_started",
+                state="live",
+                detected_at="2026-04-24T01:00:00Z",
+                source_type="browser_capture",
+                stream_url=None,
+            ),
+            _event_line(
+                "live_started",
+                state="live",
+                detected_at="2026-04-24T01:00:10Z",
+                source_type="direct_stream",
+                stream_url="https://cdn.example/live.m3u8",
+            ),
+        ]
+        self.agent_event_log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        self.service.run_once()
+
+        state = OrchestratorStateFile.model_validate_json(
+            self.state_file.read_text(encoding="utf-8")
+        )
+        self.assertEqual(len(state.sessions), 1)
+        self.assertEqual(len(state.recording_jobs), 1)
+        self.assertEqual(state.sessions[0].source_type.value, "direct_stream")
+        self.assertEqual(state.sessions[0].stream_url, "https://cdn.example/live.m3u8")
+        self.assertEqual(state.recording_jobs[0].source_type.value, "direct_stream")
+        self.assertEqual(state.recording_jobs[0].stream_url, "https://cdn.example/live.m3u8")
+
+    def test_duplicate_live_started_recreates_job_when_active_job_already_ended(self) -> None:
+        lines = [
+            _event_line(
+                "live_started",
+                state="live",
+                detected_at="2026-04-24T01:00:00Z",
+                source_type="direct_stream",
+                stream_url="https://cdn.example/live-1.m3u8",
+            ),
+            _event_line(
+                "live_started",
+                state="live",
+                detected_at="2026-04-24T01:01:00Z",
+                source_type="direct_stream",
+                stream_url="https://cdn.example/live-2.m3u8",
+            ),
+        ]
+        self.agent_event_log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        self.service.run_once()
+
+        state = OrchestratorStateFile.model_validate_json(
+            self.state_file.read_text(encoding="utf-8")
+        )
+        self.assertEqual(len(state.sessions), 1)
+        self.assertEqual(len(state.recording_jobs), 1)
+        first_job = state.recording_jobs[0]
+
+        first_job.status = RecordingJobStatus.FAILED
+        first_job.ended_at = first_job.created_at
+        state.active_recording_job_id = None
+        self.state_file.write_text(state.model_dump_json(indent=2) + "\n", encoding="utf-8")
+
+        with self.agent_event_log.open("a", encoding="utf-8") as handle:
+            handle.write(
+                _event_line(
+                    "live_started",
+                    state="live",
+                    detected_at="2026-04-24T01:02:00Z",
+                    source_type="direct_stream",
+                    stream_url="https://cdn.example/live-3.m3u8",
+                )
+                + "\n"
+            )
+
+        self.service.run_once()
+
+        updated = OrchestratorStateFile.model_validate_json(
+            self.state_file.read_text(encoding="utf-8")
+        )
+        self.assertEqual(len(updated.sessions), 1)
+        self.assertEqual(len(updated.recording_jobs), 2)
+        self.assertEqual(updated.recording_jobs[-1].status, RecordingJobStatus.QUEUED)
+        self.assertEqual(
+            updated.recording_jobs[-1].stream_url,
+            "https://cdn.example/live-3.m3u8",
+        )
+        self.assertEqual(updated.active_recording_job_id, updated.recording_jobs[-1].job_id)
+
+    def test_new_streamer_live_started_replaces_stale_active_session(self) -> None:
+        lines = [
+            _event_line(
+                "live_started",
+                state="live",
+                detected_at="2026-04-24T01:00:00Z",
+                source_type="direct_stream",
+                stream_url="https://cdn.example/streamer-a.m3u8",
+            ),
+            _event_line(
+                "live_started",
+                state="live",
+                detected_at="2026-04-24T01:01:00Z",
+                source_type="direct_stream",
+                stream_url="https://cdn.example/streamer-b.m3u8",
+            ).replace("streamer-a", "streamer-b").replace("/room", "/room-b"),
+        ]
+        self.agent_event_log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        self.service.run_once()
+
+        state = OrchestratorStateFile.model_validate_json(
+            self.state_file.read_text(encoding="utf-8")
+        )
+        self.assertEqual(len(state.sessions), 2)
+        self.assertEqual(len(state.recording_jobs), 2)
+        self.assertEqual(state.sessions[0].status, SessionStatus.STOPPED)
+        self.assertEqual(state.sessions[0].stop_reason, "superseded_by_new_live_started")
+        self.assertEqual(state.sessions[1].status, SessionStatus.LIVE)
+        self.assertEqual(state.sessions[1].streamer_name, "streamer-b")
+        self.assertEqual(state.active_session_id, state.sessions[1].session_id)
+        self.assertEqual(state.active_recording_job_id, state.recording_jobs[1].job_id)
 
     def test_cursor_supports_incremental_processing(self) -> None:
         self.agent_event_log.write_text(
@@ -783,6 +910,112 @@ class OrchestratorServiceTest(unittest.TestCase):
         self.assertFalse(state.recording_jobs[0].recoverable)
         self.assertIsNotNone(state.recording_jobs[0].ended_at)
         self.assertIsNone(state.active_recording_job_id)
+
+    def test_http_4xx_failure_then_next_live_started_recreates_active_job(self) -> None:
+        self.agent_event_log.write_text(
+            _event_line(
+                "live_started",
+                state="live",
+                detected_at="2026-04-24T01:00:00Z",
+                source_type="direct_stream",
+                stream_url="https://cdn.example/live.m3u8",
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.service.run_once()
+        state = OrchestratorStateFile.model_validate_json(
+            self.state_file.read_text(encoding="utf-8")
+        )
+        first_job = state.recording_jobs[0]
+
+        self.recorder_event_log.write_text(
+            _recorder_event_line(
+                "ffmpeg_fallback_placeholder",
+                session_id=first_job.session_id,
+                job_id=first_job.job_id,
+                reason="Error opening input files: Server returned 403 Forbidden (access denied)",
+                created_at="2026-04-24T01:01:00Z",
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.service.run_once()
+
+        with self.agent_event_log.open("a", encoding="utf-8") as handle:
+            handle.write(
+                _event_line(
+                    "live_started",
+                    state="live",
+                    detected_at="2026-04-24T01:02:00Z",
+                    source_type="browser_capture",
+                    stream_url=None,
+                )
+                + "\n"
+            )
+        self.service.run_once()
+
+        updated = OrchestratorStateFile.model_validate_json(
+            self.state_file.read_text(encoding="utf-8")
+        )
+        self.assertEqual(len(updated.sessions), 1)
+        self.assertEqual(len(updated.recording_jobs), 2)
+        self.assertEqual(updated.recording_jobs[-1].status, RecordingJobStatus.QUEUED)
+        self.assertEqual(updated.recording_jobs[-1].source_type.value, "browser_capture")
+        self.assertEqual(updated.active_recording_job_id, updated.recording_jobs[-1].job_id)
+
+    def test_http_4xx_failure_locks_session_to_browser_capture(self) -> None:
+        self.agent_event_log.write_text(
+            _event_line(
+                "live_started",
+                state="live",
+                detected_at="2026-04-24T01:00:00Z",
+                source_type="direct_stream",
+                stream_url="https://cdn.example/live.m3u8",
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.service.run_once()
+        state = OrchestratorStateFile.model_validate_json(
+            self.state_file.read_text(encoding="utf-8")
+        )
+        first_job = state.recording_jobs[0]
+
+        self.recorder_event_log.write_text(
+            _recorder_event_line(
+                "ffmpeg_fallback_placeholder",
+                session_id=first_job.session_id,
+                job_id=first_job.job_id,
+                reason="Error opening input files: Server returned 403 Forbidden (access denied)",
+                created_at="2026-04-24T01:01:00Z",
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.service.run_once()
+
+        with self.agent_event_log.open("a", encoding="utf-8") as handle:
+            handle.write(
+                _event_line(
+                    "live_started",
+                    state="live",
+                    detected_at="2026-04-24T01:02:00Z",
+                    source_type="direct_stream",
+                    stream_url="https://cdn.example/live-new.m3u8",
+                )
+                + "\n"
+            )
+        self.service.run_once()
+
+        updated = OrchestratorStateFile.model_validate_json(
+            self.state_file.read_text(encoding="utf-8")
+        )
+        self.assertEqual(updated.sessions[0].source_type.value, "browser_capture")
+        self.assertIsNone(updated.sessions[0].stream_url)
+        self.assertEqual(updated.recording_jobs[-1].source_type.value, "browser_capture")
+        self.assertIsNone(updated.recording_jobs[-1].stream_url)
+        self.assertEqual(updated.active_recording_job_id, updated.recording_jobs[-1].job_id)
 
     def test_ffmpeg_record_failed_http_503_keeps_job_retrying(self) -> None:
         self.agent_event_log.write_text(

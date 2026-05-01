@@ -29,6 +29,7 @@ src/arl/segmenter/signals_from_subtitles.py
 src/arl/segmenter/stage_text.py
 src/arl/shared/__init__.py
 src/arl/shared/contracts.py
+src/arl/shared/failure_contracts.py
 src/arl/shared/jsonl_store.py
 src/arl/shared/logging.py
 src/arl/subtitles/__init__.py
