@@ -118,11 +118,10 @@ export ARL_STREAMER_NAME="<streamer>"
 Windows 终端（会循环执行 `windows-agent --once`）：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\windows-agent-loop.ps1 `
-    -RoomUrl "https://live.douyin.com/742070406673" `
-    -StreamerName "WEI（乱斗阿伟）" `
-    -ProjectPath "D:\code\auto-record-live" `
-    -IntervalSeconds 15
+powershell -ExecutionPolicy Bypass -File "\\wsl$\Ubuntu-24.04\www\auto-record-live\scripts\windows-agent-loop.ps1" `
+    -RoomUrl "你的直播间URL" `
+    -StreamerName "主播名" `
+    -ProjectPath "\\wsl$\Ubuntu-24.04\www\auto-record-live" `
 ```
 
 WSL 终端 1（编排循环）：
@@ -139,8 +138,8 @@ bash scripts/wsl-recorder-loop.sh /www/auto-record-live 5
 
 > 说明：WSL 脚本默认使用独立虚拟环境 `.venv-wsl`，避免与 Windows 的 `.venv` 互相污染。
 > 说明：建议把项目放在 WSL 原生目录（如 `/www/auto-record-live`），避免 `/mnt/d/...` 带来的挂载 IO 开销。
-> 说明：Windows 侧 `windows-agent-loop.ps1` 默认 `-ProjectPath` 为 `D:\code\auto-record-live`；WSL 脚本默认项目路径为 `/www/auto-record-live`。
-> 说明：请确保两侧指向同一仓库（例如 Windows `D:\code\auto-record-live` 对应 WSL `/www/auto-record-live`）。
+> 说明：`windows-agent-loop.ps1` 默认会自动使用脚本所在仓库目录；也可显式传入 `-ProjectPath`（例如 `\\wsl$\Ubuntu-24.04\www\auto-record-live`）。
+> 说明：请确保 Windows 侧与 WSL 侧指向同一仓库目录（例如 WSL `/www/auto-record-live`）。
 > 说明：`ARL_WSL_INSTALL_MODE` 默认 `if-missing`，仅首次安装依赖；如需每次启动都重装，设置为 `always`。
 
 ### 3) 录制完成后的后处理顺序（按需手动执行）

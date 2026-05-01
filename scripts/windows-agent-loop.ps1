@@ -6,14 +6,18 @@ param(
   [string]$StreamerName,
 
   [int]$IntervalSeconds = 15,
-  [string]$ProjectPath = "D:\code\auto-record-live"
+  [string]$ProjectPath = ""
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+if ([string]::IsNullOrWhiteSpace($ProjectPath)) {
+  $ProjectPath = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+}
+
 if (!(Test-Path $ProjectPath)) {
-  throw "Project path not found: $ProjectPath`nHint: pass -ProjectPath explicitly, e.g. D:\code\auto-record-live"
+  throw "Project path not found: $ProjectPath`nHint: pass -ProjectPath explicitly, e.g. \\wsl$\Ubuntu\www\auto-record-live"
 }
 Set-Location $ProjectPath
 
@@ -55,7 +59,7 @@ Write-Host "[ARL] room: $RoomUrl"
 Write-Host "[ARL] streamer: $StreamerName"
 Write-Host "[ARL] interval: ${IntervalSeconds}s"
 if ($ProjectPath -like "\\wsl$\*") {
-  Write-Warning "Using a UNC WSL path from Windows may be slower; prefer Windows-local path (e.g. D:\code\auto-record-live) for the Windows agent loop."
+  Write-Warning "Using a UNC WSL path from Windows may be slower; prefer a Windows-local path when possible."
 }
 
 while ($true) {
