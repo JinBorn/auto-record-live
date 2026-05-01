@@ -128,16 +128,20 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows-agent-loop.ps1 `
 WSL 终端 1（编排循环）：
 
 ```bash
-bash scripts/wsl-orchestrator.sh /mnt/d/code/auto-record-live
+bash scripts/wsl-orchestrator.sh /www/auto-record-live
 ```
 
 WSL 终端 2（录制循环，每 5 秒扫描一次）：
 
 ```bash
-bash scripts/wsl-recorder-loop.sh /mnt/d/code/auto-record-live 5
+bash scripts/wsl-recorder-loop.sh /www/auto-record-live 5
 ```
 
 > 说明：WSL 脚本默认使用独立虚拟环境 `.venv-wsl`，避免与 Windows 的 `.venv` 互相污染。
+> 说明：建议把项目放在 WSL 原生目录（如 `/www/auto-record-live`），避免 `/mnt/d/...` 带来的挂载 IO 开销。
+> 说明：Windows 侧 `windows-agent-loop.ps1` 默认 `-ProjectPath` 为 `D:\code\auto-record-live`；WSL 脚本默认项目路径为 `/www/auto-record-live`。
+> 说明：请确保两侧指向同一仓库（例如 Windows `D:\code\auto-record-live` 对应 WSL `/www/auto-record-live`）。
+> 说明：`ARL_WSL_INSTALL_MODE` 默认 `if-missing`，仅首次安装依赖；如需每次启动都重装，设置为 `always`。
 
 ### 3) 录制完成后的后处理顺序（按需手动执行）
 
