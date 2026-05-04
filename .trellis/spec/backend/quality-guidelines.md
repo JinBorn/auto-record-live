@@ -32,6 +32,9 @@ The current MVP backend is a local pipeline with file-backed contracts and typed
 - Writing new logic into `utils.py` or `helpers.py` without a domain-specific name.
 - Mixing path and env lookup code into stage logic when `config.py` should own it.
 - Re-encoding or mutating source metadata in place without preserving the original source path or source type in records.
+- Calling `Path.read_text()` / `Path.write_text()` on durable state JSON or event JSONL files without an explicit `encoding="utf-8"` argument.
+  - On non-UTF-8 OS locales (for example Windows zh-CN with CP936/GBK) Python silently uses the platform encoding and produces files that downstream stages cannot decode.
+  - Mirror the existing pattern used by every other state store (`recorder`, `exporter`, `recovery`, `subtitles`, `segmenter`, `windows_agent`): both `read_text` and `write_text` must pass `encoding="utf-8"`.
 
 ---
 
@@ -363,3 +366,13 @@ The current MVP backend is a local pipeline with file-backed contracts and typed
 **Fix**: Include skip counters in summary telemetry (`skipped_already_processed`, `skipped_missing_subtitle`) alongside `matched_assets`.
 
 **Prevention**: Add regression test that mixes already-processed and missing-file assets and assert both skip counters in summary log.
+
+### Common Mistake: Bare `read_text` / `write_text` on durable state files breaks under non-UTF-8 OS locales
+
+**Symptom**: Recorder fails to start with `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xb7` when reading `data/tmp/orchestrator-state.json`. Re-running does not recover; the recorder loop is permanently broken until the file is deleted.
+
+**Cause**: `OrchestratorStateStore.load` and `save` used bare `Path.read_text()` / `Path.write_text()`. On Windows zh-CN hosts, Python falls back to the platform locale (CP936/GBK) for both ends, so a state snapshot containing a Chinese `streamer_name` was silently written as GBK. Every other consumer (`recorder/service.py`, integration tests) passed an explicit `encoding="utf-8"` and could no longer decode the file.
+
+**Fix**: Always pass `encoding="utf-8"` to both `read_text` and `write_text` for durable state JSON and event JSONL files. For backward compatibility with already-corrupted files, `OrchestratorStateStore.load` reads bytes and falls back to GBK when UTF-8 decode fails; the next `save` rewrites the file as UTF-8 so the fallback path is exercised at most once per legacy file.
+
+**Prevention**: Mirror the established pattern used by every other state store (`recorder`, `exporter`, `recovery`, `subtitles`, `segmenter`, `windows_agent`) — explicit UTF-8 on both ends. Add round-trip unit tests with non-ASCII (Chinese) `streamer_name` payloads, and add an explicit auto-heal regression that simulates a legacy GBK-encoded file.

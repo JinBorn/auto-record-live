@@ -68,6 +68,10 @@ class RecordingJobRecord(BaseModel):
   - Recorder audit event log: `data/tmp/recorder-events.jsonl`
   - Orchestrator state: `data/tmp/orchestrator-state.json`
   - Orchestrator audit log: `data/tmp/orchestrator-events.jsonl`
+- Durable file encoding:
+  - All durable state JSON files (`*-state.json`) and event/audit JSONL files (`*-events.jsonl`, `*-assets.jsonl`, `*-actions.jsonl`) must be read and written using explicit `encoding="utf-8"`. Bare `Path.read_text()` / `Path.write_text()` is forbidden — on non-UTF-8 OS locales (for example Windows zh-CN with CP936/GBK) it silently produces files that downstream stages cannot decode.
+  - Rationale: stages run cross-locale (Windows agent on zh-CN host, recorder/orchestrator pipeline on the same host) and must agree on a single text encoding for file-based contracts.
+  - For backward compatibility with files already written under the previous bare-encoding behavior, `OrchestratorStateStore.load` may auto-heal by attempting UTF-8 first and falling back to GBK before re-saving as UTF-8. New stages must not inherit this fallback.
 
 ### 3. Contracts
 
@@ -139,6 +143,8 @@ class RecordingJobRecord(BaseModel):
 | Recorder event `created_at` is older than or equal to the last applied recorder event for the same job | Append `recorder_event_stale_ignored`; keep current job status unchanged |
 | `ffmpeg_record_failed` classified recoverable | Keep job active in `retrying`; append retry recovery audit |
 | `ffmpeg_record_failed` classified non-recoverable | Mark job `failed`, close active job pointer, append manual recovery audit |
+| Orchestrator state file is encoded as a legacy non-UTF-8 codec (for example GBK from the previous bare-`write_text` behavior) | `OrchestratorStateStore.load` auto-heals by falling back to GBK decode; the next `save` rewrites the file as UTF-8 |
+| Orchestrator state file is corrupt and cannot be decoded as UTF-8 or the GBK fallback | Raise a `RuntimeError` whose message includes the file path and instructs the operator to delete the file or convert it manually; do not silently lose state |
 
 ### 5. Good / Base / Bad Cases
 
