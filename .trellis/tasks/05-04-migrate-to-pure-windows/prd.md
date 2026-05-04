@@ -8,7 +8,7 @@
 
 | PR | 状态 | 提交 / 分支 | 备注 |
 |---|---|---|---|
-| **PR1** Launcher 移植 | ✅ Implementation done, ⏳ awaiting Windows smoke test | branch `feat/migrate-pure-windows-pr1`，commit `75ff870` | 新增 `scripts/windows-orchestrator-loop.ps1` + `windows-recorder-loop.ps1`；冒烟 checklist 见 `research/pr1-smoke-test.md` |
+| **PR1** Launcher 移植 | ✅ Smoke test passed (Phases A–E, on Windows D:\ Python 3.14.4) | branch `feat/migrate-pure-windows-pr1`，commit `75ff870` | 新增 `scripts/windows-orchestrator-loop.ps1` + `windows-recorder-loop.ps1`；冒烟 checklist 见 `research/pr1-smoke-test.md`；smoke-test 在 D:\code\auto-record-live 跑通 (2026-05-04)，发现两处文档误差已修（recorder loop 注释 + Phase A ensurepip 期望） |
 | **PR2** Doc / Spec 重写 | ⬜ Not started | — | 待 PR1 冒烟通过；punch list 见 `research/wsl-reference-scan.md` |
 | **PR3** 删除 WSL 工件 | ⬜ Not started | — | `git rm scripts/wsl-*.sh` + `.gitignore` 单行 + egg-info 重建 |
 

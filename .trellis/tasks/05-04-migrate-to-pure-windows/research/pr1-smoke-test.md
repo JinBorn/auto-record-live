@@ -27,7 +27,8 @@ Remove-Item -Recurse -Force .venv -ErrorAction SilentlyContinue
 .\scripts\windows-orchestrator-loop.ps1
 ```
 
-- [ ] Script prints `[ARL] ensuring pip in venv` (proves try/catch + ensurepip recovery branch fires when `.venv` lacks usable pip)
+- [ ] If the cold venv lacks working pip (e.g. Microsoft Store Python with broken `ensurepip`), script prints `[ARL] ensuring pip in venv` then runs `python -m ensurepip --upgrade` (proves try/catch recovery branch fires)
+- [ ] If the cold venv has working pip out of the box (typical for python.org / winget `Python.Python.3.x`), the line is NOT printed and the script proceeds straight to `pip install -e .` — both paths are healthy
 - [ ] No `NativeCommandError` / `RemoteException` aborts during pip probe
 - [ ] `[ARL] orchestrator loop started` banner prints
 - [ ] `[ARL] install mode: if-missing` line shown

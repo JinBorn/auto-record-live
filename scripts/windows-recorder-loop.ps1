@@ -115,8 +115,11 @@ if ($ProjectPath -like "\\wsl$\*") {
   Write-Warning "Using a UNC WSL path from Windows may be slower; prefer a Windows-local path when possible."
 }
 
-# Recorder is `--once` per call; the loop lives here (mirrors
-# wsl-recorder-loop.sh:51-56). Try/catch covers the
+# Recorder is single-pass per call: RecorderService.run() processes existing
+# recording jobs once and exits (see src/arl/recorder/service.py — no internal
+# while loop, by design and matching README "执行一次录制" semantics). This
+# launcher loop drives the polling cadence and supervises restart on crash
+# (mirrors wsl-recorder-loop.sh:51-56). Try/catch covers the
 # NativeCommandError-promotion case (recorder writes to stderr on failure).
 while ($true) {
   try {
