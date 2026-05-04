@@ -44,6 +44,17 @@ if (!(Get-Command npm -ErrorAction SilentlyContinue)) {
   throw "npm not found. Install Node.js and ensure npm is available in PATH."
 }
 
+# Mirrors scripts/wsl-orchestrator.sh:24-26: a venv created without working
+# pip (some Windows Python distributions ship ensurepip data that fails to
+# bootstrap on first venv creation) is recovered via `ensurepip --upgrade`
+# before any pip-driven install runs.
+& $venvPython -m pip --version *> $null
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "[ARL] ensuring pip in venv"
+  & $venvPython -m ensurepip --upgrade
+  if ($LASTEXITCODE -ne 0) { throw "python -m ensurepip --upgrade failed (exit $LASTEXITCODE)" }
+}
+
 # Mirrors ARL_WSL_INSTALL_MODE in scripts/wsl-orchestrator.sh: if-missing skips
 # `pip install -e .` when the .deps-ready sentinel is present; always forces it.
 $installMode = if ($env:ARL_WIN_INSTALL_MODE) { $env:ARL_WIN_INSTALL_MODE } else { "if-missing" }
