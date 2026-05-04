@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 17
-- **Last Active**: 2026-05-01
+- **Total Sessions**: 18
+- **Last Active**: 2026-05-04
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~546 | Active |
+| `journal-1.md` | ~582 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 18 | 2026-05-04 | WSL startup hygiene: untrack .venv-wsl + Windows-side if-missing parity | `d044ba4`, `4a0bb27`, `0396d98`, `f8adec6` | `main` |
 | 17 | 2026-05-01 | Finish task: harden /www migration startup flow | `c11bb76`, `f4e842d`, `98a2c03` | `main` |
 | 16 | 2026-05-01 | Update README browser-capture docs | `c195193`, `c8ea539` | `main` |
 | 15 | 2026-05-01 | Fix browser capture ffmpeg failure | `40e8ec6` | `main` |

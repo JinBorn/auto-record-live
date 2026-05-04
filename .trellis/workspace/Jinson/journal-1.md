@@ -544,3 +544,39 @@ Hardened WSL/Windows startup scripts after /www migration, aligned README runboo
 ### Next Steps
 
 - None - task complete
+
+
+## Session 18: WSL startup hygiene: untrack .venv-wsl + Windows-side if-missing parity
+
+**Date**: 2026-05-04
+**Task**: WSL startup hygiene: untrack .venv-wsl + Windows-side if-missing parity
+**Branch**: `main`
+
+### Summary
+
+Diagnosed perceived 'WSL startup churn' as two distinct issues: (1) .venv-wsl/ was tracked in git (≈2814 files), so every checkout rewrote venv binaries and produced a perpetually dirty tree that defeated the existing .deps-ready sentinel; (2) windows-agent-loop.ps1 unconditionally ran 'pip install -e .' every loop start, with no if-missing parity to the WSL scripts. Fix: gitignore + git rm --cached .venv-wsl, mirror ARL_WSL_INSTALL_MODE on the PowerShell side as ARL_WIN_INSTALL_MODE with a .venv\.deps-ready sentinel and explicit $LASTEXITCODE check (PowerShell's $ErrorActionPreference does not propagate native-exe failures). README documents the new env var and the one-time cleanup recipe. Captured the WSL/Windows launcher parity rules and the $LASTEXITCODE pitfall in a new .trellis/spec/backend/launcher-conventions.md spec. Implementation was done inline because the trellis-implement sub-agent dispatch hit gateway 500s twice.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d044ba4` | (see git log) |
+| `4a0bb27` | (see git log) |
+| `0396d98` | (see git log) |
+| `f8adec6` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
