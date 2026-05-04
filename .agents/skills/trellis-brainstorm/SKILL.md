@@ -16,7 +16,7 @@ Guide AI through collaborative requirements discovery **before implementation**,
 
 ## When to Use
 
-Triggered from $start when the user describes a development task, especially when:
+Triggered from `start` (Trellis command) when the user describes a development task, especially when:
 
 * requirements are unclear or evolving
 * there are multiple valid implementation paths
@@ -59,7 +59,7 @@ Before any Q&A, ensure a task exists. If none exists, create one immediately.
 * It's OK if the title is imperfect — refine later in PRD.
 
 ```bash
-TASK_DIR=$(python3 ./.trellis/scripts/task.py create "brainstorm: <short goal>" --slug <auto>)
+TASK_DIR=$(python ./.trellis/scripts/task.py create "brainstorm: <short goal>" --slug <auto>)
 ```
 
 Use a slug without a date prefix. `task.py create` adds the `MM-DD-`
@@ -444,11 +444,11 @@ For complex tasks with multiple independent work items, create subtasks:
 
 ```bash
 # Create child tasks
-CHILD1=$(python3 ./.trellis/scripts/task.py create "Child task 1" --slug child1 --parent "$TASK_DIR")
-CHILD2=$(python3 ./.trellis/scripts/task.py create "Child task 2" --slug child2 --parent "$TASK_DIR")
+CHILD1=$(python ./.trellis/scripts/task.py create "Child task 1" --slug child1 --parent "$TASK_DIR")
+CHILD2=$(python ./.trellis/scripts/task.py create "Child task 2" --slug child2 --parent "$TASK_DIR")
 
 # Or link existing tasks
-python3 ./.trellis/scripts/task.py add-subtask "$TASK_DIR" "$CHILD_DIR"
+python ./.trellis/scripts/task.py add-subtask "$TASK_DIR" "$CHILD_DIR"
 ```
 
 ---
@@ -533,6 +533,6 @@ The task directory and PRD already exist from brainstorm, so Phase 1 of the Task
 
 | Command | When to Use |
 |---------|-------------|
-| `$start` | Entry point that triggers brainstorm |
-| `$finish-work` | After implementation is complete |
-| `$update-spec` | If new patterns emerge during work |
+| ``start` (Trellis command)` | Entry point that triggers brainstorm |
+| ``finish-work` (Trellis command)` | After implementation is complete |
+| ``update-spec` (Trellis command)` | If new patterns emerge during work |

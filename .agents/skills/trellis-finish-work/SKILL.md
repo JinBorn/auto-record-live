@@ -10,7 +10,7 @@ Wrap up the current session: archive the active task (and any other completed-bu
 ## Step 1: Survey current state
 
 ```bash
-python3 ./.trellis/scripts/get_context.py --mode record
+python ./.trellis/scripts/get_context.py --mode record
 ```
 
 This prints:
@@ -33,14 +33,14 @@ Filter out paths under `.trellis/workspace/` and `.trellis/tasks/` — those are
 
 If anything else is dirty (any path outside those two prefixes), **stop and bail out** with:
 
-> "Working tree has uncommitted code changes. Return to workflow Phase 3.4 to commit them before running `$finish-work`."
+> "Working tree has uncommitted code changes. Return to workflow Phase 3.4 to commit them before running ``finish-work` (Trellis command)`."
 
 Do NOT run `git commit` here. Do NOT prompt the user to commit. The user goes back to Phase 3.4 and the AI drives the batched commit there.
 
 ## Step 3: Archive task(s)
 
 ```bash
-python3 ./.trellis/scripts/task.py archive <task-name>
+python ./.trellis/scripts/task.py archive <task-name>
 ```
 
 At minimum: the current active task (if any). Plus any extra tasks the user confirmed in Step 1. Each archive produces a `chore(task): archive ...` commit via the script's auto-commit.
@@ -50,7 +50,7 @@ If there is no active task and the user did not confirm any cleanup archives, sk
 ## Step 4: Record session journal
 
 ```bash
-python3 ./.trellis/scripts/add_session.py \
+python ./.trellis/scripts/add_session.py \
   --title "Session Title" \
   --commit "hash1,hash2" \
   --summary "Brief summary"

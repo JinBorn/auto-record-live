@@ -11,6 +11,7 @@ warnings.filterwarnings("ignore")
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -233,7 +234,7 @@ def _get_task_status(trellis_dir: Path, input_data: dict) -> str:
             "Status: NO ACTIVE TASK\n"
             f"Source: {active.source}\n"
             "Next-Action: After the user describes their intent, load skill `trellis-brainstorm` "
-            "to clarify requirements and create a task via `python3 ./.trellis/scripts/task.py create`.\n"
+            "to clarify requirements and create a task via `python ./.trellis/scripts/task.py create`.\n"
             "Research reminder: for research-heavy tasks (comparing tools, reading external docs, "
             "cross-platform surveys), spawn `trellis-research` sub-agents via the Task tool — "
             "they persist findings to `{TASK_DIR}/research/*.md` and keep main context clean. "
@@ -251,7 +252,7 @@ def _get_task_status(trellis_dir: Path, input_data: dict) -> str:
         return (
             f"Status: STALE POINTER\nTask: {task_ref}\n"
             f"Source: {active.source}\n"
-            f"Next-Action: Run `python3 ./.trellis/scripts/task.py finish` to clear the stale pointer, "
+            f"Next-Action: Run `python ./.trellis/scripts/task.py finish` to clear the stale pointer, "
             "then ask the user what to work on next."
         )
 
@@ -273,7 +274,7 @@ def _get_task_status(trellis_dir: Path, input_data: dict) -> str:
             f"Status: COMPLETED\nTask: {task_title}\n"
             f"Source: {active.source}\n"
             f"Next-Action: Load skill `trellis-update-spec` to capture learnings, "
-            f"then archive with `python3 ./.trellis/scripts/task.py archive {task_dir.name}`."
+            f"then archive with `python ./.trellis/scripts/task.py archive {task_dir.name}`."
         )
 
     has_prd = (task_dir / "prd.md").is_file()
@@ -299,8 +300,8 @@ def _get_task_status(trellis_dir: Path, input_data: dict) -> str:
             "Next-Action: Curate `implement.jsonl` and `check.jsonl` with the spec + research files "
             "the Phase 2 sub-agents will need. Only spec paths (`.trellis/spec/**/*.md`) and research "
             "files (`{TASK_DIR}/research/*.md`) — no code paths. Run "
-            "`python3 ./.trellis/scripts/get_context.py --mode packages` to list available specs, "
-            "then edit the jsonl files or use `python3 ./.trellis/scripts/task.py add-context`. "
+            "`python ./.trellis/scripts/get_context.py --mode packages` to list available specs, "
+            "then edit the jsonl files or use `python ./.trellis/scripts/task.py add-context`. "
             "See `.trellis/workflow.md` Phase 1.3 for details."
         )
 
@@ -495,6 +496,24 @@ def _extract_range(content: str, start_header: str, end_header: str) -> str:
     return "\n".join(lines[start:end]).rstrip()
 
 
+_BREADCRUMB_TAG_RE = re.compile(
+    r"\[workflow-state:([A-Za-z0-9_-]+)\]\s*\n.*?\n\s*\[/workflow-state:\1\]",
+    re.DOTALL,
+)
+
+
+def _strip_breadcrumb_tag_blocks(content: str) -> str:
+    """Remove `[workflow-state:STATUS]...[/workflow-state:STATUS]` blocks.
+
+    The tag blocks live inside `## Phase Index` (since v0.5.0-rc.0, when
+    they were colocated with their phase summaries) and are consumed by the
+    UserPromptSubmit hook (`inject-workflow-state.py`). The session-start
+    payload already covers the full step bodies, so re-inlining the
+    breadcrumbs here would just duplicate context.
+    """
+    return _BREADCRUMB_TAG_RE.sub("", content)
+
+
 def _build_workflow_overview(workflow_path: Path) -> str:
     """Inject the workflow guide for the session.
 
@@ -503,10 +522,13 @@ def _build_workflow_overview(workflow_path: Path) -> str:
       2. Phase Index section (rules, skill routing table, anti-rationalization table)
       3. Phase 1/2/3 step-level details (the actual how-to for each step)
 
-    The meta sections (Core Principles / Trellis System / Workflow State
-    Breadcrumbs) are NOT injected — Core Principles is short prose the AI can
+    The meta sections (Core Principles / Trellis System / Customizing
+    Trellis) are NOT injected — Core Principles is short prose the AI can
     Read on demand; Trellis System lists reference commands duplicated in
-    step bodies; Breadcrumbs are consumed by the UserPromptSubmit hook.
+    step bodies; Customizing Trellis is for forks. Workflow-state breadcrumb
+    tag blocks (which now live inside Phase Index since v0.5.0-rc.0) are
+    stripped from the extracted range — they're consumed by the
+    UserPromptSubmit hook, not the session-start preamble.
 
     Total budget: Phase Index ~2 KB + Phase 1/2/3 ~7 KB = ~9 KB.
     """
@@ -525,14 +547,17 @@ def _build_workflow_overview(workflow_path: Path) -> str:
             out_lines.append(line)
     out_lines += ["", "---", ""]
 
-    # Extract Phase Index through the end of Phase 3 (before Breadcrumbs).
-    # Since sections appear in order Phase Index → Phase 1 → Phase 2 → Phase 3
-    # → Workflow State Breadcrumbs, a single range grab captures all four.
+    # Extract Phase Index through the end of Phase 3 (before "Customizing
+    # Trellis" — the docs-for-forks footer added in v0.5.0-rc.0). Since
+    # sections appear in order Phase Index → Phase 1 → Phase 2 → Phase 3 →
+    # Customizing Trellis, a single range grab captures all four. The
+    # breadcrumb tag blocks now embedded inside Phase Index are stripped so
+    # they don't duplicate the per-turn UserPromptSubmit injection.
     phases = _extract_range(
-        content, "Phase Index", "Workflow State Breadcrumbs"
+        content, "Phase Index", "Customizing Trellis (for forks)"
     )
     if phases:
-        out_lines.append(phases)
+        out_lines.append(_strip_breadcrumb_tag_blocks(phases).rstrip())
 
     return "\n".join(out_lines).rstrip()
 
@@ -663,7 +688,7 @@ Read and follow all instructions below carefully.
 
     output.write(
         "Discover more via: "
-        "`python3 ./.trellis/scripts/get_context.py --mode packages`\n"
+        "`python ./.trellis/scripts/get_context.py --mode packages`\n"
     )
     output.write("</guidelines>\n\n")
 

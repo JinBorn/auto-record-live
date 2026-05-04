@@ -29,7 +29,7 @@ Context loading determines when AI reads workflow, task, spec, research, workspa
 | Need | Edit point |
 | --- | --- |
 | Inject more/less information in new sessions | `session_context.py` or the platform `session-start` hook. |
-| Change hints on each user input | State blocks in `.trellis/workflow.md` and `inject-workflow-state` hook. |
+| Change hints on each user input | `[workflow-state:STATUS]` block in `.trellis/workflow.md`. The `inject-workflow-state` hook is parser-only and reads the block verbatim. |
 | Agent did not read specs | Task JSONL, agent prelude, `inject-subagent-context` hook. |
 | Active task is lost | `active_task.py` and platform session identity propagation. |
 | Change JSONL validation rules | `task_context.py`. |
@@ -72,10 +72,10 @@ In both modes, make sure the agent ultimately reads:
 ## Troubleshooting Order
 
 ```bash
-python3 ./.trellis/scripts/task.py current --source
-python3 ./.trellis/scripts/task.py list-context <task>
-python3 ./.trellis/scripts/task.py validate <task>
-python3 ./.trellis/scripts/get_context.py --mode packages
+python ./.trellis/scripts/task.py current --source
+python ./.trellis/scripts/task.py list-context <task>
+python ./.trellis/scripts/task.py validate <task>
+python ./.trellis/scripts/get_context.py --mode packages
 ```
 
 Confirm the task and JSONL are correct before editing hooks/agents.
