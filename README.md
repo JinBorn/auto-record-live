@@ -140,8 +140,7 @@ bash scripts/wsl-recorder-loop.sh /www/auto-record-live 5
 > 说明：建议把项目放在 WSL 原生目录（如 `/www/auto-record-live`），避免 `/mnt/d/...` 带来的挂载 IO 开销。
 > 说明：`windows-agent-loop.ps1` 默认会自动使用脚本所在仓库目录；也可显式传入 `-ProjectPath`（例如 `\\wsl$\Ubuntu-24.04\www\auto-record-live`）。
 > 说明：请确保 Windows 侧与 WSL 侧指向同一仓库目录（例如 WSL `/www/auto-record-live`）。
-> 说明：`ARL_WSL_INSTALL_MODE` 默认 `if-missing`，仅首次安装依赖；如需每次启动都重装，设置为 `always`。Windows 侧对应 `ARL_WIN_INSTALL_MODE`（默认 `if-missing`，sentinel 为 `.venv\.deps-ready`，行为对齐 WSL 脚本）。
-> 说明：如果你之前从早期版本拉取过 `.venv-wsl/` 进入 git，执行一次 `git rm -r --cached .venv-wsl` 把它从索引里清出（文件保留在磁盘，sentinel 不会丢失）。`.venv-wsl/` 已加入 `.gitignore`，新检出无需此步。
+> 说明：`ARL_WSL_INSTALL_MODE` 默认 `if-missing`，仅首次安装依赖；如需每次启动都重装，设置为 `always`。
 
 ### 3) 录制完成后的后处理顺序（按需手动执行）
 
