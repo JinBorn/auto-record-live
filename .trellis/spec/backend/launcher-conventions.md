@@ -29,7 +29,7 @@ follow the established symmetric shape:
 
 | Concern | WSL bash convention | Windows PowerShell convention |
 |---|---|---|
-| Pip availability probe | `if ! "$VENV_PYTHON" -m pip --version >/dev/null 2>&1; then "$VENV_PYTHON" -m ensurepip --upgrade; fi` | `& $venvPython -m pip --version *> $null; if ($LASTEXITCODE -ne 0) { & $venvPython -m ensurepip --upgrade }` |
+| Pip availability probe | `if ! "$VENV_PYTHON" -m pip --version >/dev/null 2>&1; then "$VENV_PYTHON" -m ensurepip --upgrade; fi` | `try { & $venvPython -m pip --version *> $null; if ($LASTEXITCODE -eq 0) { $pipOk = $true } } catch { $pipOk = $false }` then `ensurepip --upgrade` if `-not $pipOk`. The try/catch is mandatory; see "Common Mistake" below. |
 | Env var | `ARL_WSL_INSTALL_MODE` | `ARL_WIN_INSTALL_MODE` |
 | Default value | `if-missing` | `if-missing` |
 | `always` semantics | force reinstall every run | force reinstall every run |
@@ -42,7 +42,7 @@ Reference implementations:
 
 - `scripts/wsl-orchestrator.sh:7-8,24-26,28-31`
 - `scripts/wsl-recorder-loop.sh:8-9,25-27,29-32`
-- `scripts/windows-agent-loop.ps1:47-56,58-67,78`
+- `scripts/windows-agent-loop.ps1:47-68,70-79,90`
 
 When you change one side (e.g. add a new `install-mode` value, change the
 sentinel filename, rename an env var), you MUST change all three scripts in
@@ -133,6 +133,44 @@ New-Item -ItemType File -Path $depsReady -Force | Out-Null
 treat every `&` (call operator) on a native exe as needing an explicit
 `$LASTEXITCODE` check before any side effect that depends on its success
 (sentinel writes, downstream installs, env var exports).
+
+### Common Mistake: PowerShell `$ErrorActionPreference = "Stop"` DOES promote native-exe stderr into a terminating error
+
+**Symptom**: A native-exe probe like `& $venvPython -m pip --version *> $null`
+aborts the entire script with `NativeCommandError` / `RemoteException` even
+though the redirect is supposed to swallow stderr. The `if ($LASTEXITCODE
+-ne 0) { ... }` recovery branch immediately after never runs because the
+script already terminated.
+
+**Cause**: This is the *opposite* gotcha to the previous one and easy to
+conflate. PowerShell intercepts whatever a native command writes to stderr
+and surfaces it as a `NativeCommandError`. Under `$ErrorActionPreference =
+"Stop"` (and worse on PowerShell 7.2+ with `$PSNativeCommandUseErrorActionPreference
+= $true`) that error is promoted into a terminating exception **before** the
+`*> $null` redirect takes effect. Stop does not propagate native exit codes
+(see prior mistake) but it DOES propagate native stderr.
+
+**Fix**: Wrap any probe of a possibly-broken native exe in `try`/`catch` so
+the terminating error is caught at the right boundary. Inspect
+`$LASTEXITCODE` inside the `try` block; treat any catch as the failure case.
+
+```powershell
+$pipOk = $false
+try {
+  & $venvPython -m pip --version *> $null
+  if ($LASTEXITCODE -eq 0) { $pipOk = $true }
+} catch {
+  $pipOk = $false
+}
+if (-not $pipOk) { ... recovery ... }
+```
+
+**Prevention**: For any native-exe call where you *expect* failure to be
+recoverable (probes, capability detection, version sniffs, dry-runs), wrap
+in `try`/`catch`. The unwrapped `& cmd *> $null; if ($LASTEXITCODE) {...}`
+form is only safe when the cmd is guaranteed not to write to stderr on
+failure — which is rare. Bash's `>/dev/null 2>&1` does not have this
+asymmetry; do not assume porting it to `*> $null` preserves semantics.
 
 ### Common Mistake: WSL launcher updated, Windows launcher silently drifts
 
