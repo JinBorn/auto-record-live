@@ -617,3 +617,36 @@ Closed the WSL/Windows launcher asymmetry that bit at runtime: a fresh Windows v
 ### Next Steps
 
 - None - task complete
+
+
+## Session 20: Migrate to Pure-Windows: brainstorm + PR1 launchers + handoff
+
+**Date**: 2026-05-04
+**Task**: Migrate to Pure-Windows: brainstorm + PR1 launchers + handoff
+**Branch**: `feat/migrate-pure-windows-pr1`
+
+### Summary
+
+Brainstormed pure-Windows migration (hard cut-over, 3 separate PowerShell launchers, winget for deps); produced full PRD + WSL reference scan + smoke test checklist. Implemented PR1 inline (sub-agents 500/400 entire session): scripts/windows-orchestrator-loop.ps1 + windows-recorder-loop.ps1 mirroring wsl-*.sh source, single shared .venv, ARL_WIN_INSTALL_MODE, try/catch pip probe per launcher-conventions, .env parser explicit UTF-8 for zh-CN ARL_STREAMER_NAME. PR1 pushed to feat/migrate-pure-windows-pr1; PR2 (doc rewrite) and PR3 (delete WSL artifacts) pending Windows smoke test. Updated PRD with Progress + Handoff sections so next session on Windows host can resume cleanly: task active state needs task.py start re-run since runtime is session-scoped.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `75ff870` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

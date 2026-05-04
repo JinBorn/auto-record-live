@@ -4,6 +4,64 @@
 
 把 `auto-record-live` 从"Windows 探测 + WSL2 编排/录制/字幕/导出"的混合架构，迁移成 **单一原生 Windows 运行时**，消除 Windows ↔ WSL 跨文件系统的 9P/SMB IO 开销。迁移后所有阶段都在 Windows 一个 venv 里跑：Playwright 抖音探测 → orchestrator → ffmpeg 录制 → segmenter → faster-whisper 字幕 → exporter。
 
+## Progress
+
+| PR | 状态 | 提交 / 分支 | 备注 |
+|---|---|---|---|
+| **PR1** Launcher 移植 | ✅ Implementation done, ⏳ awaiting Windows smoke test | branch `feat/migrate-pure-windows-pr1`，commit `75ff870` | 新增 `scripts/windows-orchestrator-loop.ps1` + `windows-recorder-loop.ps1`；冒烟 checklist 见 `research/pr1-smoke-test.md` |
+| **PR2** Doc / Spec 重写 | ⬜ Not started | — | 待 PR1 冒烟通过；punch list 见 `research/wsl-reference-scan.md` |
+| **PR3** 删除 WSL 工件 | ⬜ Not started | — | `git rm scripts/wsl-*.sh` + `.gitignore` 单行 + egg-info 重建 |
+
+**子代理基础设施全程不可用**：当前 session 的 trellis-research × 2、trellis-implement × 1 均 500/400，所有研究 + 实现均在主线程内手工完成（仍然按 spec 走 launcher-conventions / logging-guidelines）。下一 session 在 Windows 上若 sub-agent 可用，可正常派发。
+
+## Handoff — Continuing on Windows host
+
+**触发场景**：开发主机从 WSL 切换为原生 Windows（`D:\` 拉一份新仓库，Claude Code 直接在 Windows 跑）。
+
+### 1. Windows 那边一次性准备
+
+```powershell
+# 安装三件套（如未装）
+winget install Python.Python.3.12
+winget install OpenJS.NodeJS.LTS
+winget install Gyan.FFmpeg
+
+# 拉仓库（避开 OneDrive 同步路径）
+cd D:\
+git clone git@github.com:JinBorn/auto-record-live.git
+cd auto-record-live
+git fetch origin
+git checkout feat/migrate-pure-windows-pr1
+```
+
+### 2. 跑 PR1 冒烟
+
+跟 `.trellis/tasks/05-04-migrate-to-pure-windows/research/pr1-smoke-test.md` 走完 5 个相 A→E。每相要打勾的项都列出来了。
+
+### 3. Claude Code 重新激活 Trellis 任务
+
+新 session 在 Windows 上首次启动后：
+
+```powershell
+python ./.trellis/scripts/task.py current --source
+# 大概率显示 "no active task"（session 标识不同）
+
+python ./.trellis/scripts/task.py start 05-04-migrate-to-pure-windows
+# 把任务重新绑到当前 session
+```
+
+任务内的 `prd.md` / `research/*.md` / `implement.jsonl` / `check.jsonl` 都会跟着分支被 checkout 出来，新 session 一上手就能看见全部上下文。
+
+### 4. 冒烟通过后继续 PR2
+
+在 Windows 主线程里告诉 Claude "PR1 通过了，继续 PR2"。PR2 的工作清单已经在 `research/wsl-reference-scan.md` 列好（按文件、按行号），直接按表执行。
+
+### 5. 如果冒烟踩坑
+
+把失败 `[ARL]` 行 + 完整 PowerShell 报错 + `.\.venv\Scripts\python.exe --version` 输出贴回来，新 session 在同一分支上修，再 push。
+
+---
+
 ## Requirements
 
 **Launcher 重构（核心）**
