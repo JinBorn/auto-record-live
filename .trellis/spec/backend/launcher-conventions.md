@@ -1,53 +1,60 @@
 # Launcher Conventions
 
-> Conventions for the small bash and PowerShell launcher scripts under `scripts/`
-> that bootstrap the WSL orchestrator/recorder loops and the Windows agent
-> loop. Not for `src/arl/...` business logic.
+> Conventions for the three PowerShell launcher scripts under `scripts/`
+> that bootstrap the agent / orchestrator / recorder polling loops on
+> Windows. Not for `src/arl/...` business logic.
+
+> **Migration note (2026-05-04)**: this spec was originally structured around
+> WSL bash + Windows PowerShell parity. The runtime migrated to pure Windows;
+> the bash side is gone. See
+> `.trellis/tasks/archive/2026-05/05-04-migrate-to-pure-windows/prd.md` for
+> the migration ADR (path reflects post-archive location).
 
 ---
 
 ## Overview
 
-The repo currently has three launcher scripts:
+The repo has three PowerShell launcher scripts under `scripts/`:
 
-- `scripts/wsl-orchestrator.sh` — WSL orchestrator one-shot wrapper
-- `scripts/wsl-recorder-loop.sh` — WSL recorder polling loop
-- `scripts/windows-agent-loop.ps1` — Windows agent polling loop
+- `scripts/windows-agent-loop.ps1` — Windows agent polling loop (Playwright Douyin probe)
+- `scripts/windows-orchestrator-loop.ps1` — orchestrator wrapper (delegates polling to the daemon's internal loop)
+- `scripts/windows-recorder-loop.ps1` — recorder polling loop (drives single-pass `arl.cli recorder` invocations + supervises restart on crash)
 
 They share a small surface area (env-var-driven install mode, sentinel-gated
-dependency bootstrap, `[ARL] ...` log lines) that must stay in lockstep across
-runtimes. This document captures the conventions and the pitfalls already hit.
+dependency bootstrap, `[ARL] ...` log lines) that must stay aligned across
+all three. This document captures the conventions and the pitfalls already hit.
 
 ---
 
 ## Required Patterns
 
-### Cross-runtime parity for install-mode bootstrap
+### Install-mode bootstrap parity across launchers
 
 When a launcher needs to decide whether to run `pip install -e .`, it MUST
-follow the established symmetric shape:
+follow the established shape:
 
-| Concern | WSL bash convention | Windows PowerShell convention |
-|---|---|---|
-| Pip availability probe | `if ! "$VENV_PYTHON" -m pip --version >/dev/null 2>&1; then "$VENV_PYTHON" -m ensurepip --upgrade; fi` | `try { & $venvPython -m pip --version *> $null; if ($LASTEXITCODE -eq 0) { $pipOk = $true } } catch { $pipOk = $false }` then `ensurepip --upgrade` if `-not $pipOk`. The try/catch is mandatory; see "Common Mistake" below. |
-| Env var | `ARL_WSL_INSTALL_MODE` | `ARL_WIN_INSTALL_MODE` |
-| Default value | `if-missing` | `if-missing` |
-| `always` semantics | force reinstall every run | force reinstall every run |
-| Sentinel file | `<venv-dir>/.deps-ready` | `<venv-dir>\.deps-ready` |
-| Trigger | `mode==always` OR sentinel missing | `mode==always` OR sentinel missing |
-| Touch on success | `touch "$VENV_DIR/.deps-ready"` | `New-Item -ItemType File -Path $depsReady -Force \| Out-Null` |
-| Banner line | `echo "[ARL] install mode: $INSTALL_MODE"` | `Write-Host "[ARL] install mode: $installMode"` |
+| Concern | Convention |
+|---|---|
+| Pip availability probe | `try { & $venvPython -m pip --version *> $null; if ($LASTEXITCODE -eq 0) { $pipOk = $true } } catch { $pipOk = $false }` then `ensurepip --upgrade` if `-not $pipOk`. The try/catch is mandatory; see "Common Mistake" below. |
+| Env var | `ARL_WIN_INSTALL_MODE` |
+| Default value | `if-missing` |
+| `always` semantics | force reinstall every run |
+| Sentinel file | `<venv-dir>\.deps-ready` |
+| Trigger | `mode==always` OR sentinel missing |
+| Touch on success | `New-Item -ItemType File -Path $depsReady -Force \| Out-Null` |
+| Banner line | `Write-Host "[ARL] install mode: $installMode"` |
 
 Reference implementations:
 
-- `scripts/wsl-orchestrator.sh:7-8,24-26,28-31`
-- `scripts/wsl-recorder-loop.sh:8-9,25-27,29-32`
 - `scripts/windows-agent-loop.ps1:47-68,70-79,90`
+- `scripts/windows-orchestrator-loop.ps1:38-69`
+- `scripts/windows-recorder-loop.ps1:50-75`
 
-When you change one side (e.g. add a new `install-mode` value, change the
-sentinel filename, rename an env var), you MUST change all three scripts in
-the same task. Asymmetry between launchers silently drifts and only surfaces
-weeks later when someone tries the "other" runtime.
+When you change one launcher's bootstrap behavior (e.g. add a new
+`install-mode` value, change the sentinel filename, rename an env var), you
+MUST mirror the change in the other two PowerShell launchers in the same
+task. Asymmetry between launchers silently drifts and only surfaces weeks
+later when an operator switches to the "other" window.
 
 ### `.deps-ready` sentinel file lifecycle
 
@@ -56,10 +63,10 @@ weeks later when someone tries the "other" runtime.
   A failed install MUST NOT leave a sentinel behind, otherwise the next run
   thinks the venv is ready and skips the retry.
 - Sentinel is never proactively invalidated by the launcher itself. If
-  `pyproject.toml` changes, operators set `ARL_*_INSTALL_MODE=always` for one
-  run, or delete the sentinel manually. (Hash-based invalidation is a
+  `pyproject.toml` changes, operators set `ARL_WIN_INSTALL_MODE=always` for
+  one run, or delete the sentinel manually. (Hash-based invalidation is a
   deliberate non-goal — see the deferred Option B in
-  `.trellis/tasks/05-01-optimize-wsl-startup/prd.md`.)
+  `.trellis/tasks/archive/2026-05/05-01-optimize-wsl-startup/prd.md`.)
 
 ### Logging shape
 
@@ -73,17 +80,16 @@ All launcher script output MUST conform to
 - No multi-line dumps. No secret URLs / cookies / tokens (see "What NOT to
   Log" in logging-guidelines).
 
-### `.venv*` directories never go in git
+### `.venv` directory never goes in git
 
-Both `.venv/` and `.venv-wsl/` are listed in `.gitignore`. Any new venv
-variant added in the future MUST be added there in the same commit that
-introduces it.
+`.venv/` is listed in `.gitignore`. Any new venv variant added in the
+future MUST be added there in the same commit that introduces it.
 
 Why: editable installs rewrite `__editable__.*.pth`, `RECORD`, `direct_url.json`,
-and shebangs in `bin/` whenever the project path or `pyproject.toml` changes.
+and shebangs in `Scripts/` whenever the project path or `pyproject.toml` changes.
 A tracked venv → every checkout produces a "dirty" working tree → defeats the
 sentinel by invalidating the venv binaries on disk. (This was the original
-trigger for task `05-01-optimize-wsl-startup`.)
+trigger for task `archive/2026-05/05-01-optimize-wsl-startup`.)
 
 If a legacy checkout already has a venv tracked, the recovery is one-time:
 `git rm -r --cached <venv-dir>` (files preserved on disk, sentinel intact).
@@ -172,24 +178,25 @@ form is only safe when the cmd is guaranteed not to write to stderr on
 failure — which is rare. Bash's `>/dev/null 2>&1` does not have this
 asymmetry; do not assume porting it to `*> $null` preserves semantics.
 
-### Common Mistake: WSL launcher updated, Windows launcher silently drifts
+### Common Mistake: One PowerShell launcher updated, peer scripts silently drift
 
-**Symptom**: Operator switches from WSL terminal to Windows terminal (or
-vice versa) and finds the install behavior subtly different — full reinstall
-every loop, or stale dependencies, or unexpected env-var name.
+**Symptom**: Operator runs the three PowerShell windows and finds the
+install behavior subtly different across them — full reinstall in one
+window every loop, or stale dependencies in another, or unexpected env-var
+name in a third.
 
-**Cause**: A previous task changed one side's launcher (e.g. added the
-`if-missing` shortcut to the WSL scripts) without mirroring the change to
-the other side, because the two scripts are not generated from a shared
-template.
+**Cause**: A previous task changed one launcher (e.g. added the
+`if-missing` shortcut to `windows-agent-loop.ps1`) without mirroring the
+change to its peers, because the three scripts are not generated from a
+shared template.
 
-**Fix**: Update all three launchers in the same task. Add a comment on the
-PowerShell side cross-referencing the bash source-of-truth (e.g.
-`# Mirrors ARL_WSL_INSTALL_MODE in scripts/wsl-orchestrator.sh`).
+**Fix**: Update all three launchers in the same task. Add a comment on
+each cross-referencing one peer (e.g.
+`# Mirrors ARL_WIN_INSTALL_MODE handling in scripts/windows-orchestrator-loop.ps1`).
 
 **Prevention**: When reviewing launcher diffs, search for every
-`scripts/{wsl,windows}-*` file touched and verify the env-var name shape,
-default value, sentinel name, and trigger condition match across runtimes.
+`scripts/windows-*-loop.ps1` file touched and verify the env-var name shape,
+default value, sentinel name, and trigger condition match across all three.
 The "Required Patterns" table above is the canonical alignment reference.
 
 ---
@@ -197,7 +204,7 @@ The "Required Patterns" table above is the canonical alignment reference.
 ## Out of Scope (for this spec)
 
 - Replacing venv-based bootstrap with `uv` / `pdm` / `poetry`.
-- A unified `wsl-fast.sh` / `windows-fast.ps1` entrypoint.
+- A unified `windows-fast.ps1` master entrypoint that wraps all three loops.
 - Lockfile-hash-based sentinel invalidation.
 - npm-side install-mode gating (currently `npm install` only runs when
   `node_modules/` is absent — see `windows-agent-loop.ps1:57-59`).

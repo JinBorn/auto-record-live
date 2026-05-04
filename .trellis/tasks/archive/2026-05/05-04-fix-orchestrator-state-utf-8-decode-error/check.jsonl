@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "Verify the new UTF-8 encoding contract is recorded in the spec and referenced consistently."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify the new forbidden pattern (bare read_text/write_text on durable state files) and the locale-default-encoding common mistake are added; verify code change complies."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Verify encoding parity across all state stores (recorder/exporter/recovery/subtitles/segmenter/windows_agent + the fixed orchestrator) and that no bare read_text/write_text remains on JSON state files."}

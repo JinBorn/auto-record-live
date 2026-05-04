@@ -17,7 +17,7 @@ if ([string]::IsNullOrWhiteSpace($ProjectPath)) {
 }
 
 if (!(Test-Path $ProjectPath)) {
-  throw "Project path not found: $ProjectPath`nHint: pass -ProjectPath explicitly, e.g. \\wsl$\Ubuntu\www\auto-record-live"
+  throw "Project path not found: $ProjectPath`nHint: pass -ProjectPath explicitly, e.g. C:\auto-record-live"
 }
 Set-Location $ProjectPath
 
@@ -44,7 +44,8 @@ if (!(Get-Command npm -ErrorAction SilentlyContinue)) {
   throw "npm not found. Install Node.js and ensure npm is available in PATH."
 }
 
-# Mirrors scripts/wsl-orchestrator.sh:24-26: a venv created without working
+# Mirrors the pip-probe + ensurepip recovery in scripts/windows-orchestrator-loop.ps1
+# and scripts/windows-recorder-loop.ps1: a venv created without working
 # pip (some Windows Python distributions ship ensurepip data that fails to
 # bootstrap on first venv creation) is recovered via `ensurepip --upgrade`
 # before any pip-driven install runs.
@@ -67,7 +68,8 @@ if (-not $pipOk) {
   if ($LASTEXITCODE -ne 0) { throw "python -m ensurepip --upgrade failed (exit $LASTEXITCODE)" }
 }
 
-# Mirrors ARL_WSL_INSTALL_MODE in scripts/wsl-orchestrator.sh: if-missing skips
+# Mirrors ARL_WIN_INSTALL_MODE in scripts/windows-orchestrator-loop.ps1 and
+# scripts/windows-recorder-loop.ps1: if-missing skips
 # `pip install -e .` when the .deps-ready sentinel is present; always forces it.
 $installMode = if ($env:ARL_WIN_INSTALL_MODE) { $env:ARL_WIN_INSTALL_MODE } else { "if-missing" }
 $depsReady = Join-Path $ProjectPath ".venv\.deps-ready"

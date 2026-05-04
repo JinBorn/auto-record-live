@@ -7,7 +7,7 @@ Resume work on the current task — pick up at the right phase/step in `.trellis
 ## Step 1: Load Current Context
 
 ```bash
-python3 ./.trellis/scripts/get_context.py
+python ./.trellis/scripts/get_context.py
 ```
 
 Confirms: current task, git state, recent commits.
@@ -15,18 +15,22 @@ Confirms: current task, git state, recent commits.
 ## Step 2: Load the Phase Index
 
 ```bash
-python3 ./.trellis/scripts/get_context.py --mode phase
+python ./.trellis/scripts/get_context.py --mode phase
 ```
 
 Shows the Phase Index (Plan / Execute / Finish) with routing + skill mapping.
 
 ## Step 3: Decide Where You Are
 
-Compare the task's `prd.md` + recent activity against the Phase Index:
+`get_context.py` shows the active task's `status` field. Route by `status` + artifact presence:
 
-- No `prd.md` yet, or requirements unclear → **Phase 1: Plan** (start at step 1.0/1.1)
-- `prd.md` exists + context configured, but code not written → **Phase 2: Execute** (step 2.1)
-- Code written, pending final quality gate → **Phase 3: Finish** (step 3.1)
+- `status=planning` + no `prd.md` → **1.1** (load `trellis-brainstorm`)
+- `status=planning` + `prd.md` exists + `implement.jsonl` not curated (only the seed `_example` row) → **1.3**
+- `status=planning` + `prd.md` + curated `implement.jsonl` → **1.4** (run `task.py start` to enter Phase 2)
+- `status=in_progress` + implementation not started → **2.1**
+- `status=in_progress` + implementation done, not yet checked → **2.2**
+- `status=in_progress` + check passed → **3.1**
+- `status=completed` (rare; usually archived immediately) → archive flow
 
 Phase rules (full detail in `.trellis/workflow.md`):
 
@@ -39,7 +43,7 @@ Phase rules (full detail in `.trellis/workflow.md`):
 Once you know which step to resume at:
 
 ```bash
-python3 ./.trellis/scripts/get_context.py --mode phase --step <X.X> --platform claude
+python ./.trellis/scripts/get_context.py --mode phase --step <X.X> --platform claude
 ```
 
 Follow the loaded instructions. After each `[required]` step completes, move to the next.

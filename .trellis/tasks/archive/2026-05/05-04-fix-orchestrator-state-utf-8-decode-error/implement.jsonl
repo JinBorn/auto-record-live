@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "Durable state-file path contracts for orchestrator-state.json; need to extend with explicit UTF-8 encoding requirement for all state stores."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Forbidden Patterns section should add bare read_text/write_text on state/event JSON files; Common Mistakes should record the locale-default-encoding pitfall."}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "File-backed persistence guardrails; encoding policy belongs to the persistence contract surface."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "All other state stores (recorder/exporter/recovery/subtitles/segmenter/windows_agent) already use explicit UTF-8 — orchestrator must match the existing pattern; reinforces 'search first / mirror existing pattern' habit."}

@@ -19,17 +19,21 @@ This file documents current persistence reality and migration guardrails for int
   - `OrchestratorStateStore.load()` reading `orchestrator-state.json`
   - `WindowsAgentStateStore.load()` reading `windows-agent-state.json`
 - Current writes are either:
-  - full-state JSON snapshots (`state_path.write_text(...)`)
-  - append-only JSONL events (`open(..., "a")`)
+  - full-state JSON snapshots (`state_path.write_text(..., encoding="utf-8")`)
+  - append-only JSONL events (`open(..., "a", encoding="utf-8")`)
 - Do not introduce ad hoc partial updates against state files.
 - Always round-trip through typed models when reading persisted state.
+- All durable state files (`*-state.json`) and event/audit JSONL files must be read and written using explicit `encoding="utf-8"`. See the matching forbidden-pattern entry in `quality-guidelines.md`.
 
 ### Example (Current Pattern)
 
 ```python
 if not self.state_path.exists():
     return OrchestratorStateFile()
-return OrchestratorStateFile.model_validate_json(self.state_path.read_text())
+raw = self.state_path.read_text(encoding="utf-8")
+if not raw.strip():
+    return OrchestratorStateFile()
+return OrchestratorStateFile.model_validate_json(raw)
 ```
 
 ---

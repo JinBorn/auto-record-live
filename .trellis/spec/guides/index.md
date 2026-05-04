@@ -62,6 +62,36 @@ This single habit prevents most "forgot to update X" bugs.
 
 ---
 
+## Agent Execution Discipline (CRITICAL)
+
+> **Main agent runs tasks inline. Do NOT dispatch sub-agents ("子线程", `Agent` / `Task` tool) to run task work for you.**
+
+Applies to every workflow phase — `trellis-brainstorm`, `trellis-before-dev`, `trellis-implement` semantics, `trellis-check`, `trellis-update-spec`, `trellis-break-loop`, `trellis-finish-work` — and to ad-hoc requests.
+
+### Forbidden
+
+- Spawning a sub-agent (`Agent` / `Task` tool, including `general-purpose`, `Explore`, `trellis-implement`, `trellis-check`, `Plan`) to execute steps the main agent should perform directly: reading files, running tests/lint/type-check, editing code, drafting commits, answering the user.
+- Treating sub-agents as a "context offload" mechanism for routine work. Sub-agent transcripts are opaque to the user; the main agent loses traceability of every decision the sub-agent made.
+- Wrapping a single shell command, file read, or edit in a sub-agent call.
+
+### Allowed
+
+- The main agent calls `Bash`, `Read`, `Edit`, `Write`, `Glob`, `Grep`, `WebFetch`, `WebSearch` directly.
+- `trellis-research` sub-agent dispatch is permitted **only** for research-heavy work that would otherwise burn 3+ inline `WebFetch` / `WebSearch` / `gh api` calls (per workflow-state breadcrumb). Even then, prefer 1–2 targeted inline calls when feasible.
+- A user explicitly asking the main agent to dispatch a sub-agent overrides this rule for that turn only.
+
+### Why
+
+- Sub-agents run with no shared context; their answers must be re-validated by the main agent anyway, so dispatching them for routine work doubles the cost.
+- The main agent's transcript is the single source of truth the user reviews. Sub-agent fan-out makes "trust but verify" impossible at human review speed.
+- `/trellis-check` and similar quality skills are explicitly written as a single-thread checklist — running them in the main thread keeps spec/lint/test results inline and reviewable.
+
+### Reference
+
+- Workflow-state breadcrumb (`.claude/hooks/inject-workflow-state.py` output) reinforces this: only `trellis-research` is named as an allowed dispatch target, and only for the research-heavy threshold.
+
+---
+
 ## How to Use This Directory
 
 1. **Before coding**: Skim the relevant thinking guide

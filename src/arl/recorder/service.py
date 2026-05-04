@@ -14,6 +14,7 @@ from arl.orchestrator.models import (
     RecordingJobRecord,
     RecordingJobStatus,
 )
+from arl.orchestrator.state_store import load_orchestrator_state
 from arl.recorder.models import (
     RecorderAuditEvent,
     RecorderRecoveryAction,
@@ -181,10 +182,7 @@ class RecorderService:
             log("recorder", f"manual_recovery_required={manual_recovery_marked}")
 
     def _load_orchestrator_state(self) -> OrchestratorStateFile:
-        path = self.settings.orchestrator.state_file
-        if not path.exists():
-            return OrchestratorStateFile()
-        return OrchestratorStateFile.model_validate_json(path.read_text(encoding="utf-8"))
+        return load_orchestrator_state(self.settings.orchestrator.state_file)
 
     def _load_state(self) -> RecorderStateFile:
         if not self.state_path.exists():

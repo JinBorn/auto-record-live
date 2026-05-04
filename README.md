@@ -10,17 +10,13 @@
 
 ## 架构概览
 
-运行时分层：
+运行时为单一原生 Windows 主机，三组 PowerShell 长跑进程共享同一 `.venv`：
 
-- Windows 主机：
-  - 抖音浏览器会话自动化
-  - 可选浏览器画面采集兜底
-- WSL2 Ubuntu：
-  - 编排与状态管理
-  - 录制控制
-  - 对局切分
-  - 字幕生成
-  - 导出
+- **Windows agent**：用 Playwright 探测抖音直播间状态变化，输出 `data/tmp/windows-agent-events.jsonl`
+- **Orchestrator**：消费 agent 事件，维护会话与录制任务状态，写 `data/tmp/orchestrator-state.json`
+- **Recorder**：拉起 ffmpeg 录制并写入 `data/raw/<session>/recording-source.mp4`；流不可用时优雅降级为 placeholder 资产
+
+录制完成后再依次跑离线后处理：对局切分（segmenter）、字幕（faster-whisper）、导出（exporter）。所有数据停留在原生 NTFS，无跨文件系统 IO 瓶颈。
 
 ## 仓库结构
 
@@ -59,14 +55,27 @@ src/arl/
 - `faster-whisper` 离线 ASR 的工程化加固
 - `ffmpeg` 失败场景已具备基础重试/恢复能力，但仍需生产级强化
 
+## Windows 环境准备
+
+**一键装三依赖（推荐 winget）：**
+
+```powershell
+winget install Python.Python.3.12
+winget install OpenJS.NodeJS.LTS
+winget install Gyan.FFmpeg
+```
+
+> **避坑 1（OneDrive）**：项目目录请放在本地 NTFS（如 `C:\auto-record-live` 或 `D:\auto-record-live`）。**不要**放在 OneDrive 同步目录（`C:\Users\<u>\OneDrive\...`）—— OneDrive 的同步会破坏 venv 文件锁，并污染 editable install 的 `__editable__.*.pth` / `RECORD` 文件。
+>
+> **避坑 2（Microsoft Store Python）**：避免使用 Microsoft Store 版 Python，其 `ensurepip` 可能损坏导致 venv 没有可用 pip。winget 安装的 `Python.Python.3.x` 或 [python.org](https://www.python.org/) 安装包均无此问题（launcher 自带 `try/catch + ensurepip --upgrade` 兜底，但首选避免该坑）。
+
 ## 快速开始
 
 创建虚拟环境并安装依赖：
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
 npm install
 ```
 
@@ -74,95 +83,93 @@ npm install
 
 查看命令：
 
-```bash
-arl --help
+```powershell
+.\.venv\Scripts\python.exe -m arl.cli --help
 ```
 
 执行一次 Windows agent：
 
-```bash
-.venv/bin/python -m arl.cli windows-agent --once
+```powershell
+.\.venv\Scripts\python.exe -m arl.cli windows-agent --once
 ```
 
 如需真实浏览器探测，先安装 Playwright 浏览器：
 
-```bash
+```powershell
 npx playwright install chromium
 ```
 
 设置直播间与主播信息后再测试（或写入 `.env`）：
 
-```bash
-export ARL_DOUYIN_ROOM_URL="https://live.douyin.com/<room>"
-export ARL_STREAMER_NAME="<streamer>"
-.venv/bin/python -m arl.cli windows-agent --once
+```powershell
+$env:ARL_DOUYIN_ROOM_URL = "https://live.douyin.com/<room>"
+$env:ARL_STREAMER_NAME = "<streamer>"
+.\.venv\Scripts\python.exe -m arl.cli windows-agent --once
 ```
 
 ## 录制命令执行流程（MVP）
 
 ### 1) 先做单次链路验证（建议首次必跑）
 
-```bash
-# 1. Windows 侧：探测一次，产出 windows-agent 事件
-.venv/bin/python -m arl.cli windows-agent --once
+```powershell
+# 1. Windows agent：探测一次，产出事件
+.\.venv\Scripts\python.exe -m arl.cli windows-agent --once
 
-# 2. WSL 侧：消费事件并生成/推进录制任务
-.venv-wsl/bin/python -m arl.cli orchestrator --once
+# 2. Orchestrator：消费事件并生成/推进录制任务
+.\.venv\Scripts\python.exe -m arl.cli orchestrator --once
 
-# 3. WSL 侧：执行一次录制
-.venv-wsl/bin/python -m arl.cli recorder
+# 3. Recorder：执行一次录制
+.\.venv\Scripts\python.exe -m arl.cli recorder
 ```
 
 ### 2) 再切换到常驻运行（推荐）
 
-Windows 终端（会循环执行 `windows-agent --once`）：
+打开 **三个 PowerShell 窗口**，分别跑三组 launcher：
+
+**窗口 1（agent 探测循环）：**
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "\\wsl$\Ubuntu-24.04\www\auto-record-live\scripts\windows-agent-loop.ps1" `
-    -RoomUrl "你的直播间URL" `
-    -StreamerName "主播名" `
-    -ProjectPath "\\wsl$\Ubuntu-24.04\www\auto-record-live" `
+.\scripts\windows-agent-loop.ps1 -RoomUrl "你的直播间URL" -StreamerName "主播名"
 ```
 
-WSL 终端 1（编排循环）：
+**窗口 2（orchestrator 编排循环）：**
 
-```bash
-bash scripts/wsl-orchestrator.sh /www/auto-record-live
+```powershell
+.\scripts\windows-orchestrator-loop.ps1
 ```
 
-WSL 终端 2（录制循环，每 5 秒扫描一次）：
+**窗口 3（recorder 录制循环，每 5 秒扫描一次）：**
 
-```bash
-bash scripts/wsl-recorder-loop.sh /www/auto-record-live 5
+```powershell
+.\scripts\windows-recorder-loop.ps1
 ```
 
-> 说明：WSL 脚本默认使用独立虚拟环境 `.venv-wsl`，避免与 Windows 的 `.venv` 互相污染。
-> 说明：建议把项目放在 WSL 原生目录（如 `/www/auto-record-live`），避免 `/mnt/d/...` 带来的挂载 IO 开销。
-> 说明：`windows-agent-loop.ps1` 默认会自动使用脚本所在仓库目录；也可显式传入 `-ProjectPath`（例如 `\\wsl$\Ubuntu-24.04\www\auto-record-live`）。
-> 说明：请确保 Windows 侧与 WSL 侧指向同一仓库目录（例如 WSL `/www/auto-record-live`）。
-> 说明：`ARL_WSL_INSTALL_MODE` 默认 `if-missing`，仅首次安装依赖；如需每次启动都重装，设置为 `always`。
+> 说明：三个 launcher 共享同一 `.venv`，自带 venv 自举 + `ensurepip` 兜底 + `.deps-ready` sentinel 跳过重装。第一次启动会自动 `pip install -e .`；之后启动秒级返回。
+> 说明：每个 launcher 默认用脚本所在仓库目录；也可显式传入 `-ProjectPath`（例如 `-ProjectPath "C:\auto-record-live"`）。
+> 说明：`ARL_WIN_INSTALL_MODE` 默认 `if-missing`，仅首次安装依赖；如需每次启动都强制重装，设置 `$env:ARL_WIN_INSTALL_MODE = "always"`。
+> 说明：`ARL_RECORDER_INTERVAL_SECONDS` 控制 recorder 轮询间隔（默认 5 秒），也可用 `-IntervalSeconds` 参数覆盖。
 
 ### 3) 录制完成后的后处理顺序（按需手动执行）
 
-```bash
+```powershell
 # 1. 对局切分相关（可选：自动/语义/字幕驱动信号）
-.venv-wsl/bin/python -m arl.cli stage-hints-auto
-.venv-wsl/bin/python -m arl.cli stage-hints-semantic
-.venv-wsl/bin/python -m arl.cli stage-signals-from-subtitles
+.\.venv\Scripts\python.exe -m arl.cli stage-hints-auto
+.\.venv\Scripts\python.exe -m arl.cli stage-hints-semantic
+.\.venv\Scripts\python.exe -m arl.cli stage-signals-from-subtitles
 
-# 2. 字幕
-.venv-wsl/bin/python -m arl.cli subtitles
+# 2. 字幕（首次需 pip install faster-whisper）
+.\.venv\Scripts\python.exe -m arl.cli subtitles
 
 # 3. 导出
-.venv-wsl/bin/python -m arl.cli exporter
+.\.venv\Scripts\python.exe -m arl.cli exporter
 ```
 
 ### 4) 故障恢复与排查命令
 
-```bash
-.venv-wsl/bin/python -m arl.cli recovery
-.venv-wsl/bin/python -m arl.cli recovery --list-pending
-.venv-wsl/bin/python -m arl.cli recovery --summary
+```powershell
+.\.venv\Scripts\python.exe -m arl.cli recovery
+.\.venv\Scripts\python.exe -m arl.cli recovery --list-pending
+.\.venv\Scripts\python.exe -m arl.cli recovery --summary
 ```
 
 ## 浏览器采集配置说明（ffmpeg）

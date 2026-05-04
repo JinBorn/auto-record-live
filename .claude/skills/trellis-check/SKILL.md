@@ -7,6 +7,8 @@ description: "Comprehensive quality verification: spec compliance, lint, type-ch
 
 Comprehensive quality verification for recently written code. Combines spec compliance, cross-layer safety, and pre-commit checks.
 
+> **Run inline.** The main agent must execute every step below directly with `Bash` / `Read` / `Edit` / `Grep` / `Glob`. Do **not** dispatch a sub-agent (`Agent` / `Task` tool, including `general-purpose`, `Explore`, `trellis-implement`, `trellis-check`, `Plan`) to run the checks. Only `trellis-research` may be dispatched, and only when research-heavy (3+ inline `WebFetch` / `WebSearch` / `gh api` calls would otherwise be needed). See `.trellis/spec/guides/index.md` → "Agent Execution Discipline".
+
 ---
 
 ## Step 1: Identify What Changed
@@ -19,7 +21,7 @@ git status
 ## Step 2: Read Applicable Specs
 
 ```bash
-python3 ./.trellis/scripts/get_context.py --mode packages
+python ./.trellis/scripts/get_context.py --mode packages
 ```
 
 For each changed package/layer, read the spec index and follow its **Quality Check** section:
