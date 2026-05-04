@@ -10,7 +10,7 @@
 |---|---|---|---|
 | **PR1** Launcher 移植 | ✅ Smoke test passed (Phases A–E, on Windows D:\ Python 3.14.4) | branch `feat/migrate-pure-windows-pr1`，commit `75ff870` | 新增 `scripts/windows-orchestrator-loop.ps1` + `windows-recorder-loop.ps1`；冒烟 checklist 见 `research/pr1-smoke-test.md`；smoke-test 在 D:\code\auto-record-live 跑通 (2026-05-04)，发现两处文档误差已修（recorder loop 注释 + Phase A ensurepip 期望） |
 | **PR2** Doc / Spec 重写 | ✅ Done | branch `feat/migrate-pure-windows-pr1`，commit `6a971ed` | README 改单 Windows + winget + OneDrive/Microsoft Store 警告；launcher-conventions 大重构（ADR 注 + 单 PS 列表 + WSL drift mistake 改写）；index.md 描述更新；三个 PowerShell launcher 共 9 处 wsl-*.sh 注释引用清理；punch list 见 `research/wsl-reference-scan.md` |
-| **PR3** 删除 WSL 工件 | ⬜ Not started | — | `git rm scripts/wsl-orchestrator.sh scripts/wsl-recorder-loop.sh` + `.gitignore` 删 `.venv-wsl/` + `pip install -e .` 重生 PKG-INFO；预估 5 分钟，下 session 处理 |
+| **PR3** 删除 WSL 工件 | ✅ Done | branch `feat/migrate-pure-windows-pr1`，commit `afacf61` | `git rm scripts/wsl-orchestrator.sh wsl-recorder-loop.sh`（共 86 行）+ `.gitignore` 删 `.venv-wsl/`；egg-info 已被更早的 `*.egg-info/` 全局规则覆盖（commit `5325d17`），PKG-INFO 重生无需额外操作 |
 
 **子代理基础设施全程不可用**：当前 session 的 trellis-research × 2、trellis-implement × 1 均 500/400，所有研究 + 实现均在主线程内手工完成（仍然按 spec 走 launcher-conventions / logging-guidelines）。下一 session 在 Windows 上若 sub-agent 可用，可正常派发。
 
