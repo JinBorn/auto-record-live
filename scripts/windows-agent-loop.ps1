@@ -44,7 +44,16 @@ if (!(Get-Command npm -ErrorAction SilentlyContinue)) {
   throw "npm not found. Install Node.js and ensure npm is available in PATH."
 }
 
-& $venvPython -m pip install -e .
+# Mirrors ARL_WSL_INSTALL_MODE in scripts/wsl-orchestrator.sh: if-missing skips
+# `pip install -e .` when the .deps-ready sentinel is present; always forces it.
+$installMode = if ($env:ARL_WIN_INSTALL_MODE) { $env:ARL_WIN_INSTALL_MODE } else { "if-missing" }
+$depsReady = Join-Path $ProjectPath ".venv\.deps-ready"
+
+if ($installMode -eq "always" -or -not (Test-Path $depsReady)) {
+  & $venvPython -m pip install -e .
+  if ($LASTEXITCODE -ne 0) { throw "pip install -e . failed (exit $LASTEXITCODE)" }
+  New-Item -ItemType File -Path $depsReady -Force | Out-Null
+}
 if (!(Test-Path "node_modules")) {
   npm install
 }
@@ -55,6 +64,7 @@ $env:ARL_STREAMER_NAME = $StreamerName
 Write-Host "[ARL] windows-agent loop started"
 Write-Host "[ARL] project: $ProjectPath"
 Write-Host "[ARL] venv: $venvPython"
+Write-Host "[ARL] install mode: $installMode"
 Write-Host "[ARL] room: $RoomUrl"
 Write-Host "[ARL] streamer: $StreamerName"
 Write-Host "[ARL] interval: ${IntervalSeconds}s"
