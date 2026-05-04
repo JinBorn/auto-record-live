@@ -20,6 +20,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Error Handling](./error-handling.md) | Error types, handling strategies | Partial |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | Active |
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | Active |
+| [Launcher Conventions](./launcher-conventions.md) | WSL/Windows bootstrap script parity, sentinel discipline | Active |
 
 ---
 
