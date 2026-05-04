@@ -16,8 +16,6 @@ if (!(Test-Path $ProjectPath)) {
 Set-Location $ProjectPath
 
 # === Resolve interval: param > env > default 5 ===
-# Mirrors wsl-recorder-loop.sh:5
-# `INTERVAL_SECONDS="${2:-${ARL_RECORDER_INTERVAL_SECONDS:-5}}"`.
 if ($IntervalSeconds -le 0) {
   if ($env:ARL_RECORDER_INTERVAL_SECONDS) {
     $IntervalSeconds = [int]$env:ARL_RECORDER_INTERVAL_SECONDS
@@ -75,7 +73,6 @@ if ($installMode -eq "always" -or -not (Test-Path $depsReady)) {
 }
 
 # === Pin CLI-default ARL_RECORDING_ENABLE_FFMPEG before sourcing .env ===
-# Mirrors wsl-recorder-loop.sh:34-42 semantic.
 $enableFfmpeg = if ($env:ARL_RECORDING_ENABLE_FFMPEG) { $env:ARL_RECORDING_ENABLE_FFMPEG } else { "1" }
 $env:ARL_RECORDING_ENABLE_FFMPEG = $enableFfmpeg
 
@@ -118,9 +115,9 @@ if ($ProjectPath -like "\\wsl$\*") {
 # Recorder is single-pass per call: RecorderService.run() processes existing
 # recording jobs once and exits (see src/arl/recorder/service.py — no internal
 # while loop, by design and matching README "执行一次录制" semantics). This
-# launcher loop drives the polling cadence and supervises restart on crash
-# (mirrors wsl-recorder-loop.sh:51-56). Try/catch covers the
-# NativeCommandError-promotion case (recorder writes to stderr on failure).
+# launcher loop drives the polling cadence and supervises restart on crash.
+# Try/catch covers the NativeCommandError-promotion case (recorder writes
+# to stderr on failure).
 while ($true) {
   try {
     & $venvPython -m arl.cli recorder

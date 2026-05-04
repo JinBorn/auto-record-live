@@ -69,8 +69,8 @@ if ($installMode -eq "always" -or -not (Test-Path $depsReady)) {
 }
 
 # === Pin CLI-default ARL_RECORDING_ENABLE_FFMPEG before sourcing .env ===
-# Mirrors wsl-orchestrator.sh:33-41 semantic: any pre-set ARL_RECORDING_ENABLE_FFMPEG
-# (CLI / parent shell) is authoritative even after .env supplies a default.
+# A pre-set ARL_RECORDING_ENABLE_FFMPEG (CLI / parent shell) stays authoritative
+# even after .env supplies a default.
 $enableFfmpeg = if ($env:ARL_RECORDING_ENABLE_FFMPEG) { $env:ARL_RECORDING_ENABLE_FFMPEG } else { "1" }
 $env:ARL_RECORDING_ENABLE_FFMPEG = $enableFfmpeg
 
@@ -112,7 +112,7 @@ if ($ProjectPath -like "\\wsl$\*") {
 
 # Orchestrator has its own internal poll loop driven by
 # ARL_ORCHESTRATOR_POLL_INTERVAL_SECONDS. This script does NOT wrap the call
-# in `while ($true)` — wsl-orchestrator.sh:49 uses `exec` for the same reason.
+# in `while ($true)`.
 # When the Python process exits, this script exits with the same status.
 & $venvPython -m arl.cli orchestrator
 exit $LASTEXITCODE
