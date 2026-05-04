@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify no silent drift between WSL and Windows install-mode envs; idempotent sentinel write."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Verify Write-Host/echo lines added on Windows side match the '[ARL] ...' format used by the WSL scripts."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "WSL <-> Windows agent parity is a cross-layer concern: env-var name shape, sentinel filename, default value, override semantics must line up."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Confirm reviewer that the Windows-side bootstrap reuses the established sentinel pattern instead of duplicating differently-shaped logic."}

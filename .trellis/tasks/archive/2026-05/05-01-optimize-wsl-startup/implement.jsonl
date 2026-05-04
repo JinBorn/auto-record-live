@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec entry; orient on what backend hygiene/quality docs apply to launcher scripts."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Forbidden-pattern + idempotency rules apply to the new sentinel logic in windows-agent-loop.ps1."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Existing scripts emit '[ARL] ...' lines; new echo/Write-Host lines must keep that compact, machine-greppable style."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Mandatory: mirror the existing .deps-ready sentinel pattern from wsl-orchestrator.sh:28-31 instead of inventing a new mechanism."}
