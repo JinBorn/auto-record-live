@@ -580,3 +580,40 @@ Diagnosed perceived 'WSL startup churn' as two distinct issues: (1) .venv-wsl/ w
 ### Next Steps
 
 - None - task complete
+
+
+## Session 19: Windows launcher: ensurepip resilience + NativeCommandError rollback
+
+**Date**: 2026-05-04
+**Task**: Windows launcher: ensurepip resilience + NativeCommandError rollback
+**Branch**: `main`
+
+### Summary
+
+Closed the WSL/Windows launcher asymmetry that bit at runtime: a fresh Windows venv shipping without pip aborted windows-agent-loop.ps1 with 'No module named pip'. First pass added a probe + ensurepip fallback mirroring scripts/wsl-orchestrator.sh:24-26 — but the naive '\& pip --version *> $null; if ($LASTEXITCODE) { ... }' shape aborted the script anyway because $ErrorActionPreference = Stop promotes native-exe stderr into a terminating NativeCommandError BEFORE the redirect fires (the opposite gotcha to Stop NOT propagating native exit codes). Rolled forward to wrap the probe in try/catch, routing both $LASTEXITCODE != 0 and the caught exception to the same recovery branch. Documented the new gotcha as its own Common Mistake section in launcher-conventions.md, explicitly cross-referenced to the existing exit-code section so future readers don't conflate the two mechanisms. Final small commit reverts two README lines added in the prior task (ARL_WIN_INSTALL_MODE annotation + venv-wsl cleanup recipe) per user preference. Sub-agent dispatch (trellis-implement) hit gateway 500 a third time; all implementation done inline by user override.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5d21ec7` | (see git log) |
+| `b2dd44c` | (see git log) |
+| `ba0032f` | (see git log) |
+| `cec7139` | (see git log) |
+| `06e4b29` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
