@@ -48,8 +48,20 @@ if (!(Get-Command npm -ErrorAction SilentlyContinue)) {
 # pip (some Windows Python distributions ship ensurepip data that fails to
 # bootstrap on first venv creation) is recovered via `ensurepip --upgrade`
 # before any pip-driven install runs.
-& $venvPython -m pip --version *> $null
-if ($LASTEXITCODE -ne 0) {
+#
+# The probe is wrapped in try/catch because $ErrorActionPreference = "Stop"
+# promotes native-exe stderr ("No module named pip") into a terminating
+# NativeCommandError BEFORE `*> $null` redirection takes effect, so a plain
+# `& ... *> $null; if ($LASTEXITCODE) { ... }` would abort the script
+# instead of falling through to the recovery branch.
+$pipOk = $false
+try {
+  & $venvPython -m pip --version *> $null
+  if ($LASTEXITCODE -eq 0) { $pipOk = $true }
+} catch {
+  $pipOk = $false
+}
+if (-not $pipOk) {
   Write-Host "[ARL] ensuring pip in venv"
   & $venvPython -m ensurepip --upgrade
   if ($LASTEXITCODE -ne 0) { throw "python -m ensurepip --upgrade failed (exit $LASTEXITCODE)" }
