@@ -1,0 +1,5 @@
+{"file": ".trellis/tasks/05-04-migrate-to-pure-windows/prd.md", "reason": "Acceptance criteria + Definition of Done to verify against"}
+{"file": ".trellis/tasks/05-04-migrate-to-pure-windows/research/wsl-reference-scan.md", "reason": "Completeness check — verify every listed punch-list item is addressed (no orphan WSL strings remain post-PR2/PR3)"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Code quality bar (lint, typecheck, forbidden patterns) for review of launcher PowerShell + any Python touched"}
+{"file": ".trellis/spec/backend/launcher-conventions.md", "reason": "Verify new launchers conform to install-mode bootstrap parity table, sentinel lifecycle, and PowerShell native-exe gotchas (both directions)"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Verify launcher log lines follow [ARL] one-line key:value format, no multi-line dumps, no secret URLs"}
