@@ -650,3 +650,37 @@ Brainstormed pure-Windows migration (hard cut-over, 3 separate PowerShell launch
 ### Next Steps
 
 - None - task complete
+
+
+## Session 21: Fix orchestrator state UTF-8 decode + sub-agent dispatch discipline
+
+**Date**: 2026-05-04
+**Task**: Fix orchestrator state UTF-8 decode + sub-agent dispatch discipline
+**Branch**: `feat/migrate-pure-windows-pr1`
+
+### Summary
+
+Patched OrchestratorStateStore to enforce UTF-8 read/write with one-shot legacy GBK auto-heal so recorder loop survives Chinese streamer_name on Windows zh-CN. Routed recorder service through the shared load_orchestrator_state helper. Added round-trip + GBK auto-heal + corrupt-payload tests. Documented the encoding contract (orchestration-contracts, quality-guidelines forbidden pattern + common mistake, database-guidelines example). Added Agent Execution Discipline to .trellis/spec/guides/index.md and pinned an inline-only constraint at the top of both trellis-check skill files: main agent runs task work directly, do not dispatch sub-agents (Agent/Task tool) for routine work; trellis-research is the only allowed dispatch and only for research-heavy threshold.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6eb182e` | (see git log) |
+| `aac6a18` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
