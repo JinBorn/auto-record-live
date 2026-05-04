@@ -2,6 +2,7 @@
 .venv-wsl/
 __pycache__/
 *.pyc
+*.egg-info/
 .pytest_cache/
 .mypy_cache/
 build/
@@ -13,6 +14,9 @@ data/exports/
 data/tmp/
 
 .env
+
+# Local Claude Code overrides (per-user, never committed)
+.claude/settings.local.json
 
 # Playwright
 node_modules/
