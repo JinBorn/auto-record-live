@@ -29,6 +29,7 @@ follow the established symmetric shape:
 
 | Concern | WSL bash convention | Windows PowerShell convention |
 |---|---|---|
+| Pip availability probe | `if ! "$VENV_PYTHON" -m pip --version >/dev/null 2>&1; then "$VENV_PYTHON" -m ensurepip --upgrade; fi` | `& $venvPython -m pip --version *> $null; if ($LASTEXITCODE -ne 0) { & $venvPython -m ensurepip --upgrade }` |
 | Env var | `ARL_WSL_INSTALL_MODE` | `ARL_WIN_INSTALL_MODE` |
 | Default value | `if-missing` | `if-missing` |
 | `always` semantics | force reinstall every run | force reinstall every run |
@@ -39,9 +40,9 @@ follow the established symmetric shape:
 
 Reference implementations:
 
-- `scripts/wsl-orchestrator.sh:7-8,28-31`
-- `scripts/wsl-recorder-loop.sh:8-9,29-32`
-- `scripts/windows-agent-loop.ps1:47-56,67`
+- `scripts/wsl-orchestrator.sh:7-8,24-26,28-31`
+- `scripts/wsl-recorder-loop.sh:8-9,25-27,29-32`
+- `scripts/windows-agent-loop.ps1:47-56,58-67,78`
 
 When you change one side (e.g. add a new `install-mode` value, change the
 sentinel filename, rename an env var), you MUST change all three scripts in
