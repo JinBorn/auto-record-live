@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/launcher-conventions.md", "reason": "Verify the parity table is updated and the deferred-asymmetry note is removed/reworded; confirm PS1 mirrors wsl-*.sh:24-26 in shape."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Verify the new log line is silent on the healthy path and emits exactly one '[ARL] ...' line on the recovery path."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Cross-runtime boundary parity check: probe shape, error-message wording, and stderr-suppression equivalence between bash and PS1."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Confirm the PS1 reuses the existing pattern (probe + ensurepip fallback) instead of inventing a different bootstrap mechanism."}
