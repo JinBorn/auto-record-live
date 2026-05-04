@@ -745,3 +745,37 @@ PR3 deferred to next session per user — small mechanical cleanup: `git rm scri
 - **Sub-agent infrastructure unstable in this session too** — both trellis-implement dispatches (smoke-test fixes ~3 files; PR2 rewrite ~4 files) returned 500 Panic with nil pointer dereference. Same as PRD's prior-session report. Inline fallback worked. Worth noting to project owners if pattern persists across multiple devs.
 - **`Start-Sleep` works correctly in PowerShell tool background mode**, but reading the output file at arbitrary times can show batched output that misleads "iter count vs elapsed time" math. Always use timestamped output (`ForEach-Object { "$((Get-Date).ToString('HH:mm:ss.fff')) $_" }`) for cadence verification.
 - **Python 3.14 wheel coverage is good** for this project's deps: `pydantic-core==2.46.3-cp314-win_amd64`, `faster-whisper`, all installable. PRD R8's "winget install Python.Python.3.12" recommendation could be relaxed to 3.12+ in future updates.
+
+
+## Session 22: Migrate to Pure-Windows: PR3 deletes + finish
+
+**Date**: 2026-05-05
+**Task**: Migrate to Pure-Windows: PR3 deletes + finish
+**Branch**: `feat/migrate-pure-windows-pr1`
+
+### Summary
+
+Closed out the migrate-to-pure-windows task with PR3: git rm scripts/wsl-orchestrator.sh + scripts/wsl-recorder-loop.sh (PR1's PowerShell launchers replaced them) and dropped .venv-wsl/ from .gitignore. Discovered that egg-info / PKG-INFO regen step originally planned for PR3 was no longer needed because commit 5325d17 had already added *.egg-info/ to .gitignore and untracked PKG-INFO, so PR3 collapsed from 3 steps to 2. Synced PRD Progress table (PR3 row to ✅ Done) and verified all PRD Acceptance Criteria are met. Working tree clean, branch feat/migrate-pure-windows-pr1 ready to push (now 4 commits ahead of origin including this finish-work archive commit + journal commit). Migration is complete: no WSL/Linux runtime artifacts remain in active code or docs; only ADR migration note + UNC defensive guards + archive task cross-references survive (verified by PR2's grep audit).
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `afacf61` | (see git log) |
+| `8576a23` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

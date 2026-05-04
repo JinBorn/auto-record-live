@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 21
-- **Last Active**: 2026-05-04
+- **Total Sessions**: 22
+- **Last Active**: 2026-05-05
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~686 | Active |
+| `journal-1.md` | ~781 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 22 | 2026-05-05 | Migrate to Pure-Windows: PR3 deletes + finish | `afacf61`, `8576a23` | `feat/migrate-pure-windows-pr1` |
 | 21 | 2026-05-04 | Fix orchestrator state UTF-8 decode + sub-agent dispatch discipline | `6eb182e`, `aac6a18` | `feat/migrate-pure-windows-pr1` |
 | 20 | 2026-05-04 | Migrate to Pure-Windows: brainstorm + PR1 launchers + handoff | `75ff870` | `feat/migrate-pure-windows-pr1` |
 | 19 | 2026-05-04 | Windows launcher: ensurepip resilience + NativeCommandError rollback | `5d21ec7`, `b2dd44c`, `ba0032f`, `cec7139`, `06e4b29` | `main` |
