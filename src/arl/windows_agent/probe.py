@@ -6,16 +6,20 @@ import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import ClassVar
 from urllib.parse import unquote
 
 import httpx
 
-from arl.config import Settings
+from arl.config import DouyinSettings
 from arl.shared.contracts import LiveState, SourceType
 from arl.windows_agent.models import AgentSnapshot
+from arl.windows_agent.platform_probe import PlatformProbe
 
 
-class DouyinRoomProbe:
+class DouyinRoomProbe(PlatformProbe):
+    platform_name: ClassVar[str] = "douyin"
+
     _STREAM_KEY_PATTERN = re.compile(
         r'"(?:streamUrl|stream_url|hls_pull_url|flv_pull_url|main_hls|main_flv|origin_hls|origin_flv)"\s*:\s*"([^"]+)"',
         re.IGNORECASE,
@@ -43,13 +47,13 @@ class DouyinRoomProbe:
         ".otf",
     )
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: DouyinSettings) -> None:
         self.settings = settings
 
     def detect(self) -> AgentSnapshot:
         now = datetime.now(timezone.utc)
-        room_url = self.settings.douyin.room_url
-        streamer_name = self.settings.douyin.streamer_name or "unknown-streamer"
+        room_url = self.settings.room_url
+        streamer_name = self.settings.streamer_name or "unknown-streamer"
 
         if not room_url:
             return AgentSnapshot(
@@ -64,7 +68,7 @@ class DouyinRoomProbe:
         if forced_state:
             return self._forced_snapshot(forced_state, room_url, streamer_name, now)
 
-        if self.settings.douyin.use_playwright_probe:
+        if self.settings.use_playwright_probe:
             snapshot = self._probe_with_playwright(room_url, streamer_name, now)
             if snapshot is not None and not self._should_fallback_to_http(snapshot):
                 return snapshot
@@ -159,7 +163,7 @@ class DouyinRoomProbe:
         streamer_name: str,
         now: datetime,
     ) -> AgentSnapshot | None:
-        script_path = self.settings.douyin.playwright_script
+        script_path = self.settings.playwright_script
         if not script_path.exists():
             return AgentSnapshot(
                 state=LiveState.OFFLINE,
@@ -175,9 +179,9 @@ class DouyinRoomProbe:
             "--room-url",
             room_url,
             "--profile-dir",
-            self.settings.douyin.persistent_profile_dir,
+            self.settings.persistent_profile_dir,
             "--timeout-ms",
-            str(self.settings.douyin.playwright_timeout_ms),
+            str(self.settings.playwright_timeout_ms),
             "--headless",
             "0",
         ]
@@ -190,7 +194,7 @@ class DouyinRoomProbe:
                 encoding="utf-8",
                 errors="replace",
                 cwd=Path.cwd(),
-                timeout=(self.settings.douyin.playwright_timeout_ms / 1000) + 10,
+                timeout=(self.settings.playwright_timeout_ms / 1000) + 10,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return AgentSnapshot(

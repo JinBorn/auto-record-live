@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from arl.config import DouyinSettings, Settings
+from arl.config import DouyinSettings
 from arl.shared.contracts import LiveState, SourceType
 from arl.windows_agent.probe import DouyinRoomProbe
 
@@ -20,13 +20,11 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
         script_path = root / "probe.mjs"
         script_path.write_text("// stub playwright script\n", encoding="utf-8")
 
-        self.settings = Settings(
-            douyin=DouyinSettings(
-                room_url="https://live.douyin.com/room",
-                streamer_name="streamer-a",
-                playwright_script=script_path,
-                use_playwright_probe=True,
-            )
+        self.settings = DouyinSettings(
+            room_url="https://live.douyin.com/room",
+            streamer_name="streamer-a",
+            playwright_script=script_path,
+            use_playwright_probe=True,
         )
         self.probe = DouyinRoomProbe(self.settings)
         self.now = datetime.now(timezone.utc)
@@ -48,14 +46,15 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
 
         with patch("arl.windows_agent.probe.subprocess.run", return_value=result):
             snapshot = self.probe._probe_with_playwright(
-                room_url=self.settings.douyin.room_url,
-                streamer_name=self.settings.douyin.streamer_name,
+                room_url=self.settings.room_url,
+                streamer_name=self.settings.streamer_name,
                 now=self.now,
             )
 
         self.assertEqual(snapshot.state, LiveState.LIVE)
         self.assertEqual(snapshot.source_type, SourceType.DIRECT_STREAM)
         self.assertEqual(snapshot.stream_url, "https://cdn.example/live.m3u8")
+        self.assertEqual(snapshot.platform, "douyin")
 
     def test_playwright_live_payload_without_stream_url_keeps_browser_capture(self) -> None:
         payload = (
@@ -71,8 +70,8 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
 
         with patch("arl.windows_agent.probe.subprocess.run", return_value=result):
             snapshot = self.probe._probe_with_playwright(
-                room_url=self.settings.douyin.room_url,
-                streamer_name=self.settings.douyin.streamer_name,
+                room_url=self.settings.room_url,
+                streamer_name=self.settings.streamer_name,
                 now=self.now,
             )
 
@@ -96,8 +95,8 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
 
         with patch("arl.windows_agent.probe.subprocess.run", return_value=result):
             snapshot = self.probe._probe_with_playwright(
-                room_url=self.settings.douyin.room_url,
-                streamer_name=self.settings.douyin.streamer_name,
+                room_url=self.settings.room_url,
+                streamer_name=self.settings.streamer_name,
                 now=self.now,
             )
 
@@ -115,8 +114,8 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
 
         with patch("arl.windows_agent.probe.subprocess.run", return_value=result):
             snapshot = self.probe._probe_with_playwright(
-                room_url=self.settings.douyin.room_url,
-                streamer_name=self.settings.douyin.streamer_name,
+                room_url=self.settings.room_url,
+                streamer_name=self.settings.streamer_name,
                 now=self.now,
             )
 
@@ -132,8 +131,8 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
         )
         with patch("arl.windows_agent.probe.subprocess.run", return_value=result) as run_mock:
             self.probe._probe_with_playwright(
-                room_url=self.settings.douyin.room_url,
-                streamer_name=self.settings.douyin.streamer_name,
+                room_url=self.settings.room_url,
+                streamer_name=self.settings.streamer_name,
                 now=self.now,
             )
 
@@ -155,8 +154,8 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
 
         with patch("arl.windows_agent.probe.subprocess.run", return_value=result):
             snapshot = self.probe._probe_with_playwright(
-                room_url=self.settings.douyin.room_url,
-                streamer_name=self.settings.douyin.streamer_name,
+                room_url=self.settings.room_url,
+                streamer_name=self.settings.streamer_name,
                 now=self.now,
             )
 
@@ -178,8 +177,8 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
 
         with patch("arl.windows_agent.probe.subprocess.run", return_value=result):
             snapshot = self.probe._probe_with_playwright(
-                room_url=self.settings.douyin.room_url,
-                streamer_name=self.settings.douyin.streamer_name,
+                room_url=self.settings.room_url,
+                streamer_name=self.settings.streamer_name,
                 now=self.now,
             )
 
@@ -215,8 +214,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
         self.assertEqual(snapshot.stream_url, "https://pull.example.com/live/abc.m3u8?token=1")
 
     def test_detect_http_live_marker_uses_direct_stream_when_available(self) -> None:
-        settings = self.settings.model_copy(deep=True)
-        settings.douyin.use_playwright_probe = False
+        settings = self.settings.model_copy(update={"use_playwright_probe": False})
         probe = DouyinRoomProbe(settings)
         http_response = SimpleNamespace(
             status_code=200,
@@ -235,8 +233,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
         self.assertEqual(snapshot.stream_url, "https://pull.example.com/live/room.m3u8?token=1")
 
     def test_detect_http_percent_encoded_direct_url_without_markers_is_still_live(self) -> None:
-        settings = self.settings.model_copy(deep=True)
-        settings.douyin.use_playwright_probe = False
+        settings = self.settings.model_copy(update={"use_playwright_probe": False})
         probe = DouyinRoomProbe(settings)
         http_response = SimpleNamespace(
             status_code=200,
@@ -258,8 +255,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
         )
 
     def test_detect_http_multilayer_percent_encoded_and_x_escaped_stream_url(self) -> None:
-        settings = self.settings.model_copy(deep=True)
-        settings.douyin.use_playwright_probe = False
+        settings = self.settings.model_copy(update={"use_playwright_probe": False})
         probe = DouyinRoomProbe(settings)
         http_response = SimpleNamespace(
             status_code=200,
@@ -281,8 +277,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
         )
 
     def test_detect_http_ignores_static_assets_without_live_markers(self) -> None:
-        settings = self.settings.model_copy(deep=True)
-        settings.douyin.use_playwright_probe = False
+        settings = self.settings.model_copy(update={"use_playwright_probe": False})
         probe = DouyinRoomProbe(settings)
         http_response = SimpleNamespace(
             status_code=200,
