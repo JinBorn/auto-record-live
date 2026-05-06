@@ -12,9 +12,9 @@
 
 运行时为单一原生 Windows 主机，三组 PowerShell 长跑进程共享同一 `.venv`：
 
-- **Windows agent**：用 Playwright 探测抖音直播间状态变化，输出 `data/tmp/windows-agent-events.jsonl`
+- **Windows agent**：按 `ARL_PLATFORMS` 配置串行探测各平台直播间状态（抖音走 Playwright；B 站走 anonymous HTTP API），输出 `data/tmp/windows-agent-events.jsonl`
 - **Orchestrator**：消费 agent 事件，维护会话与录制任务状态，写 `data/tmp/orchestrator-state.json`
-- **Recorder**：拉起 ffmpeg 录制并写入 `data/raw/<session>/recording-source.mp4`；流不可用时优雅降级为 placeholder 资产
+- **Recorder**：拉起 ffmpeg 录制并写入 `data/raw/<session>/recording-source.mp4`；流不可用时优雅降级为 placeholder 资产。Probe 在 `AgentSnapshot.stream_headers` 提供的平台特定 HTTP header（如 B 站要求的 `Referer`）会自动透传到 ffmpeg `-user_agent` / `-headers` 参数，recorder 自身保持平台中立。
 
 录制完成后再依次跑离线后处理：对局切分（segmenter）、字幕（faster-whisper）、导出（exporter）。所有数据停留在原生 NTFS，无跨文件系统 IO 瓶颈。
 
@@ -99,13 +99,35 @@ npm install
 npx playwright install chromium
 ```
 
-设置直播间与主播信息后再测试（或写入 `.env`）：
+设置直播间与主播信息后再测试（或写入 `.env`）。`ARL_PLATFORMS` 缺省为 `douyin`，下面示例只需设置 `ARL_DOUYIN_*` 即可走默认抖音路径；要切换或并列 B 站见下一节：
 
 ```powershell
 $env:ARL_DOUYIN_ROOM_URL = "https://live.douyin.com/<room>"
 $env:ARL_STREAMER_NAME = "<streamer>"
 .\.venv\Scripts\python.exe -m arl.cli windows-agent --once
 ```
+
+### B 站接入
+
+B 站走 anonymous HTTP API（无需 Playwright），与抖音可单独运行也可同时运行。最少配置：
+
+```powershell
+# 仅 B 站：
+$env:ARL_PLATFORMS = "bilibili"
+$env:ARL_BILIBILI_ROOM_URL = "https://live.bilibili.com/<room_id>"
+$env:ARL_BILIBILI_STREAMER_NAME = "<streamer>"
+.\.venv\Scripts\python.exe -m arl.cli windows-agent --once
+
+# 同时跑抖音 + B 站（顺序就是 polling 顺序）：
+$env:ARL_PLATFORMS = "douyin,bilibili"
+```
+
+**B 站与抖音的差异**：
+
+- **纯 HTTP API**：调 `api.live.bilibili.com/room/v1/Room/get_info` 取状态、`xlive/web-room/v2/index/getRoomPlayInfo` 取拉流 URL。无 Playwright、无 cookie、无 WBI 签名，单次探测延迟通常 < 1s。
+- **轮播识别**：B 站 `live_status==2`（轮播回放）会被映射为 `OFFLINE` + `reason=carousel_playback`，避免把循环回放误判为直播录下来。
+- **ffmpeg header 自动注入**：B 站流强制要求 `Referer: https://live.bilibili.com`，由 `BilibiliRoomProbe.stream_headers()` 返回，orchestrator 透传到 recording job，recorder 注入为 ffmpeg `-headers` / `-user_agent` 参数。无需用户配置。
+- **流 URL 时效**：`getRoomPlayInfo` 返回的 URL 含短时效 token；如果 recorder 启动延迟过长导致 token 过期失败，下一轮 30s probe 会拿到新鲜 URL，emit `live_stopped` → `live_started` 自然恢复。
 
 ## 录制命令执行流程（MVP）
 

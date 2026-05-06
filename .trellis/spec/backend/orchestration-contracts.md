@@ -24,8 +24,10 @@ class AgentSnapshot(BaseModel):
     room_url: str
     source_type: SourceType | None = None
     stream_url: str | None = None
+    stream_headers: dict[str, str] = {}  # platform-specific HTTP headers (e.g. Bilibili Referer)
     reason: str | None = None
     detected_at: datetime
+    platform: str = "douyin"  # registered key in PROBE_REGISTRY; default for back-compat
 
 class AgentEvent(BaseModel):
     event_type: str  # "live_started" | "live_stopped"
@@ -35,6 +37,17 @@ class AgentEvent(BaseModel):
 - Orchestrator input payload in `src/arl/orchestrator/models.py` must stay structurally compatible with the JSONL written by the Windows agent:
 
 ```python
+class AgentSnapshotPayload(BaseModel):
+    state: LiveState
+    streamer_name: str
+    room_url: str
+    source_type: SourceType | None = None
+    stream_url: str | None = None
+    stream_headers: dict[str, str] = {}
+    reason: str | None = None
+    detected_at: datetime
+    platform: str = "douyin"  # default lets pre-PR1 jsonl rows load cleanly
+
 class AgentEventPayload(BaseModel):
     event_type: str
     snapshot: AgentSnapshotPayload
@@ -63,6 +76,20 @@ class RecordingJobRecord(BaseModel):
     recovery_hint: str | None = None
 ```
 
+- Multi-platform routing fields in `src/arl/orchestrator/models.py`:
+
+```python
+class SessionRecord(BaseModel):
+    # ...identity and lifecycle fields...
+    platform: str = "douyin"  # propagated from AgentSnapshotPayload.platform
+    stream_headers: dict[str, str] = {}  # propagated from snapshot for downstream recorder
+
+class RecordingJobRecord(BaseModel):
+    # ...identity and lifecycle fields...
+    platform: str = "douyin"
+    stream_headers: dict[str, str] = {}  # consumed by RecorderService when invoking ffmpeg
+```
+
 - Durable file paths:
   - Windows agent event log: `data/tmp/windows-agent-events.jsonl`
   - Recorder audit event log: `data/tmp/recorder-events.jsonl`
@@ -85,6 +112,8 @@ class RecordingJobRecord(BaseModel):
 - `live_started` contract:
   - `snapshot.state` must be `live`
   - `snapshot.streamer_name`, `snapshot.room_url`, and `snapshot.detected_at` are required
+  - `snapshot.platform` may be omitted (defaults to `"douyin"` for pre-PR1 jsonl back-compat); when explicitly set it must match a registered `PROBE_REGISTRY` key (currently `"douyin"` or `"bilibili"`)
+  - `snapshot.stream_headers` may be omitted (defaults to `{}`); non-empty values are HTTP headers that must reach the recorder's ffmpeg invocation (Bilibili requires `Referer: https://live.bilibili.com`; Douyin always emits `{}`)
   - `snapshot.source_type` may be missing during degraded discovery, but should be set when known
   - `snapshot.stream_url` is optional and is used to enrich active sessions on duplicate start events
   - if `snapshot.source_type == "direct_stream"`, then `snapshot.stream_url` must be a non-empty `http(s)` URL
@@ -104,8 +133,8 @@ class RecordingJobRecord(BaseModel):
 - State lifecycle contract:
   - one active live session at a time in MVP
   - one active recording job at a time in MVP
-  - duplicate `live_started` for an active session must not create a second session or job
-  - duplicate `live_started` may enrich `stream_url` on the active session when the first event lacked it
+  - duplicate `live_started` for the same `(platform, room_url)` enriches the active session in place — must not create a second session/job, may update `stream_url` from `None` → known, and refreshes `stream_headers` from the latest snapshot (so probe-side token rotation propagates without a session restart)
+  - `live_started` from a different `(platform, room_url)` supersedes the active session — superseded session keeps `stop_reason="superseded_by_new_live_started"` and the new platform's session/job inherit `platform` + `stream_headers` from the new snapshot
   - `live_stopped` closes the active session and active recording job if they exist
   - recorder audit events may transition recording job status:
     - `recording_retry_scheduled` -> `retrying` and re-open `active_recording_job_id` to that job
@@ -117,6 +146,10 @@ class RecordingJobRecord(BaseModel):
     - `recoverable`
     - `recovery_hint`
   - successful recorder completion (`ffmpeg_record_succeeded`) must clear failure metadata fields
+  - Recorder header injection contract:
+    - `RecordingJobRecord.stream_headers` (with `SessionRecord.stream_headers` as fallback) must reach ffmpeg before `-i` as: `-user_agent <value>` for the `User-Agent` entry (case-insensitive lookup) plus `-headers "K1: V1\r\nK2: V2\r\n..."` for every other entry joined with CRLF
+    - empty `stream_headers` produces a byte-identical command to the pre-PR2 path, so Douyin recordings keep the same ffmpeg invocation
+    - the User-Agent header rides on the dedicated `-user_agent` flag (not duplicated in `-headers`) to avoid quoting/escaping ambiguity at the shell layer
   - orchestrator audit log must include recovery action routing:
     - `recording_job_recovery_retry_planned` for retry path
     - `recording_job_recovery_manual_required` for manual intervention path
@@ -135,6 +168,10 @@ class RecordingJobRecord(BaseModel):
 | Unknown `event_type` | Append audit event `ignored_unknown_event_type`; do not mutate active session/job |
 | `live_started` arrives while an active session is open | Do not create a new session/job; append duplicate audit event |
 | Duplicate `live_started` contains a new `stream_url` | Enrich active session `stream_url` before ignoring the duplicate |
+| Duplicate `live_started` arrives with a refreshed `stream_headers` dict | Replace `active_session.stream_headers` with the latest snapshot value (so probe-side token rotation reaches the recorder without a restart) |
+| `live_started` arrives for `(platform, room_url)` different from the active session | Supersede the active session with `stop_reason="superseded_by_new_live_started"`; create a new session/job inheriting `platform` + `stream_headers` from the new snapshot |
+| Snapshot carries default `platform="douyin"` with empty `stream_headers` | Recorder ffmpeg command is byte-identical to the pre-PR2 path; no `-user_agent` / `-headers` flags emitted |
+| Snapshot carries `platform="bilibili"` with non-empty `stream_headers` | Recorder ffmpeg command emits `-user_agent <UA>` + `-headers "K: V\r\n..."` before `-i`; orchestrator session and job records preserve both fields for retry runs |
 | `live_started` carries `source_type=direct_stream` but `stream_url` is empty | Treat as producer contract violation in tests; producer must emit browser-capture fallback shape instead |
 | `live_stopped` arrives with no active session | Append audit event `live_stopped_without_active_session`; do not fail |
 | Recorder event references missing `job_id` or unknown job | Append audit event and skip without crashing |
@@ -169,6 +206,20 @@ class RecordingJobRecord(BaseModel):
 - Unit test: Duplicate `live_started` is idempotent.
   - Assert exactly one active session and one recording job remain.
   - Assert `stream_url` enrichment works when the duplicate has more information.
+  - Assert `stream_headers` refresh propagates from the latest snapshot to the active session in place.
+- Unit test: cross-platform `live_started` supersedes the active session (in `tests/orchestrator/test_multi_platform.py`).
+  - Assert different `(platform, room_url)` stops the previous session with `stop_reason="superseded_by_new_live_started"` and creates a new session/job carrying the new platform's `stream_headers`.
+- Unit test: Bilibili probe API contract (in `tests/windows_agent/test_bilibili_probe.py`).
+  - Assert `live_status==1` + valid playinfo JSON maps to `LIVE` + `direct_stream` with the joined `host + base_url + extra` URL.
+  - Assert `live_status==2` (carousel) maps to `OFFLINE` with `reason="carousel_playback"`.
+  - Assert anonymous HTTP failures (network error, 4xx, negative `code` body) all return `OFFLINE` with diagnostic `reason` and never raise.
+- Unit test: recorder ffmpeg header injection (in `tests/pipeline/test_recorder_header_injection.py`).
+  - Assert non-empty `stream_headers` produces `-user_agent <UA>` + `-headers "K: V\r\n..."` before `-i`.
+  - Assert empty `stream_headers` keeps the ffmpeg command byte-identical to the pre-PR2 Douyin path (no `-user_agent` / `-headers`).
+  - Assert User-Agent lookup is case-insensitive so future probes can use lowercase keys.
+- Unit test: `PROBE_REGISTRY` wires platforms to probe classes (in `tests/windows_agent/test_registry.py`).
+  - Assert `build_probes([douyin_settings, bilibili_settings])` returns probes in the listed order, with matching `platform_name` ClassVars.
+  - Assert unregistered `PlatformSettings.type` raises `UnknownPlatformError` with the offending value plus the list of registered keys.
 - Unit test: direct-stream payload mapping contract from Playwright probe output.
   - Assert payload `{state=live, sourceType=direct_stream, streamUrl=<url>}` maps to snapshot with the same `source_type` and `stream_url`.
   - Assert payload `{state=live, sourceType=browser_capture, streamUrl=null}` keeps browser-capture fallback shape.
