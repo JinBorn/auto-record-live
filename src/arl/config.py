@@ -51,6 +51,14 @@ class DouyinSettings(PlatformSettings):
     use_playwright_probe: bool = True
 
 
+class BilibiliSettings(PlatformSettings):
+    type: str = "bilibili"
+    # Inherits room_url + streamer_name from PlatformSettings.
+    # Pure HTTP API route per research/bilibili-live-detection.md — no
+    # Playwright fields. If a future PR adds a Playwright fallback, extend
+    # this model then; do not pre-add fields BilibiliRoomProbe ignores.
+
+
 class WindowsAgentSettings(BaseModel):
     """Loop-level config for the windows-agent process.
 
@@ -171,8 +179,16 @@ def _load_douyin_settings() -> DouyinSettings:
     )
 
 
+def _load_bilibili_settings() -> BilibiliSettings:
+    return BilibiliSettings(
+        room_url=os.getenv("ARL_BILIBILI_ROOM_URL", ""),
+        streamer_name=os.getenv("ARL_BILIBILI_STREAMER_NAME", ""),
+    )
+
+
 _PLATFORM_LOADERS: dict[str, Callable[[], PlatformSettings]] = {
     "douyin": _load_douyin_settings,
+    "bilibili": _load_bilibili_settings,
 }
 
 

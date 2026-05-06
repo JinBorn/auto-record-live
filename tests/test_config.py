@@ -4,7 +4,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from arl.config import DouyinSettings, Settings, load_settings
+from arl.config import BilibiliSettings, DouyinSettings, Settings, load_settings
 
 
 class _ARLEnvIsolation:
@@ -71,6 +71,41 @@ class LoadSettingsBackwardCompatTests(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 load_settings()
         self.assertIn("not_a_real_platform", str(ctx.exception))
+
+
+class LoadSettingsBilibiliTests(unittest.TestCase):
+    def test_arl_platforms_with_bilibili_loads_bilibili_settings_from_env(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_PLATFORMS"] = "bilibili"
+            os.environ["ARL_BILIBILI_ROOM_URL"] = "https://live.bilibili.com/12345"
+            os.environ["ARL_BILIBILI_STREAMER_NAME"] = "bili-streamer"
+            settings = load_settings()
+
+        self.assertEqual(len(settings.platforms), 1)
+        platform = settings.platforms[0]
+        self.assertIsInstance(platform, BilibiliSettings)
+        self.assertEqual(platform.type, "bilibili")
+        self.assertEqual(platform.room_url, "https://live.bilibili.com/12345")
+        self.assertEqual(platform.streamer_name, "bili-streamer")
+
+    def test_arl_platforms_dual_loads_both_in_listed_order(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_PLATFORMS"] = "douyin,bilibili"
+            os.environ["ARL_DOUYIN_ROOM_URL"] = "https://live.douyin.com/123"
+            os.environ["ARL_BILIBILI_ROOM_URL"] = "https://live.bilibili.com/12345"
+            settings = load_settings()
+
+        self.assertEqual(len(settings.platforms), 2)
+        self.assertIsInstance(settings.platforms[0], DouyinSettings)
+        self.assertIsInstance(settings.platforms[1], BilibiliSettings)
+        # Reverse order also works.
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_PLATFORMS"] = "bilibili,douyin"
+            os.environ["ARL_DOUYIN_ROOM_URL"] = "https://live.douyin.com/123"
+            os.environ["ARL_BILIBILI_ROOM_URL"] = "https://live.bilibili.com/12345"
+            settings = load_settings()
+        self.assertIsInstance(settings.platforms[0], BilibiliSettings)
+        self.assertIsInstance(settings.platforms[1], DouyinSettings)
 
 
 class SettingsValidatorTests(unittest.TestCase):

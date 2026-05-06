@@ -142,8 +142,8 @@ class OrchestratorService:
         if active_session is not None and active_session.ended_at is None:
             # Different streamer/room means the previous live session became stale.
             if (
-                active_session.room_url != snapshot.room_url
-                or active_session.streamer_name != snapshot.streamer_name
+                active_session.platform != snapshot.platform
+                or active_session.room_url != snapshot.room_url
             ):
                 active_session.ended_at = snapshot.detected_at
                 active_session.status = SessionStatus.STOPPED
@@ -152,6 +152,7 @@ class OrchestratorService:
                     "session_replaced_by_new_live_started",
                     session_id=active_session.session_id,
                     message=(
+                        f"next_platform={snapshot.platform} "
                         f"next_streamer={snapshot.streamer_name} "
                         f"next_room={snapshot.room_url}"
                     ),
@@ -191,6 +192,11 @@ class OrchestratorService:
                     session_id=active_session.session_id,
                     message="updated stream_url from duplicate live_started event",
                 )
+            if not lock_browser_capture and snapshot.stream_headers:
+                # Always pick up the latest headers from the snapshot — they
+                # may carry refreshed tokens (e.g. B 站 stream URL token rotation
+                # via probe ↔ recorder feedback in a future PR).
+                active_session.stream_headers = dict(snapshot.stream_headers)
             active_job = self._active_job(state)
             if (
                 active_job is not None
@@ -205,6 +211,8 @@ class OrchestratorService:
             ):
                 active_job.stream_url = snapshot.stream_url
                 active_job.source_type = snapshot.source_type
+                if snapshot.stream_headers:
+                    active_job.stream_headers = dict(snapshot.stream_headers)
                 self.state_store.append_audit(
                     "active_recording_job_enriched",
                     session_id=active_job.session_id,
@@ -236,11 +244,15 @@ class OrchestratorService:
                 if snapshot.stream_url is not None:
                     active_session.stream_url = snapshot.stream_url
                     active_session.source_type = snapshot.source_type
+                if snapshot.stream_headers:
+                    active_session.stream_headers = dict(snapshot.stream_headers)
                 job = self._create_recording_job(
                     state=state,
                     session_id=active_session.session_id,
+                    platform=active_session.platform,
                     source_type=snapshot.source_type,
                     stream_url=snapshot.stream_url,
+                    stream_headers=dict(active_session.stream_headers),
                     created_at=snapshot.detected_at,
                 )
                 self.state_store.append_audit(
@@ -256,8 +268,10 @@ class OrchestratorService:
             session_id=session_id,
             streamer_name=snapshot.streamer_name,
             room_url=snapshot.room_url,
+            platform=snapshot.platform,
             source_type=snapshot.source_type,
             stream_url=snapshot.stream_url,
+            stream_headers=dict(snapshot.stream_headers),
             status=SessionStatus.LIVE,
             started_at=snapshot.detected_at,
         )
@@ -266,26 +280,29 @@ class OrchestratorService:
         self.state_store.append_audit(
             "session_started",
             session_id=session_id,
-            message=f"streamer={snapshot.streamer_name}",
+            message=f"platform={snapshot.platform} streamer={snapshot.streamer_name}",
         )
         log(
             "orchestrator",
-            f"session started session_id={session_id} source={session.source_type or 'none'}",
+            f"session started session_id={session_id} platform={snapshot.platform} "
+            f"source={session.source_type or 'none'}",
         )
 
         if self.settings.orchestrator.auto_create_recording_job:
             job = self._create_recording_job(
                 state=state,
                 session_id=session_id,
+                platform=snapshot.platform,
                 source_type=snapshot.source_type,
                 stream_url=snapshot.stream_url,
+                stream_headers=dict(snapshot.stream_headers),
                 created_at=snapshot.detected_at,
             )
             self.state_store.append_audit(
                 "recording_job_created",
                 session_id=session_id,
                 job_id=job.job_id,
-                message=f"source={job.source_type or 'none'}",
+                message=f"platform={snapshot.platform} source={job.source_type or 'none'}",
             )
             log(
                 "orchestrator",
@@ -297,16 +314,20 @@ class OrchestratorService:
         *,
         state: OrchestratorStateFile,
         session_id: str,
+        platform: str,
         source_type,
         stream_url: str | None,
+        stream_headers: dict[str, str],
         created_at: datetime,
     ) -> RecordingJobRecord:
         job_id = self._build_id("recording", created_at)
         job = RecordingJobRecord(
             job_id=job_id,
             session_id=session_id,
+            platform=platform,
             source_type=source_type,
             stream_url=stream_url,
+            stream_headers=stream_headers,
             status=RecordingJobStatus.QUEUED,
             created_at=created_at,
         )

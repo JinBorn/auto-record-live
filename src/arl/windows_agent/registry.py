@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from arl.config import PlatformSettings
+from arl.windows_agent.bilibili_probe import BilibiliRoomProbe
 from arl.windows_agent.platform_probe import PlatformProbe
 from arl.windows_agent.probe import DouyinRoomProbe
 
 PROBE_REGISTRY: dict[str, type[PlatformProbe]] = {
     "douyin": DouyinRoomProbe,
+    "bilibili": BilibiliRoomProbe,
 }
 
 

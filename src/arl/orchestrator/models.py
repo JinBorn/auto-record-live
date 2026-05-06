@@ -27,8 +27,10 @@ class AgentSnapshotPayload(BaseModel):
     room_url: str
     source_type: SourceType | None = None
     stream_url: str | None = None
+    stream_headers: dict[str, str] = Field(default_factory=dict)
     reason: str | None = None
     detected_at: datetime
+    platform: str = "douyin"
 
 
 class AgentEventPayload(BaseModel):
@@ -68,8 +70,10 @@ class SessionRecord(BaseModel):
     session_id: str
     streamer_name: str
     room_url: str
+    platform: str = "douyin"
     source_type: SourceType | None = None
     stream_url: str | None = None
+    stream_headers: dict[str, str] = Field(default_factory=dict)
     status: SessionStatus
     started_at: datetime
     ended_at: datetime | None = None
@@ -79,8 +83,10 @@ class SessionRecord(BaseModel):
 class RecordingJobRecord(BaseModel):
     job_id: str
     session_id: str
+    platform: str = "douyin"
     source_type: SourceType | None = None
     stream_url: str | None = None
+    stream_headers: dict[str, str] = Field(default_factory=dict)
     status: RecordingJobStatus
     created_at: datetime
     ended_at: datetime | None = None

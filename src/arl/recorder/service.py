@@ -68,6 +68,7 @@ class RecorderService:
 
             source_type = job.source_type or session.source_type or SourceType.BROWSER_CAPTURE
             stream_url = job.stream_url or session.stream_url
+            stream_headers = job.stream_headers or session.stream_headers
             if job.status == RecordingJobStatus.FAILED:
                 recorder_state.retry_attempts_by_job_id.pop(job.job_id, None)
                 if job.job_id not in recorder_state.manual_required_job_ids:
@@ -128,6 +129,7 @@ class RecorderService:
                 job_id=job.job_id,
                 source_type=source_type,
                 stream_url=stream_url,
+                stream_headers=stream_headers,
                 retry_attempt_count=retry_attempt_count,
             )
             if outcome.retryable_failure_reason is not None:
@@ -214,6 +216,7 @@ class RecorderService:
         job_id: str,
         source_type: SourceType,
         stream_url: str | None,
+        stream_headers: dict[str, str],
         retry_attempt_count: int,
     ) -> RecordingBuildOutcome:
         ffmpeg_path = shutil.which("ffmpeg")
@@ -226,6 +229,7 @@ class RecorderService:
                     session_id=session_id,
                     job_id=job_id,
                     stream_url=stream_url,
+                    stream_headers=stream_headers,
                 )
                 return self._resolve_ffmpeg_result(
                     session_id=session_id,
@@ -385,6 +389,7 @@ class RecorderService:
         session_id: str,
         job_id: str,
         stream_url: str,
+        stream_headers: dict[str, str],
     ) -> tuple[Path | None, str | None]:
         output_dir = self.settings.storage.raw_dir / session_id
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -397,14 +402,19 @@ class RecorderService:
             "-hide_banner",
             "-loglevel",
             "error",
-            "-i",
-            stream_url,
-            "-t",
-            str(self.settings.recording.direct_stream_timeout_seconds),
-            "-c",
-            "copy",
-            str(output_path),
         ]
+        command.extend(self._build_ffmpeg_header_args(stream_headers))
+        command.extend(
+            [
+                "-i",
+                stream_url,
+                "-t",
+                str(self.settings.recording.direct_stream_timeout_seconds),
+                "-c",
+                "copy",
+                str(output_path),
+            ]
+        )
         attempts = self.settings.recording.ffmpeg_max_retries + 1
         last_failure_reason = None
         for attempt in range(1, attempts + 1):
@@ -456,6 +466,22 @@ class RecorderService:
                     break
 
         return None, last_failure_reason
+
+    @staticmethod
+    def _build_ffmpeg_header_args(stream_headers: dict[str, str]) -> list[str]:
+        if not stream_headers:
+            return []
+
+        args: list[str] = []
+        header_lines: list[str] = []
+        for key, value in stream_headers.items():
+            if key.lower() == "user-agent":
+                args.extend(["-user_agent", value])
+                continue
+            header_lines.append(f"{key}: {value}")
+        if header_lines:
+            args.extend(["-headers", "\r\n".join(header_lines)])
+        return args
 
     def _record_browser_capture_with_ffmpeg(
         self,
