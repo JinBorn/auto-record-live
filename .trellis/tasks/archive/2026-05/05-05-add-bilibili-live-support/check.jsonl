@@ -1,0 +1,11 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend guideline 索引；check 阶段全面对照"}
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "AgentSnapshot/AgentEvent/jsonl 字段契约的回归核对依据；本任务改了字段，必须确保契约更新一致"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Lint/type-check/forbidden patterns 标准"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "B 站 probe 异常分支处理风格一致性"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "多 platform 日志格式核对"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "last_snapshots dict 持久化 schema 改动核对"}
+{"file": ".trellis/spec/backend/launcher-conventions.md", "reason": "PowerShell launcher 与多平台运行的契合"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "windows_agent → orchestrator → recorder 三层数据流改动一致性核对"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "PlatformProbe ABC 抽取是否合理 / 有没有过度泛化"}
+{"file": ".trellis/tasks/05-05-add-bilibili-live-support/research/bilibili-live-detection.md", "reason": "B 站 probe 实现是否符合研究结论（API endpoint、live_status 映射、Referer header）"}
+{"file": ".trellis/tasks/05-05-add-bilibili-live-support/research/multi-platform-watcher-architecture.md", "reason": "架构改造是否符合保守渐进 A 方案；改动文件清单核对"}

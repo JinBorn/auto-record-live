@@ -1,0 +1,12 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend guideline 索引；进入实现前先读，了解可用的所有指南"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "新增 platform_probe.py / registry.py / bilibili_probe.py 等模块前确认目录约定"}
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "AgentSnapshot / AgentEvent / windows-agent-events.jsonl 是 active 契约；本任务要扩展 snapshot.platform + stream_headers，必须先读"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "B 站 probe 异常分支（API 4xx/5xx、超时、JSON 解析失败）的错误风格要与现有抖音 probe 一致"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "代码标准与禁用模式；新增 abstract base class 与 dict registry 时遵守"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "WindowsAgentService 串行轮询每个 probe 的日志格式（含 platform 字段）"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "AgentStateFile.last_snapshots 从单值 → dict 是 file-backed 持久化 schema 改动；migration guardrail 必读"}
+{"file": ".trellis/spec/backend/launcher-conventions.md", "reason": "PowerShell 启动脚本运行多 platform probe 的口径（确认是否要传 platform 参数等）"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "DouyinRoomProbe → PlatformProbe ABC 抽取过程要遵循的复用思维（避免误抽过度通用接口）"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "AgentSnapshot 字段改动跨 windows_agent → orchestrator → recorder 三层；要按 cross-layer 思路确认数据流一致性"}
+{"file": ".trellis/tasks/05-05-add-bilibili-live-support/research/bilibili-live-detection.md", "reason": "B 站探测路线决策、API endpoint、字段映射、ffmpeg header 要求；BilibiliRoomProbe 实现的核心依据"}
+{"file": ".trellis/tasks/05-05-add-bilibili-live-support/research/multi-platform-watcher-architecture.md", "reason": "PlatformProbe ABC 接口签名、registry 形态、配置层迁移、文件清单；架构改造的核心依据"}
