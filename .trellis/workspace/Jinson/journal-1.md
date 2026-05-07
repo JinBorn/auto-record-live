@@ -779,3 +779,38 @@ Closed out the migrate-to-pure-windows task with PR3: git rm scripts/wsl-orchest
 ### Next Steps
 
 - None - task complete
+
+
+## Session 23: Add Bilibili live support: PR1+PR2+PR3
+
+**Date**: 2026-05-07
+**Task**: Add Bilibili live support: PR1+PR2+PR3
+**Branch**: `main`
+
+### Summary
+
+Implemented multi-platform live recording (Douyin + Bilibili) across 3 PRs all done inline (trellis-implement / trellis-check sub-agents 500-Panic'd 3x with the same nil-pointer-deref signature documented in journal session 21). PR1 (d36e485): abstracted PlatformProbe ABC + dict-based PROBE_REGISTRY, DouyinRoomProbe now subclasses the ABC, AgentSnapshot gains platform + stream_headers fields, AgentStateFile.last_snapshots becomes dict keyed by '<platform>:<room_url>' with one-shot legacy migration shim, WindowsAgentService builds probes from settings.platforms with per-platform try/except isolation, config layer adds ARL_PLATFORMS env loader with single-douyin back-compat fallback. 14 new tests covering registry, state migration, isolation, config back-compat. PR2 (26b49ec): BilibiliRoomProbe via anonymous HTTP API (get_info live_status mapping incl carousel-to-OFFLINE for status=2; getRoomPlayInfo nested-dict URL extraction joining host+base_url+extra), recorder _build_ffmpeg_header_args splits stream_headers into ffmpeg -user_agent (User-Agent entry, case-insensitive) and -headers 'K: V CRLF...' (other entries), empty dict produces byte-identical command for Douyin regression, orchestrator supersede check now keys on (platform, room_url) and duplicate live_started refreshes stream_headers from latest snapshot for B站 token rotation. SessionRecord/RecordingJobRecord/AgentSnapshotPayload all gain platform+stream_headers. 9 new tests across bilibili_probe, recorder header injection, orchestrator multi-platform, and registry. PR3 (a4ecff3): README adds B站接入 subsection with PowerShell snippet + 4-bullet B站-vs-Douyin differences callout (pure HTTP API / carousel mapping / auto Referer injection / short-lived token); .env.example documents ARL_BILIBILI_ROOM_URL+STREAMER_NAME with ARL_PLATFORMS=douyin kept as default for back-compat; orchestration-contracts.md spec updated with new field signatures, recorder header injection contract, lifecycle bullet rewrite for (platform, room_url) supersede + duplicate-event header refresh, 3 new error-matrix rows, 4 new test bullets cross-referencing PR2 tests. Final state: 189 tests OK (162 baseline + 27 new), all field-presence checks pass, 7/8 acceptance criteria green and 1/8 deferred to operator (real B站 stream smoke test, environment-bound). Sub-agent 500 stability is now confirmed across 2 consecutive tasks (migrate-pure-windows + this one) — pattern worth flagging to project owners. Inline fallback continues to work cleanly.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d36e485` | (see git log) |
+| `26b49ec` | (see git log) |
+| `a4ecff3` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
