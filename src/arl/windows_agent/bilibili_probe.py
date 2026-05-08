@@ -241,12 +241,21 @@ class BilibiliRoomProbe(PlatformProbe):
 
     @classmethod
     def _extract_stream_url(cls, payload: dict[str, object]) -> str | None:
-        """Drill into data.playurl_info.playurl.stream[].format[].codec[].url_info[].
+        """Drill into data.playurl_info.playurl.stream[].format[].codec[].url_info[]
+        and return the URL with the highest current_qn.
 
-        Returns the first URL composed by joining url_info.host + base_url +
-        url_info.extra (the extra carries the time-limited token). Bilibili's
-        URL is split into three pieces so callers can deduplicate the host;
-        we just glue them back together.
+        Bilibili can return multiple qn variants in one response (e.g. if the
+        anonymous request asks qn=10000 but the API only serves up to qn=400
+        without login, the response contains qn=400 / qn=250 / qn=150 codec
+        entries side-by-side). The legacy implementation returned the FIRST
+        url_info encountered, which is typically NOT the highest variant —
+        for an esports stream that means recording 720p/2.5Mbps instead of
+        1080p60/6Mbps.
+
+        We collect every (current_qn, joined_url) candidate and pick the
+        one with the largest current_qn. host + base_url + extra is glued
+        back together (B 站 splits the URL across three fields so the host
+        portion can be deduplicated).
         """
         data = payload.get("data")
         if not isinstance(data, dict):
@@ -260,6 +269,8 @@ class BilibiliRoomProbe(PlatformProbe):
         streams = playurl.get("stream")
         if not isinstance(streams, list):
             return None
+
+        candidates: list[tuple[int, str]] = []
         for stream in streams:
             if not isinstance(stream, dict):
                 continue
@@ -278,6 +289,7 @@ class BilibiliRoomProbe(PlatformProbe):
                     base_url = codec_entry.get("base_url")
                     if not isinstance(base_url, str) or not base_url:
                         continue
+                    current_qn = cls._coerce_int(codec_entry.get("current_qn"))
                     url_infos = codec_entry.get("url_info")
                     if not isinstance(url_infos, list):
                         continue
@@ -290,5 +302,24 @@ class BilibiliRoomProbe(PlatformProbe):
                             continue
                         if not isinstance(extra, str):
                             extra = ""
-                        return f"{host}{base_url}{extra}"
-        return None
+                        candidates.append(
+                            (current_qn, f"{host}{base_url}{extra}")
+                        )
+
+        if not candidates:
+            return None
+        # Highest current_qn wins. Stable sort preserves response ordering on
+        # ties (so within one qn we still pick the host the API put first,
+        # which is typically the closest CDN node).
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+
+    @staticmethod
+    def _coerce_int(raw: object) -> int:
+        # bool is a subclass of int — guard so True/False don't sneak through
+        # as qn=1/0 and accidentally win or lose the comparison.
+        if isinstance(raw, bool):
+            return 0
+        if isinstance(raw, int):
+            return raw
+        return 0

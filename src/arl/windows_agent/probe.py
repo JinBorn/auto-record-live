@@ -31,6 +31,24 @@ class DouyinRoomProbe(PlatformProbe):
     )
     _UNICODE_ESCAPE_PATTERN = re.compile(r"\\u([0-9a-fA-F]{4})")
     _HEX_ESCAPE_PATTERN = re.compile(r"\\x([0-9a-fA-F]{2})")
+    # URL filename quality marker, e.g. "_origin.m3u8" / "_uhd_60.flv" / "_md/playlist.m3u8".
+    # Douyin LoL streams typically expose 6+ tiers in the page; without explicit
+    # ranking the score function below picks one arbitrarily and we end up with
+    # 720p/540p instead of 1080p60. Anchor on the leading "_" so we don't false-match
+    # tier letters embedded in CDN tokens.
+    _QUALITY_TIER_PATTERN = re.compile(
+        r"_(origin|uhd|hd|sd|md|ld)(?:[_./]|$)",
+        re.IGNORECASE,
+    )
+    _QUALITY_TIER_SCORES = {
+        "origin": 1000,
+        "uhd": 500,
+        "hd": 250,
+        "sd": 100,
+        "md": 50,
+        "ld": 25,
+    }
+
     _BLOCKED_SUFFIXES = (
         ".js",
         ".css",
@@ -347,6 +365,13 @@ class DouyinRoomProbe(PlatformProbe):
             normalized = decoded
         return normalized
 
+    # Douyin embeds two URL families per quality tier: SIGNED leaf URLs (have
+    # &sign= or &wsSecret= and are directly playable) and UNSIGNED master
+    # playlists (no signing token, ffmpeg gets 403 if it tries to pull them).
+    # Only signed URLs are useful candidates — without this filter the higher-
+    # tier scoring picks unsigned _uhd/_origin URLs that can't be recorded.
+    _SIGNATURE_PARAM_NAMES = ("sign=", "wssecret=")
+
     @classmethod
     def _is_likely_stream_url(cls, raw_url: str) -> bool:
         lower = raw_url.lower()
@@ -355,26 +380,37 @@ class DouyinRoomProbe(PlatformProbe):
         no_query = lower.split("?")[0]
         if any(no_query.endswith(suffix) for suffix in cls._BLOCKED_SUFFIXES):
             return False
-        if ".m3u8" in lower or ".flv" in lower:
-            return True
-        return "pull" in lower and ("stream" in lower or "live" in lower)
+        if not (".m3u8" in lower or ".flv" in lower):
+            if not ("pull" in lower and ("stream" in lower or "live" in lower)):
+                return False
+        # Reject unsigned URLs (master playlists / DOM-leaked paths). Douyin's
+        # CDN 403s any pull without a signing token, so they're not useful
+        # even though they advertise the highest tier.
+        query_lower = lower.split("?", 1)[1] if "?" in lower else ""
+        return any(param in query_lower for param in cls._SIGNATURE_PARAM_NAMES)
 
-    @staticmethod
-    def _stream_url_score(url: str) -> int:
+    @classmethod
+    def _stream_url_score(cls, url: str) -> int:
         lower = url.lower()
+        # Strip query string so URL signing tokens (which can contain literal
+        # "_sd"/"_md"/"_hd" substrings) don't false-match a quality tier.
+        no_query = lower.split("?", 1)[0]
         score = 0
-        if ".m3u8" in lower:
+        if ".m3u8" in no_query:
             score += 50
-        if ".flv" in lower:
+        if ".flv" in no_query:
             score += 40
-        if "hls" in lower:
+        if "hls" in no_query:
             score += 10
-        if "pull" in lower:
+        if "pull" in no_query:
             score += 8
-        if "stream" in lower:
+        if "stream" in no_query:
             score += 6
-        if "live" in lower:
+        if "live" in no_query:
             score += 4
+        match = cls._QUALITY_TIER_PATTERN.search(no_query)
+        if match:
+            score += cls._QUALITY_TIER_SCORES[match.group(1).lower()]
         return score
 
     def _forced_snapshot(

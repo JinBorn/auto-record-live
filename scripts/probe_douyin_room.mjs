@@ -95,34 +95,65 @@ function isLikelyStreamUrl(rawUrl) {
     return false;
   }
 
-  if (lower.includes(".m3u8") || lower.includes(".flv")) {
-    return true;
+  const isMediaPath = lower.includes(".m3u8") || lower.includes(".flv");
+  const isPullStream =
+    lower.includes("pull") && (lower.includes("stream") || lower.includes("live"));
+  if (!isMediaPath && !isPullStream) {
+    return false;
   }
 
-  return lower.includes("pull") && (lower.includes("stream") || lower.includes("live"));
+  // Douyin embeds two URL families per quality tier: SIGNED leaf URLs
+  // (have &sign= or &wsSecret= and are directly playable) and UNSIGNED
+  // master playlists (no signing token, ffmpeg gets 403 if it tries to
+  // pull them). Only signed URLs are useful candidates — without this
+  // filter the higher-tier scoring picks unsigned _uhd/_origin URLs
+  // that can't be recorded. Mirrors src/arl/windows_agent/probe.py.
+  const queryLower = lower.includes("?") ? lower.split("?", 2)[1] : "";
+  return queryLower.includes("sign=") || queryLower.includes("wssecret=");
 }
+
+// URL filename quality marker, e.g. "_origin.m3u8" / "_uhd_60.flv" / "_md/playlist.m3u8".
+// Mirrors src/arl/windows_agent/probe.py — keep both copies in sync. Without
+// explicit ranking the score function below picks one arbitrarily and we end
+// up with 720p/540p instead of 1080p60.
+const QUALITY_TIER_PATTERN = /_(origin|uhd|hd|sd|md|ld)(?:[_./]|$)/i;
+const QUALITY_TIER_SCORES = {
+  origin: 1000,
+  uhd: 500,
+  hd: 250,
+  sd: 100,
+  md: 50,
+  ld: 25,
+};
 
 function streamUrlScore(url) {
   const lower = url.toLowerCase();
+  // Strip query string so URL signing tokens (which can contain literal
+  // "_sd"/"_md"/"_hd" substrings) don't false-match a quality tier.
+  const noQuery = lower.split("?", 1)[0];
   let score = 0;
 
-  if (lower.includes(".m3u8")) {
+  if (noQuery.includes(".m3u8")) {
     score += 50;
   }
-  if (lower.includes(".flv")) {
+  if (noQuery.includes(".flv")) {
     score += 40;
   }
-  if (lower.includes("hls")) {
+  if (noQuery.includes("hls")) {
     score += 10;
   }
-  if (lower.includes("pull")) {
+  if (noQuery.includes("pull")) {
     score += 8;
   }
-  if (lower.includes("stream")) {
+  if (noQuery.includes("stream")) {
     score += 6;
   }
-  if (lower.includes("live")) {
+  if (noQuery.includes("live")) {
     score += 4;
+  }
+  const tierMatch = noQuery.match(QUALITY_TIER_PATTERN);
+  if (tierMatch) {
+    score += QUALITY_TIER_SCORES[tierMatch[1].toLowerCase()];
   }
 
   return score;

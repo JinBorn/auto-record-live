@@ -220,5 +220,126 @@ class BilibiliRoomProbeErrorPathTests(unittest.TestCase):
         )
 
 
+class BilibiliRoomProbeQnPriorityTests(unittest.TestCase):
+    """_extract_stream_url must pick the codec entry with the highest
+    current_qn. B 站 returns multiple qn variants in one response (qn=10000
+    原画 / qn=400 蓝光 / qn=250 超清 / qn=150 高清); the legacy implementation
+    returned the first one walked, which is typically the lowest variant.
+    """
+
+    @staticmethod
+    def _multi_qn_payload() -> dict:
+        return {
+            "code": 0,
+            "message": "0",
+            "data": {
+                "playurl_info": {
+                    "playurl": {
+                        "stream": [
+                            {
+                                "format": [
+                                    {
+                                        "codec": [
+                                            {
+                                                "current_qn": 250,
+                                                "base_url": "/live/abc_qn250.flv",
+                                                "url_info": [{"host": "https://qn250.example.com", "extra": "?t=250"}],
+                                            },
+                                            {
+                                                "current_qn": 10000,
+                                                "base_url": "/live/abc_qn10000.flv",
+                                                "url_info": [{"host": "https://qn10000.example.com", "extra": "?t=10000"}],
+                                            },
+                                            {
+                                                "current_qn": 400,
+                                                "base_url": "/live/abc_qn400.flv",
+                                                "url_info": [{"host": "https://qn400.example.com", "extra": "?t=400"}],
+                                            },
+                                        ],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            },
+        }
+
+    def test_picks_highest_current_qn_variant(self) -> None:
+        url = BilibiliRoomProbe._extract_stream_url(self._multi_qn_payload())
+        self.assertEqual(url, "https://qn10000.example.com/live/abc_qn10000.flv?t=10000")
+
+    def test_missing_current_qn_treated_as_zero_so_others_win(self) -> None:
+        payload = {
+            "code": 0,
+            "message": "0",
+            "data": {
+                "playurl_info": {
+                    "playurl": {
+                        "stream": [
+                            {
+                                "format": [
+                                    {
+                                        "codec": [
+                                            {
+                                                "base_url": "/live/no_qn.flv",
+                                                "url_info": [{"host": "https://noqn.example.com", "extra": ""}],
+                                            },
+                                            {
+                                                "current_qn": 150,
+                                                "base_url": "/live/qn150.flv",
+                                                "url_info": [{"host": "https://qn150.example.com", "extra": ""}],
+                                            },
+                                        ],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            },
+        }
+        url = BilibiliRoomProbe._extract_stream_url(payload)
+        self.assertEqual(url, "https://qn150.example.com/live/qn150.flv")
+
+    def test_bool_current_qn_does_not_sneak_through_as_one(self) -> None:
+        payload = {
+            "code": 0,
+            "message": "0",
+            "data": {
+                "playurl_info": {
+                    "playurl": {
+                        "stream": [
+                            {
+                                "format": [
+                                    {
+                                        "codec": [
+                                            {
+                                                "current_qn": True,
+                                                "base_url": "/live/bool.flv",
+                                                "url_info": [{"host": "https://bool.example.com", "extra": ""}],
+                                            },
+                                            {
+                                                "current_qn": 10,
+                                                "base_url": "/live/qn10.flv",
+                                                "url_info": [{"host": "https://qn10.example.com", "extra": ""}],
+                                            },
+                                        ],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            },
+        }
+        url = BilibiliRoomProbe._extract_stream_url(payload)
+        self.assertEqual(url, "https://qn10.example.com/live/qn10.flv")
+
+    def test_single_codec_without_current_qn_still_returns_url(self) -> None:
+        url = BilibiliRoomProbe._extract_stream_url(_ok_playinfo_payload())
+        self.assertEqual(url, _expected_stream_url())
+
+
 if __name__ == "__main__":
     unittest.main()
