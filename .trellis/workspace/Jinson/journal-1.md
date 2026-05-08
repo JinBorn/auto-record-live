@@ -880,3 +880,60 @@ Two-phase session, all inline (sub-agent 500-Panic still confirmed — 1st Explo
 - **Test-author intent vs system-author intent gap**: Session 23's `test_cross_platform_live_started_supersedes_active_session` test name + comment ("the streamer has migrated platforms") shows the author thought of cross-platform as a streamer-migration scenario, but README simultaneously documented `ARL_PLATFORMS=douyin,bilibili` as concurrent monitoring. The test was wrong, not the README. Lesson: when a feature has two valid intents (migration vs concurrency), tests should pin which one and assertions must match docs.
 - **Dual-impl drift risk**: `probe.py` and `probe_douyin_room.mjs` both contain the URL extraction + scoring + signed-filter logic now. They MUST stay in sync (added cross-reference comments to both). A future refactor should consolidate (probably by having .mjs only collect + emit candidates, Python does the scoring) — but not today.
 - **`Path.read_text()` returns source-file bytes**: when patching test fixtures via Python script, escape sequences like `\/` in source code remain as literal `\` + `/` in the read string. Easy to forget. Use minimal anchored substrings (e.g. `abc.m3u8?token=1"` ending quote) rather than trying to match the full escape-laden line.
+
+
+## Session 25: PR4+PR5 commit/push + PR6 brainstorm + task started
+
+**Date**: 2026-05-08
+**Task**: Continue from Session 24 — commit yesterday's uncommitted work and bootstrap PR6 (cookie/SESSDATA).
+**Branch**: `main`
+
+### Summary
+
+Three-phase continuation session, all inline (skipped trellis-research sub-agent for PR6 brainstorm — feedback memory + workflow-state both warn 500-Panic). **Phase F — commit yesterday's PR4+PR5 work**: pre-commit pytest 198 + node --test 10 sanity check both green, then 3 commits in order: `726cf1d` fix(orchestrator) per-platform active session/job (7 files +183/-78), `e584bc6` feat(probe) tier-aware Douyin scoring + signed-URL filter + Bilibili qn priority (6 files +345/-49), `61a91b3` chore: record journal Session 24 (1 file +66). Pushed all three to origin/main (`89628c8..61a91b3`); main was at origin/main before, now origin caught up. Explicit file list in `git add` avoided the 350+ node_modules churn from Phase D's npm install — node_modules stays uncommitted (already-tracked files, .gitignore can't undo that). **Phase G — PR6 task bootstrap**: created task `05-08-cookie-sessdata-injection-for-1080p-streams-pr6` via `task.py create` (status=planning, P2). Plan-mode + inline brainstorm produced full prd.md draft. User confirmed via AskUserQuestion that PR6 should split into 2 sub-PRs: PR6.A (B站 SESSDATA, ~3-4 files) first as minimum viable verification (1080P 蓝光 target), PR6.B (抖音 cookie via Playwright `--cookie` arg + httpx fallback header + .mjs `addCookies` bootstrap) follows. Wrote `prd.md` (8 sections per trellis-brainstorm template: Goal / Requirements / Acceptance / DoD / Technical Approach / ADR-lite / Out of Scope / Technical Notes); curated `implement.jsonl` with 6 spec entries (`backend/index.md`, `orchestration-contracts.md`, `error-handling.md`, `directory-structure.md`, `logging-guidelines.md`, `guides/code-reuse-thinking-guide.md`) and `check.jsonl` with 4 entries (`quality-guidelines.md`, `orchestration-contracts.md`, `error-handling.md`, `guides/cross-layer-thinking-guide.md`). Ran `task.py start` → status flipped to in_progress, hook now injects PR6 context on every prompt. **Key MVP design (recorded in prd ADR-lite)**: cookie injection rides existing `stream_headers` dict pipeline — recorder's `_build_ffmpeg_header_args` (PR2) already transparently forwards arbitrary headers as ffmpeg `-headers "K: V\r\n..."`, so PR6 changes are confined to `config.py` (env loaders + `BilibiliSettings.sessdata` / `DouyinSettings.cookie` fields) + the two probe modules + `.env.example`. Recorder + orchestrator: zero changes. Cookie expiry handling reuses existing `failure_contracts.classify_failure_reason` path (B站 code=-101 → `http_4xx_non_retryable`, already wired); explicit `cookie_expired_for_<platform>` audit event deferred (out of scope for MVP).
+
+### Main Changes
+
+| File | Phase | Purpose |
+|------|-------|---------|
+| `git push origin main` (3 commits: 726cf1d / e584bc6 / 61a91b3) | F | yesterday's Phase D + E + journal pushed |
+| `.trellis/tasks/05-08-cookie-sessdata-injection-for-1080p-streams-pr6/task.json` | G | new task (P2, planning → in_progress) |
+| `.trellis/tasks/05-08-cookie-sessdata-injection-for-1080p-streams-pr6/prd.md` | G | full PR6 brainstorm output (8 sections) |
+| `.trellis/tasks/05-08-cookie-sessdata-injection-for-1080p-streams-pr6/implement.jsonl` | G | 6 curated spec entries (no research/* yet) |
+| `.trellis/tasks/05-08-cookie-sessdata-injection-for-1080p-streams-pr6/check.jsonl` | G | 4 curated spec entries |
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `726cf1d` | fix(orchestrator): per-platform active session/job for concurrent multi-platform monitoring |
+| `e584bc6` | feat(probe): tier-aware Douyin scoring + signed-URL filter + Bilibili qn priority |
+| `61a91b3` | chore: record journal Session 24 |
+
+PR6 task scaffolding (prd.md / jsonl / start) is **not** in any commit yet — Trellis convention is to commit task artifacts atomically with the implementation work, so they ride the PR6.A commit later.
+
+### Testing
+
+- [OK] pre-commit: pytest 198 green, node --test 10 green
+- [OK] git push origin main: 3 commits delivered (`89628c8..61a91b3`)
+- [OK] post-task-start: `get_context.py` shows current task = pr6, status=in_progress
+- [PENDING] PR6.A real implementation + tests + smoke (next session)
+
+### Status
+
+[IN_PROGRESS] PR6 task is in_progress with prd + curated jsonls. Implementation handed off to next session.
+
+### Next Steps
+
+- **Next session first action**: `/trellis:continue` → routing should land at Phase 2.1 (implement). Dispatch `trellis-implement` sub-agent with PR6.A scope (B 站 SESSDATA only). If sub-agent 500s (probable per memory), fall back inline; the prd's "Critical Files" speed-table makes inline implementation cheap.
+- After PR6.A passes pytest + 1 real-room ffprobe `width=1920 height=1080`: commit as PR6.A → start PR6.B (抖音 Playwright `--cookie` + httpx fallback + .mjs `addCookies`).
+- After PR6.B: README updates ("how to grab SESSDATA via F12") + journal Session 26.
+- Optional later: `cookie_expired_for_<platform>` audit event when probe layer infers cookie staleness.
+- Sub-agent 500-Panic count this session: 0 (proactively skipped). Cumulative pattern still confirmed across 3+ tasks; consider opening upstream issue with Anthropic if it persists into PR6 implementation.
+
+### Findings worth flagging
+
+- **Plan mode + Trellis brainstorm tension**: plan mode forbids editing anywhere except the plan file, but trellis-brainstorm wants to write `prd.md` to the task dir. Resolution: brainstorm was drafted in the plan file as a prd surrogate, then transposed to `prd.md` after exiting plan mode. Worth a note in `.trellis/spec/` if this pattern recurs — maybe make the plan file ephemeral and authoritative-output always live in task dir.
+- **PR4/PR5 commit message anatomy**: each commit message included the why (regression / quality gap), the what (the refactor / tier ranking), the constraint discovery (signed-URL filter, current_qn priority), and the test count. Followed conventional commits scope `(orchestrator)` / `(probe)`. Co-Authored-By trailer per Anthropic guideline. Reusable template for future PRs.
+- **node_modules churn discipline**: `git add <explicit-file-list>` (not `-A` / `-u`) is the only safe pattern when node_modules is tracked but gitignored. Lesson reinforced — should also avoid `npm install` mid-session unless absolutely necessary.
+- **Recorder zero-change is the PR6 lynchpin**: the entire cookie story is `dict[str, str]` transparent forwarding. PR2's `_build_ffmpeg_header_args` design (split User-Agent → `-user_agent`, everything else → `-headers`) was prescient — it makes Cookie injection a probe-only concern. Worth calling out in `.trellis/spec/backend/orchestration-contracts.md` when documenting the Cookie field addition (probably PR6.A's spec update).
