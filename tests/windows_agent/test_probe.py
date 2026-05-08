@@ -351,6 +351,139 @@ class DouyinRoomProbeStreamUrlScoreTests(unittest.TestCase):
         self.assertGreater(DouyinRoomProbe._stream_url_score(url), 1000)
 
 
+class DouyinRoomProbeCookieInjectionTests(unittest.TestCase):
+    """PR6.B — ARL_DOUYIN_COOKIE injection across all three pipelines:
+    Playwright subprocess --cookie arg, httpx HTTP-fallback Cookie header,
+    and stream_headers() so ffmpeg gets the same cookie via -headers.
+
+    Empty cookie must keep PR5 behavior byte-identical: no --cookie arg,
+    no Cookie header, and stream_headers() returns {} (so the orchestration
+    contract's "Douyin emits {} when no cookie configured" stays true).
+    """
+
+    _COOKIE = "fake-cookie-for-testing=val1; sid=val2"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        root = Path(self._tmp.name)
+        script_path = root / "probe.mjs"
+        script_path.write_text("// stub\n", encoding="utf-8")
+        self._script_path = script_path
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _settings(self, *, cookie: str, use_playwright: bool = True) -> DouyinSettings:
+        return DouyinSettings(
+            room_url="https://live.douyin.com/room",
+            streamer_name="streamer-cookie",
+            playwright_script=self._script_path,
+            use_playwright_probe=use_playwright,
+            cookie=cookie,
+        )
+
+    def test_cookie_appended_to_playwright_command_when_set(self) -> None:
+        probe = DouyinRoomProbe(self._settings(cookie=self._COOKIE))
+        result = subprocess.CompletedProcess(
+            args=["node"],
+            returncode=0,
+            stdout='{"ok":true,"state":"offline","reason":"page_marker_detected"}\n',
+            stderr="",
+        )
+        with patch(
+            "arl.windows_agent.probe.subprocess.run",
+            return_value=result,
+        ) as mock_run:
+            probe._probe_with_playwright(
+                room_url=probe.settings.room_url,
+                streamer_name=probe.settings.streamer_name,
+                now=datetime.now(timezone.utc),
+            )
+
+        command_args = mock_run.call_args.args[0]
+        self.assertIn("--cookie", command_args)
+        cookie_idx = command_args.index("--cookie")
+        self.assertEqual(command_args[cookie_idx + 1], self._COOKIE)
+        # Empty-cookie path must NOT append --cookie at all (defends against
+        # passing the literal empty string and confusing the .mjs script).
+        probe_no_cookie = DouyinRoomProbe(self._settings(cookie=""))
+        with patch(
+            "arl.windows_agent.probe.subprocess.run",
+            return_value=result,
+        ) as mock_run_empty:
+            probe_no_cookie._probe_with_playwright(
+                room_url=probe_no_cookie.settings.room_url,
+                streamer_name=probe_no_cookie.settings.streamer_name,
+                now=datetime.now(timezone.utc),
+            )
+        self.assertNotIn("--cookie", mock_run_empty.call_args.args[0])
+
+    def test_cookie_injected_into_http_fallback_headers(self) -> None:
+        # use_playwright=True + a forced playwright failure to drive detect()
+        # into the httpx fallback path; verify the Cookie header lands on the
+        # httpx.get call.
+        probe = DouyinRoomProbe(self._settings(cookie=self._COOKIE))
+        playwright_fail = subprocess.CompletedProcess(
+            args=["node"],
+            returncode=1,
+            stdout='{"ok":false,"error":"browser_crashed"}\n',
+            stderr="",
+        )
+        http_response = SimpleNamespace(
+            status_code=200,
+            text='<html><body>暂未开播</body></html>',
+        )
+        with (
+            patch(
+                "arl.windows_agent.probe.subprocess.run",
+                return_value=playwright_fail,
+            ),
+            patch(
+                "arl.windows_agent.probe.httpx.get",
+                return_value=http_response,
+            ) as mock_get,
+        ):
+            probe.detect()
+
+        headers = mock_get.call_args.kwargs["headers"]
+        self.assertEqual(headers["cookie"], self._COOKIE)
+        # User-Agent must remain so the Douyin CDN doesn't reject the
+        # request as a non-browser client.
+        self.assertIn("Mozilla/5.0", headers["user-agent"])
+
+    def test_stream_headers_include_cookie_when_set_and_empty_when_not(self) -> None:
+        with_cookie = DouyinRoomProbe(self._settings(cookie=self._COOKIE))
+        self.assertEqual(with_cookie.stream_headers(), {"Cookie": self._COOKIE})
+        without_cookie = DouyinRoomProbe(self._settings(cookie=""))
+        self.assertEqual(without_cookie.stream_headers(), {})
+
+    def test_uhd_url_with_backslash_unicode_escape_is_extracted_signed(self) -> None:
+        # Regression: Douyin's HTML JSON-encodes `&` as `&`. Earlier the
+        # _URL_PATTERN char class excluded backslash, truncating the URL at
+        # `&` and dropping the `sign=` segment — making every signed _uhd
+        # URL look unsigned and get rejected. With backslash allowed in the
+        # match and _normalize_stream_url decoding `&` → `&` afterward,
+        # the signed _uhd candidate must reach the score function and beat
+        # the lower _hd tier.
+        html = (
+            '<script>"data":{"uhd":'
+            '{"main":{"flv":"http://pull-flv-q13.douyincdn.com/thirdgame/'
+            'stream-1_uhd.flv?expire=1\\u0026sign=abcdef\\u0026t=1"}},'
+            '"hd":'
+            '{"main":{"flv":"http://pull-flv-q13.douyincdn.com/thirdgame/'
+            'stream-1_hd.flv?expire=1\\u0026sign=fedcba\\u0026t=1"}}}'
+            "</script>"
+        )
+        candidates = DouyinRoomProbe._extract_stream_url_candidates(html)
+        self.assertTrue(
+            any("_uhd.flv" in u and "sign=abcdef" in u for u in candidates),
+            f"signed _uhd URL must survive extraction; got {candidates!r}",
+        )
+        picked = DouyinRoomProbe._extract_stream_url(html)
+        self.assertIsNotNone(picked)
+        self.assertIn("_uhd.flv", picked)
+        self.assertIn("sign=abcdef", picked)
+
 
 if __name__ == "__main__":
     unittest.main()

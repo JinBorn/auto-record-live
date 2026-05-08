@@ -117,7 +117,7 @@ class RecordingJobRecord(BaseModel):
   - `snapshot.state` must be `live`
   - `snapshot.streamer_name`, `snapshot.room_url`, and `snapshot.detected_at` are required
   - `snapshot.platform` may be omitted (defaults to `"douyin"` for pre-PR1 jsonl back-compat); when explicitly set it must match a registered `PROBE_REGISTRY` key (currently `"douyin"` or `"bilibili"`)
-  - `snapshot.stream_headers` may be omitted (defaults to `{}`); non-empty values are HTTP headers that must reach the recorder's ffmpeg invocation (Bilibili requires `Referer: https://live.bilibili.com`; Douyin always emits `{}`)
+  - `snapshot.stream_headers` may be omitted (defaults to `{}`); non-empty values are HTTP headers that must reach the recorder's ffmpeg invocation. Bilibili always sets `Referer: https://live.bilibili.com` + `User-Agent`; both probes additionally inject `Cookie: ...` when their auth env var is configured (`ARL_BILIBILI_SESSDATA` adds `Cookie: SESSDATA=<value>` to bilibili snapshots; `ARL_DOUYIN_COOKIE` adds the raw cookie header value to douyin snapshots). Empty / unset auth env vars keep the legacy contract: bilibili emits Referer+UA only; douyin emits `{}`.
   - `snapshot.source_type` may be missing during degraded discovery, but should be set when known
   - `snapshot.stream_url` is optional and is used to enrich active sessions on duplicate start events
   - if `snapshot.source_type == "direct_stream"`, then `snapshot.stream_url` must be a non-empty `http(s)` URL

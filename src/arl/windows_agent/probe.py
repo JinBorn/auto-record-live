@@ -24,7 +24,14 @@ class DouyinRoomProbe(PlatformProbe):
         r'"(?:streamUrl|stream_url|hls_pull_url|flv_pull_url|main_hls|main_flv|origin_hls|origin_flv)"\s*:\s*"([^"]+)"',
         re.IGNORECASE,
     )
-    _URL_PATTERN = re.compile(r"https?:\\?\/\\?\/[^\s\"'<>\\]+", re.IGNORECASE)
+    # The negated char class deliberately excludes whitespace and quote-like
+    # delimiters — but NOT backslash. URLs in Douyin's HTML are JSON-encoded
+    # with `&` for `&` (e.g. `..._uhd.flv?expire=X&sign=Y`); a
+    # backslash exclusion would truncate the URL right before `&`,
+    # dropping the `sign=` query and getting the URL rejected as unsigned.
+    # _normalize_stream_url decodes `&` → `&` afterward, so the wider
+    # match is correct.
+    _URL_PATTERN = re.compile(r"https?:\\?\/\\?\/[^\s\"'<>]+", re.IGNORECASE)
     _PERCENT_ENCODED_URL_PATTERN = re.compile(
         r"https?%3a%2f%2f[^\s\"'<>\\]+",
         re.IGNORECASE,
@@ -68,6 +75,16 @@ class DouyinRoomProbe(PlatformProbe):
     def __init__(self, settings: DouyinSettings) -> None:
         self.settings = settings
 
+    def stream_headers(self) -> dict[str, str]:
+        # Override PlatformProbe default so the Douyin cookie configured via
+        # ARL_DOUYIN_COOKIE flows through AgentSnapshot.stream_headers into
+        # RecordingJobRecord.stream_headers and finally ffmpeg -headers.
+        # Empty cookie keeps {} so the orchestration contract's
+        # "Douyin emits {} when no cookie configured" path stays byte-identical.
+        if self.settings.cookie:
+            return {"Cookie": self.settings.cookie}
+        return {}
+
     def detect(self) -> AgentSnapshot:
         now = datetime.now(timezone.utc)
         room_url = self.settings.room_url
@@ -80,6 +97,7 @@ class DouyinRoomProbe(PlatformProbe):
                 room_url=room_url,
                 reason="room_url_not_configured",
                 detected_at=now,
+                stream_headers=self.stream_headers(),
             )
 
         forced_state = os.getenv("ARL_AGENT_FORCE_STATE", "").strip().lower()
@@ -92,17 +110,20 @@ class DouyinRoomProbe(PlatformProbe):
                 return snapshot
 
         try:
+            http_headers: dict[str, str] = {
+                "user-agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                )
+            }
+            if self.settings.cookie:
+                http_headers["cookie"] = self.settings.cookie
             response = httpx.get(
                 room_url,
                 timeout=15.0,
                 follow_redirects=True,
-                headers={
-                    "user-agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/124.0.0.0 Safari/537.36"
-                    )
-                },
+                headers=http_headers,
             )
         except httpx.HTTPError as exc:
             return AgentSnapshot(
@@ -111,6 +132,7 @@ class DouyinRoomProbe(PlatformProbe):
                 room_url=room_url,
                 reason=f"http_error:{exc.__class__.__name__}",
                 detected_at=now,
+                stream_headers=self.stream_headers(),
             )
 
         text = response.text
@@ -122,6 +144,7 @@ class DouyinRoomProbe(PlatformProbe):
                 room_url=room_url,
                 reason=f"http_status:{response.status_code}",
                 detected_at=now,
+                stream_headers=self.stream_headers(),
             )
 
         live_markers = [
@@ -139,6 +162,7 @@ class DouyinRoomProbe(PlatformProbe):
                 stream_url=stream_url,
                 reason="page_marker_detected",
                 detected_at=now,
+                stream_headers=self.stream_headers(),
             )
 
         offline_markers = [
@@ -154,6 +178,7 @@ class DouyinRoomProbe(PlatformProbe):
                 room_url=room_url,
                 reason="page_marker_detected",
                 detected_at=now,
+                stream_headers=self.stream_headers(),
             )
 
         if stream_url:
@@ -165,6 +190,7 @@ class DouyinRoomProbe(PlatformProbe):
                 stream_url=stream_url,
                 reason="stream_url_detected_http",
                 detected_at=now,
+                stream_headers=self.stream_headers(),
             )
 
         return AgentSnapshot(
@@ -173,6 +199,7 @@ class DouyinRoomProbe(PlatformProbe):
             room_url=room_url,
             reason="live_state_unknown",
             detected_at=now,
+            stream_headers=self.stream_headers(),
         )
 
     def _probe_with_playwright(
@@ -189,6 +216,7 @@ class DouyinRoomProbe(PlatformProbe):
                 room_url=room_url,
                 reason="playwright_script_missing",
                 detected_at=now,
+                stream_headers=self.stream_headers(),
             )
 
         command = [
@@ -200,9 +228,10 @@ class DouyinRoomProbe(PlatformProbe):
             self.settings.persistent_profile_dir,
             "--timeout-ms",
             str(self.settings.playwright_timeout_ms),
-            "--headless",
-            "0",
         ]
+        if self.settings.cookie:
+            command.extend(["--cookie", self.settings.cookie])
+        command.extend(["--headless", "0"])
         try:
             result = subprocess.run(
                 command,
@@ -221,6 +250,7 @@ class DouyinRoomProbe(PlatformProbe):
                 room_url=room_url,
                 reason=f"playwright_exec_error:{exc.__class__.__name__}",
                 detected_at=now,
+                stream_headers=self.stream_headers(),
             )
 
         stdout = (result.stdout or "").strip()
@@ -234,6 +264,7 @@ class DouyinRoomProbe(PlatformProbe):
                 room_url=room_url,
                 reason=f"playwright_error:{error_detail[:160]}",
                 detected_at=now,
+                stream_headers=self.stream_headers(),
             )
 
         if not payload.get("ok", False):
@@ -243,6 +274,7 @@ class DouyinRoomProbe(PlatformProbe):
                 room_url=room_url,
                 reason=f"playwright_error:{payload.get('error', 'unknown')}",
                 detected_at=now,
+                stream_headers=self.stream_headers(),
             )
 
         state_value = payload.get("state", "offline")
@@ -264,6 +296,7 @@ class DouyinRoomProbe(PlatformProbe):
             stream_url=stream_url,
             reason=reason,
             detected_at=now,
+            stream_headers=self.stream_headers(),
         )
 
     @staticmethod
@@ -433,6 +466,7 @@ class DouyinRoomProbe(PlatformProbe):
                 stream_url=stream_url,
                 reason="forced_state",
                 detected_at=now,
+                stream_headers=self.stream_headers(),
             )
 
         return AgentSnapshot(
@@ -441,4 +475,5 @@ class DouyinRoomProbe(PlatformProbe):
             room_url=room_url,
             reason="forced_state",
             detected_at=now,
+            stream_headers=self.stream_headers(),
         )

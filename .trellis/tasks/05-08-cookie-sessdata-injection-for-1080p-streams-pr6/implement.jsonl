@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "spec 索引；按 trellis-before-dev 标准入口先看一遍"}
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "本 PR 给 stream_headers 字典加 Cookie 字段；任何对 stream_headers/AgentSnapshot 字段的扩展都要查这个契约文件，确保不破坏 PR4 刚同步过的 per-platform supersede 描述与 ffmpeg 头注入合约"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "B 站 SESSDATA 过期 → API code=-101 → reason 字符串映射到 failure_contracts 的 http_4xx_non_retryable，需要确认错误分类符合现行规范"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "本 PR 不新增模块，但要确认 cookie 注入逻辑落在 windows_agent/probe.py + bilibili_probe.py 是符合 layer 划分的（recorder 层零改动是关键约束）"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "若实施时新增任何 log 调用（例如 cookie 注入成功 / 静默降级），需符合 [windows-agent] / [orchestrator] 标签 + key=value 字段约定"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "本 PR 的核心优雅点是 recorder._build_ffmpeg_header_args 零改动透传 Cookie；需对照 reuse 思考指南确认没有偏离已有管线、不发明新协议"}

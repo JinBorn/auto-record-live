@@ -44,7 +44,10 @@ class BilibiliRoomProbe(PlatformProbe):
         self.settings = settings
 
     def stream_headers(self) -> dict[str, str]:
-        return {"Referer": _REFERER, "User-Agent": _USER_AGENT}
+        headers = {"Referer": _REFERER, "User-Agent": _USER_AGENT}
+        if self.settings.sessdata:
+            headers["Cookie"] = f"SESSDATA={self.settings.sessdata}"
+        return headers
 
     def detect(self) -> AgentSnapshot:
         now = datetime.now(timezone.utc)
@@ -199,10 +202,13 @@ class BilibiliRoomProbe(PlatformProbe):
         return match.group(1)
 
     def _fetch_json(self, url: str, *, params: dict[str, str]) -> dict[str, object]:
+        headers: dict[str, str] = {"User-Agent": _USER_AGENT, "Referer": _REFERER}
+        if self.settings.sessdata:
+            headers["Cookie"] = f"SESSDATA={self.settings.sessdata}"
         response = httpx.get(
             url,
             params=params,
-            headers={"User-Agent": _USER_AGENT, "Referer": _REFERER},
+            headers=headers,
             timeout=self._HTTP_TIMEOUT_SECONDS,
             follow_redirects=True,
         )

@@ -49,6 +49,14 @@ class DouyinSettings(PlatformSettings):
     playwright_script: Path = Path("scripts/probe_douyin_room.mjs")
     playwright_timeout_ms: int = 20000
     use_playwright_probe: bool = True
+    # Optional Douyin cookie header value, e.g. "k1=v1; k2=v2; ...". When
+    # non-empty, DouyinRoomProbe forwards it to the Playwright subprocess
+    # (--cookie), the httpx fallback (Cookie request header), and the
+    # AgentSnapshot.stream_headers dict so ffmpeg can replay the same cookie
+    # against signed CDN URLs. Without it the page DOM only exposes _hd
+    # (720p60) signed leaf URLs; the higher _uhd / _origin tiers stay
+    # unsigned and unrecordable.
+    cookie: str = ""
 
 
 class BilibiliSettings(PlatformSettings):
@@ -57,6 +65,11 @@ class BilibiliSettings(PlatformSettings):
     # Pure HTTP API route per research/bilibili-live-detection.md — no
     # Playwright fields. If a future PR adds a Playwright fallback, extend
     # this model then; do not pre-add fields BilibiliRoomProbe ignores.
+    # Optional SESSDATA cookie value (raw, no "SESSDATA=" prefix). When
+    # non-empty, BilibiliRoomProbe injects it into both API requests and
+    # ffmpeg stream headers so the response unlocks qn>=400 (1080P 蓝光);
+    # anonymous calls are capped at qn=250 (720p).
+    sessdata: str = ""
 
 
 class WindowsAgentSettings(BaseModel):
@@ -176,6 +189,7 @@ def _load_douyin_settings() -> DouyinSettings:
             os.getenv("ARL_DOUYIN_PLAYWRIGHT_TIMEOUT_MS", "20000")
         ),
         use_playwright_probe=os.getenv("ARL_USE_PLAYWRIGHT_PROBE", "1") != "0",
+        cookie=os.getenv("ARL_DOUYIN_COOKIE", ""),
     )
 
 
@@ -183,6 +197,7 @@ def _load_bilibili_settings() -> BilibiliSettings:
     return BilibiliSettings(
         room_url=os.getenv("ARL_BILIBILI_ROOM_URL", ""),
         streamer_name=os.getenv("ARL_BILIBILI_STREAMER_NAME", ""),
+        sessdata=os.getenv("ARL_BILIBILI_SESSDATA", ""),
     )
 
 

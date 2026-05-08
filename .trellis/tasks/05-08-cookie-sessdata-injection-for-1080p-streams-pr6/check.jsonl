@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "trellis-check 必读；用于校验本 PR 的单测覆盖率（cookie 注入路径 / 空字符串向后兼容路径）、命名风格、断言粒度是否达标"}
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "校验 stream_headers 新增 Cookie 字段时整条管线（probe → AgentSnapshot → SessionRecord → RecordingJobRecord → ffmpeg -headers）的字段保持透传不变，特别是 PR4 per-platform 改动后的 invariant"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "校验 cookie 过期路径上 reason 字符串、failure_category 映射、recovery_hint 是否一致"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "本 PR 的"recorder 零改动"决策是 cross-layer thinking 的范例；check 阶段需确认我们没有把 cookie 逻辑泄漏到 recorder 层"}

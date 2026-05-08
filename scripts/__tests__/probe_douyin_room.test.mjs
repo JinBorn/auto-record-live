@@ -5,6 +5,7 @@ import {
   detectRoom,
   extractDirectStreamUrl,
   extractStreamUrlCandidates,
+  parseCookieString,
   pickPreferredStreamUrl,
 } from "../probe_douyin_room.mjs";
 
@@ -114,4 +115,51 @@ test("isLikelyStreamUrl accepts wsSecret= as alternative signing parameter", () 
     "http://pull-hls.douyincdn.com/thirdgame/stream-1_md/playlist.m3u8?wsSecret=abc&wsTime=1",
   );
   assert.equal(candidates.length, 1);
+});
+
+test("parseCookieString turns header string into Playwright cookie array with .douyin.com domain", () => {
+  const cookies = parseCookieString("k1=v1; k2=v2; sid=abc123");
+  assert.deepEqual(cookies, [
+    { name: "k1", value: "v1", domain: ".douyin.com", path: "/" },
+    { name: "k2", value: "v2", domain: ".douyin.com", path: "/" },
+    { name: "sid", value: "abc123", domain: ".douyin.com", path: "/" },
+  ]);
+});
+
+test("parseCookieString skips empty / malformed pairs and trims whitespace", () => {
+  // Empty input → empty array (defends addCookies from receiving []).
+  assert.deepEqual(parseCookieString(""), []);
+  assert.deepEqual(parseCookieString(null), []);
+  // Trailing semicolons, double semicolons, and pairs without "=" must
+  // be silently dropped — not throw — so a slightly malformed cookie
+  // header from F12 doesn't kill the probe.
+  const cookies = parseCookieString("  a = 1 ; ; broken ; b=2;");
+  assert.deepEqual(cookies, [
+    { name: "a", value: "1", domain: ".douyin.com", path: "/" },
+    { name: "b", value: "2", domain: ".douyin.com", path: "/" },
+  ]);
+});
+
+test("parseCookieString preserves '=' inside cookie value (e.g. base64 padding)", () => {
+  const cookies = parseCookieString("token=abc==; sid=q==");
+  assert.deepEqual(cookies, [
+    { name: "token", value: "abc==", domain: ".douyin.com", path: "/" },
+    { name: "sid", value: "q==", domain: ".douyin.com", path: "/" },
+  ]);
+});
+
+test("extractStreamUrlCandidates accepts signed _uhd URL whose query is JSON-escaped with \\u0026", () => {
+  // Regression: Douyin's HTML JSON-encodes & as &. Earlier the URL
+  // regex excluded backslash, truncating the match before &sign=
+  // and dropping every signed _uhd URL as unsigned. The fix removes
+  // backslash from the negated char class and lets normalizeEscapedUrl
+  // decode & → & before the signing check.
+  const html =
+    '"main":{"flv":"http://pull-flv-q13.douyincdn.com/thirdgame/' +
+    'stream-1_uhd.flv?expire=99\\u0026sign=abcdef\\u0026t=1"}';
+  const candidates = extractStreamUrlCandidates(html);
+  assert.ok(
+    candidates.some((u) => u.includes("_uhd.flv") && u.includes("sign=abcdef")),
+    `expected signed _uhd URL in candidates, got: ${JSON.stringify(candidates)}`,
+  );
 });

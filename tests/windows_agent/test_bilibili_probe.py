@@ -341,5 +341,80 @@ class BilibiliRoomProbeQnPriorityTests(unittest.TestCase):
         self.assertEqual(url, _expected_stream_url())
 
 
+class BilibiliRoomProbeCookieInjectionTests(unittest.TestCase):
+    """PR6.A — SESSDATA cookie injection through stream_headers + _fetch_json.
+
+    When ARL_BILIBILI_SESSDATA is set, the probe must:
+    - emit Cookie: SESSDATA=<value> in stream_headers() so the recorder's
+      _build_ffmpeg_header_args forwards it to ffmpeg.
+    - send the same Cookie header on every _fetch_json call so the API
+      returns qn>=400 (1080P 蓝光) variants instead of being capped at qn=250
+      under anonymous access.
+
+    Empty sessdata must be byte-identical to PR5 behavior — no Cookie key in
+    either stream_headers() or _fetch_json call headers — to defend against
+    accidentally sending "Cookie: SESSDATA=" with an empty value.
+    """
+
+    _SESSDATA = "fake-sessdata-for-testing"
+
+    def _settings(self, sessdata: str) -> BilibiliSettings:
+        return BilibiliSettings(
+            room_url="https://live.bilibili.com/12345",
+            streamer_name="bili-streamer",
+            sessdata=sessdata,
+        )
+
+    def test_sessdata_injected_into_fetch_json_headers(self) -> None:
+        probe = BilibiliRoomProbe(self._settings(self._SESSDATA))
+        responses = [
+            _http_response(200, _ok_status_payload(1)),
+            _http_response(200, _ok_playinfo_payload()),
+        ]
+        with patch(
+            "arl.windows_agent.bilibili_probe.httpx.get",
+            side_effect=responses,
+        ) as mock_get:
+            probe.detect()
+
+        self.assertEqual(mock_get.call_count, 2)
+        for call in mock_get.call_args_list:
+            headers = call.kwargs["headers"]
+            self.assertEqual(
+                headers["Cookie"],
+                f"SESSDATA={self._SESSDATA}",
+            )
+            # PR5 headers must still be present alongside the new Cookie.
+            self.assertEqual(headers["Referer"], "https://live.bilibili.com")
+            self.assertIn("Mozilla/5.0", headers["User-Agent"])
+
+    def test_stream_headers_include_cookie_when_sessdata_set(self) -> None:
+        probe = BilibiliRoomProbe(self._settings(self._SESSDATA))
+        headers = probe.stream_headers()
+        self.assertEqual(headers["Cookie"], f"SESSDATA={self._SESSDATA}")
+        self.assertEqual(headers["Referer"], "https://live.bilibili.com")
+        self.assertIn("Mozilla/5.0", headers["User-Agent"])
+
+    def test_empty_sessdata_keeps_pr5_behavior_byte_identical(self) -> None:
+        probe = BilibiliRoomProbe(self._settings(""))
+
+        headers = probe.stream_headers()
+        self.assertNotIn("Cookie", headers)
+        self.assertEqual(set(headers.keys()), {"Referer", "User-Agent"})
+
+        responses = [
+            _http_response(200, _ok_status_payload(1)),
+            _http_response(200, _ok_playinfo_payload()),
+        ]
+        with patch(
+            "arl.windows_agent.bilibili_probe.httpx.get",
+            side_effect=responses,
+        ) as mock_get:
+            probe.detect()
+
+        for call in mock_get.call_args_list:
+            self.assertNotIn("Cookie", call.kwargs["headers"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -33,6 +33,35 @@ function parseArgs(argv) {
   return args;
 }
 
+// Turn a "k1=v1; k2=v2" cookie header into the Playwright cookie array
+// shape addCookies expects. domain defaults to .douyin.com so cookies copied
+// from Chrome F12 (where the domain is implicit) reach every Douyin host.
+// Empty / malformed pairs are skipped silently — this is a best-effort
+// fallback layered on top of the persistent profile.
+function parseCookieString(raw, domain = ".douyin.com") {
+  if (!raw || typeof raw !== "string") {
+    return [];
+  }
+  const cookies = [];
+  for (const pair of raw.split(";")) {
+    const trimmed = pair.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const eqIdx = trimmed.indexOf("=");
+    if (eqIdx <= 0) {
+      continue;
+    }
+    const name = trimmed.slice(0, eqIdx).trim();
+    const value = trimmed.slice(eqIdx + 1).trim();
+    if (!name) {
+      continue;
+    }
+    cookies.push({ name, value, domain, path: "/" });
+  }
+  return cookies;
+}
+
 function normalizeEscapedUrl(rawValue) {
   let normalized = String(rawValue)
     .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
@@ -184,7 +213,13 @@ function extractStreamUrlCandidates(rawText) {
     }
   }
 
-  for (const match of text.matchAll(/https?:\\?\/\\?\/[^\s"'<>\\]+/gi)) {
+  // The negated char class deliberately excludes whitespace and quote-like
+  // delimiters — but NOT backslash. URLs in Douyin's HTML are JSON-encoded
+  // with `&` for `&` (e.g. `..._uhd.flv?expire=X&sign=Y`);
+  // excluding backslash would truncate the URL right before `&`,
+  // dropping the `sign=` query so the URL is rejected as unsigned.
+  // normalizeEscapedUrl decodes `&` → `&` afterward.
+  for (const match of text.matchAll(/https?:\\?\/\\?\/[^\s"'<>]+/gi)) {
     const normalized = normalizeEscapedUrl(match[0]);
     if (isLikelyStreamUrl(normalized)) {
       candidates.add(normalized);
@@ -289,6 +324,12 @@ async function main() {
   });
 
   try {
+    if (args.cookie) {
+      const cookies = parseCookieString(args.cookie);
+      if (cookies.length > 0) {
+        await browser.addCookies(cookies);
+      }
+    }
     const page = browser.pages()[0] || await browser.newPage();
     const observedStreamUrls = new Set();
     const collectObservedStreamUrls = (rawValue) => {
@@ -348,5 +389,6 @@ export {
   extractDirectStreamUrl,
   extractStreamUrlCandidates,
   parseArgs,
+  parseCookieString,
   pickPreferredStreamUrl,
 };
