@@ -937,3 +937,36 @@ PR6 task scaffolding (prd.md / jsonl / start) is **not** in any commit yet — T
 - **PR4/PR5 commit message anatomy**: each commit message included the why (regression / quality gap), the what (the refactor / tier ranking), the constraint discovery (signed-URL filter, current_qn priority), and the test count. Followed conventional commits scope `(orchestrator)` / `(probe)`. Co-Authored-By trailer per Anthropic guideline. Reusable template for future PRs.
 - **node_modules churn discipline**: `git add <explicit-file-list>` (not `-A` / `-u`) is the only safe pattern when node_modules is tracked but gitignored. Lesson reinforced — should also avoid `npm install` mid-session unless absolutely necessary.
 - **Recorder zero-change is the PR6 lynchpin**: the entire cookie story is `dict[str, str]` transparent forwarding. PR2's `_build_ffmpeg_header_args` design (split User-Agent → `-user_agent`, everything else → `-headers`) was prescient — it makes Cookie injection a probe-only concern. Worth calling out in `.trellis/spec/backend/orchestration-contracts.md` when documenting the Cookie field addition (probably PR6.A's spec update).
+
+
+## Session 24: PR6: cookie/SESSDATA injection unlocks 1080P recording on bilibili + douyin
+
+**Date**: 2026-05-09
+**Task**: PR6: cookie/SESSDATA injection unlocks 1080P recording on bilibili + douyin
+**Branch**: `main`
+
+### Summary
+
+PR6.A 给 BilibiliRoomProbe 接 ARL_BILIBILI_SESSDATA，把 Cookie: SESSDATA=<value> 透传进 _fetch_json 请求和 stream_headers()，匿名 qn=250 (720p) → qn=400 蓝光 (1080P)；ffprobe 实测 1920x1080 @ 60fps h264 通过。PR6.B 给 DouyinRoomProbe 加 stream_headers() override 并把 Cookie 串到 14 处 AgentSnapshot 构造 + Playwright 子进程 --cookie + httpx fallback Cookie header + .mjs addCookies；同时给 probe_douyin_room.mjs 加 parseCookieString helper。配套发现并修复了 PR5 时期就存在但被匿名 _hd 上限掩盖的 URL regex 截断 bug：URL 字符类排除反斜杠会在 Douyin HTML 的 \u0026sign= 处截断 URL 让 _uhd 签名 URL 全被当未签名拒掉。validation: WEI 房间 742070406673 ffprobe 1920x1080 @ 60fps 8 Mbps；recorder _build_ffmpeg_header_args 仍零改动。Tests: +3 PR6.A + +3 PR6.B + +2 regex regression，全量 205 Python OK + 14 Node OK 零回归。Cookie 取法踩坑链路：document.cookie 缺 HttpOnly 字段 → Network Copy as cURL 也容易选到 CDN 域无 cookie 的请求 → 最终走 Playwright 持久化 profile data/tmp/chrome-profile 一次性登录方案最稳。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `46ce327` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

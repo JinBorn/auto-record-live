@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 23
-- **Last Active**: 2026-05-07
+- **Total Sessions**: 24
+- **Last Active**: 2026-05-09
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~816 | Active |
+| `journal-1.md` | ~972 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 24 | 2026-05-09 | PR6: cookie/SESSDATA injection unlocks 1080P recording on bilibili + douyin | `46ce327` | `main` |
 | 23 | 2026-05-07 | Add Bilibili live support: PR1+PR2+PR3 | `d36e485`, `26b49ec`, `a4ecff3` | `main` |
 | 22 | 2026-05-05 | Migrate to Pure-Windows: PR3 deletes + finish | `afacf61`, `8576a23` | `feat/migrate-pure-windows-pr1` |
 | 21 | 2026-05-04 | Fix orchestrator state UTF-8 decode + sub-agent dispatch discipline | `6eb182e`, `aac6a18` | `feat/migrate-pure-windows-pr1` |
