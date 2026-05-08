@@ -97,11 +97,11 @@ class OrchestratorMultiPlatformTests(unittest.TestCase):
         self.assertEqual(job.stream_headers["User-Agent"], "Mozilla/5.0")
         self.assertEqual(job.status, RecordingJobStatus.QUEUED)
 
-    def test_cross_platform_live_started_supersedes_active_session(self) -> None:
-        # Douyin goes live first, then Bilibili — different platforms means
-        # Douyin's session must be cleanly stopped before Bilibili's session
-        # starts, since the orchestrator only tracks one active session at a
-        # time and the streamer has migrated platforms.
+    def test_cross_platform_live_started_runs_concurrently(self) -> None:
+        # Multi-platform deployments (e.g. ARL_PLATFORMS=douyin,bilibili) must
+        # let both platforms' live sessions coexist. A live_started on platform
+        # B must NOT supersede platform A's active session — each platform has
+        # its own active_session_id_by_platform[platform] entry.
         self._append_event(
             _live_started_line(
                 platform="douyin",
@@ -116,7 +116,7 @@ class OrchestratorMultiPlatformTests(unittest.TestCase):
         self._append_event(
             _live_started_line(
                 platform="bilibili",
-                streamer_name="streamer-a",
+                streamer_name="streamer-b",
                 room_url="https://live.bilibili.com/12345",
                 detected_at="2026-05-06T01:01:00+00:00",
                 stream_url="https://cn-pull.example.com/live/abc.flv?token=x",
@@ -134,13 +134,78 @@ class OrchestratorMultiPlatformTests(unittest.TestCase):
         self.assertEqual(len(state.sessions), 2)
         douyin_session, bilibili_session = state.sessions
 
+        # Both stay LIVE — no supersede across platforms.
         self.assertEqual(douyin_session.platform, "douyin")
-        self.assertEqual(douyin_session.status, SessionStatus.STOPPED)
-        self.assertEqual(douyin_session.stop_reason, "superseded_by_new_live_started")
+        self.assertEqual(douyin_session.status, SessionStatus.LIVE)
+        self.assertIsNone(douyin_session.stop_reason)
 
         self.assertEqual(bilibili_session.platform, "bilibili")
         self.assertEqual(bilibili_session.status, SessionStatus.LIVE)
-        self.assertEqual(state.active_session_id, bilibili_session.session_id)
+        self.assertIsNone(bilibili_session.stop_reason)
+
+        # Per-platform active id maps both populated.
+        self.assertEqual(
+            state.active_session_id_by_platform["douyin"],
+            douyin_session.session_id,
+        )
+        self.assertEqual(
+            state.active_session_id_by_platform["bilibili"],
+            bilibili_session.session_id,
+        )
+
+        # Both recording jobs queued, both reachable via active_recording_job_id_by_platform.
+        self.assertEqual(len(state.recording_jobs), 2)
+        for job in state.recording_jobs:
+            self.assertEqual(
+                state.active_recording_job_id_by_platform[job.platform],
+                job.job_id,
+            )
+
+    def test_same_platform_different_room_supersedes_active_session(self) -> None:
+        # Same platform but a different room_url = the streamer migrated
+        # rooms within Douyin. The previous Douyin session is stale and must
+        # be stopped before the new one starts, so we don't accumulate
+        # multiple live sessions for the same platform.
+        self._append_event(
+            _live_started_line(
+                platform="douyin",
+                streamer_name="streamer-a",
+                room_url="https://live.douyin.com/room-old",
+                detected_at="2026-05-06T01:00:00+00:00",
+                stream_url="https://example.invalid/douyin-old.m3u8",
+            )
+        )
+        OrchestratorService(self.settings).run_once()
+
+        self._append_event(
+            _live_started_line(
+                platform="douyin",
+                streamer_name="streamer-a",
+                room_url="https://live.douyin.com/room-new",
+                detected_at="2026-05-06T01:01:00+00:00",
+                stream_url="https://example.invalid/douyin-new.m3u8",
+            )
+        )
+        OrchestratorService(self.settings).run_once()
+
+        state = OrchestratorStateFile.model_validate_json(
+            self.settings.orchestrator.state_file.read_text(encoding="utf-8")
+        )
+        self.assertEqual(len(state.sessions), 2)
+        old_session, new_session = state.sessions
+
+        self.assertEqual(old_session.room_url, "https://live.douyin.com/room-old")
+        self.assertEqual(old_session.status, SessionStatus.STOPPED)
+        self.assertEqual(old_session.stop_reason, "superseded_by_new_live_started")
+
+        self.assertEqual(new_session.room_url, "https://live.douyin.com/room-new")
+        self.assertEqual(new_session.status, SessionStatus.LIVE)
+
+        # Only the new session is active for douyin.
+        self.assertEqual(
+            state.active_session_id_by_platform["douyin"],
+            new_session.session_id,
+        )
 
     def test_same_platform_duplicate_live_started_does_not_supersede(self) -> None:
         # A second live_started for the SAME (platform, room_url) is treated
@@ -173,12 +238,9 @@ class OrchestratorMultiPlatformTests(unittest.TestCase):
         state = OrchestratorStateFile.model_validate_json(
             self.settings.orchestrator.state_file.read_text(encoding="utf-8")
         )
-        # Still one session — duplicate was enriched in place, not stopped.
         self.assertEqual(len(state.sessions), 1)
         session = state.sessions[0]
         self.assertEqual(session.status, SessionStatus.LIVE)
-        # The enrichment must have updated stream_url and headers from the
-        # second event.
         self.assertEqual(
             session.stream_url, "https://cn-pull.example.com/live/abc.flv?token=x"
         )

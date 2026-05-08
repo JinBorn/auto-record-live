@@ -884,8 +884,6 @@ class FfmpegResilienceTest(unittest.TestCase):
                     recovery_hint="Install ffmpeg and verify PATH on the runtime host.",
                 )
             ],
-            active_session_id=None,
-            active_recording_job_id=None,
         )
         self.orchestrator_state_path.parent.mkdir(parents=True, exist_ok=True)
         self.orchestrator_state_path.write_text(
@@ -910,7 +908,7 @@ class FfmpegResilienceTest(unittest.TestCase):
         self.assertEqual(updated_state.recording_jobs[0].status, RecordingJobStatus.RETRYING)
         self.assertEqual(updated_state.recording_jobs[0].stop_reason, "operator-fixed")
         self.assertIsNone(updated_state.recording_jobs[0].ended_at)
-        self.assertEqual(updated_state.active_recording_job_id, "job-manual-requeue")
+        self.assertEqual(updated_state.active_recording_job_id_by_platform["douyin"], "job-manual-requeue")
 
         recorder_event_payloads = [
             json.loads(line)

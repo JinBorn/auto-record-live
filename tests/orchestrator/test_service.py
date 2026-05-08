@@ -148,8 +148,8 @@ class OrchestratorServiceTest(unittest.TestCase):
         )
         self.assertEqual(len(state.sessions), 1)
         self.assertEqual(len(state.recording_jobs), 1)
-        self.assertIsNone(state.active_session_id)
-        self.assertIsNone(state.active_recording_job_id)
+        self.assertNotIn("douyin", state.active_session_id_by_platform)
+        self.assertNotIn("douyin", state.active_recording_job_id_by_platform)
         self.assertEqual(state.sessions[0].status, SessionStatus.STOPPED)
         self.assertIsNotNone(state.sessions[0].ended_at)
         self.assertEqual(state.recording_jobs[0].status, RecordingJobStatus.STOPPED)
@@ -177,8 +177,8 @@ class OrchestratorServiceTest(unittest.TestCase):
         )
         self.assertEqual(len(state.sessions), 1)
         self.assertEqual(len(state.recording_jobs), 1)
-        self.assertIsNotNone(state.active_session_id)
-        self.assertIsNotNone(state.active_recording_job_id)
+        self.assertIn("douyin", state.active_session_id_by_platform)
+        self.assertIn("douyin", state.active_recording_job_id_by_platform)
         self.assertEqual(state.sessions[0].status, SessionStatus.LIVE)
         self.assertEqual(state.recording_jobs[0].status, RecordingJobStatus.QUEUED)
 
@@ -243,7 +243,7 @@ class OrchestratorServiceTest(unittest.TestCase):
 
         first_job.status = RecordingJobStatus.FAILED
         first_job.ended_at = first_job.created_at
-        state.active_recording_job_id = None
+        state.active_recording_job_id_by_platform = {}
         self.state_file.write_text(state.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
         with self.agent_event_log.open("a", encoding="utf-8") as handle:
@@ -270,7 +270,7 @@ class OrchestratorServiceTest(unittest.TestCase):
             updated.recording_jobs[-1].stream_url,
             "https://cdn.example/live-3.m3u8",
         )
-        self.assertEqual(updated.active_recording_job_id, updated.recording_jobs[-1].job_id)
+        self.assertEqual(updated.active_recording_job_id_by_platform[updated.recording_jobs[-1].platform], updated.recording_jobs[-1].job_id)
 
     def test_new_streamer_live_started_replaces_stale_active_session(self) -> None:
         lines = [
@@ -302,8 +302,8 @@ class OrchestratorServiceTest(unittest.TestCase):
         self.assertEqual(state.sessions[0].stop_reason, "superseded_by_new_live_started")
         self.assertEqual(state.sessions[1].status, SessionStatus.LIVE)
         self.assertEqual(state.sessions[1].streamer_name, "streamer-b")
-        self.assertEqual(state.active_session_id, state.sessions[1].session_id)
-        self.assertEqual(state.active_recording_job_id, state.recording_jobs[1].job_id)
+        self.assertEqual(state.active_session_id_by_platform[state.sessions[1].platform], state.sessions[1].session_id)
+        self.assertEqual(state.active_recording_job_id_by_platform[state.recording_jobs[1].platform], state.recording_jobs[1].job_id)
 
     def test_cursor_supports_incremental_processing(self) -> None:
         self.agent_event_log.write_text(
@@ -398,7 +398,7 @@ class OrchestratorServiceTest(unittest.TestCase):
         self.assertEqual(state.recording_jobs[0].failure_category, "ffmpeg_process_error_retryable")
         self.assertTrue(state.recording_jobs[0].recoverable)
         self.assertIsNotNone(state.recording_jobs[0].recovery_hint)
-        self.assertIsNone(state.active_recording_job_id)
+        self.assertNotIn("douyin", state.active_recording_job_id_by_platform)
 
         with self.recorder_event_log.open("a", encoding="utf-8") as handle:
             handle.write(
@@ -418,7 +418,7 @@ class OrchestratorServiceTest(unittest.TestCase):
         self.assertEqual(state.recording_jobs[0].status, RecordingJobStatus.RETRYING)
         self.assertEqual(state.recording_jobs[0].stop_reason, "manual_recovery_resolved")
         self.assertIsNone(state.recording_jobs[0].ended_at)
-        self.assertEqual(state.active_recording_job_id, job.job_id)
+        self.assertEqual(state.active_recording_job_id_by_platform[job.platform], job.job_id)
 
     def test_ffmpeg_success_event_closes_retrying_job(self) -> None:
         self.agent_event_log.write_text(
@@ -466,7 +466,7 @@ class OrchestratorServiceTest(unittest.TestCase):
         self.assertEqual(state.recording_jobs[0].status, RecordingJobStatus.STOPPED)
         self.assertIsNone(state.recording_jobs[0].stop_reason)
         self.assertIsNotNone(state.recording_jobs[0].ended_at)
-        self.assertIsNone(state.active_recording_job_id)
+        self.assertNotIn("douyin", state.active_recording_job_id_by_platform)
         self.assertIsNone(state.recording_jobs[0].failure_category)
         self.assertIsNone(state.recording_jobs[0].recoverable)
         self.assertIsNone(state.recording_jobs[0].recovery_hint)
@@ -634,7 +634,7 @@ class OrchestratorServiceTest(unittest.TestCase):
         )
         self.assertEqual(state.recording_jobs[0].status, RecordingJobStatus.RETRYING)
         self.assertEqual(state.recording_jobs[0].stop_reason, "retry_after_unknown")
-        self.assertEqual(state.active_recording_job_id, job.job_id)
+        self.assertEqual(state.active_recording_job_id_by_platform[job.platform], job.job_id)
 
         audit_lines = [
             json.loads(line)
@@ -790,7 +790,7 @@ class OrchestratorServiceTest(unittest.TestCase):
         self.assertEqual(state.recording_jobs[0].status, RecordingJobStatus.RETRYING)
         self.assertEqual(state.recording_jobs[0].failure_category, "ffmpeg_process_error_retryable")
         self.assertTrue(state.recording_jobs[0].recoverable)
-        self.assertEqual(state.active_recording_job_id, job.job_id)
+        self.assertEqual(state.active_recording_job_id_by_platform[job.platform], job.job_id)
 
         audit_lines = [
             json.loads(line)
@@ -851,7 +851,7 @@ class OrchestratorServiceTest(unittest.TestCase):
         )
         self.assertFalse(state.recording_jobs[0].recoverable)
         self.assertIsNotNone(state.recording_jobs[0].ended_at)
-        self.assertIsNone(state.active_recording_job_id)
+        self.assertNotIn("douyin", state.active_recording_job_id_by_platform)
 
         audit_lines = [
             json.loads(line)
@@ -909,7 +909,7 @@ class OrchestratorServiceTest(unittest.TestCase):
         self.assertEqual(state.recording_jobs[0].failure_category, "http_4xx_non_retryable")
         self.assertFalse(state.recording_jobs[0].recoverable)
         self.assertIsNotNone(state.recording_jobs[0].ended_at)
-        self.assertIsNone(state.active_recording_job_id)
+        self.assertNotIn("douyin", state.active_recording_job_id_by_platform)
 
     def test_http_4xx_failure_then_next_live_started_recreates_active_job(self) -> None:
         self.agent_event_log.write_text(
@@ -962,7 +962,7 @@ class OrchestratorServiceTest(unittest.TestCase):
         self.assertEqual(len(updated.recording_jobs), 2)
         self.assertEqual(updated.recording_jobs[-1].status, RecordingJobStatus.QUEUED)
         self.assertEqual(updated.recording_jobs[-1].source_type.value, "browser_capture")
-        self.assertEqual(updated.active_recording_job_id, updated.recording_jobs[-1].job_id)
+        self.assertEqual(updated.active_recording_job_id_by_platform[updated.recording_jobs[-1].platform], updated.recording_jobs[-1].job_id)
 
     def test_http_4xx_failure_locks_session_to_browser_capture(self) -> None:
         self.agent_event_log.write_text(
@@ -1015,7 +1015,7 @@ class OrchestratorServiceTest(unittest.TestCase):
         self.assertIsNone(updated.sessions[0].stream_url)
         self.assertEqual(updated.recording_jobs[-1].source_type.value, "browser_capture")
         self.assertIsNone(updated.recording_jobs[-1].stream_url)
-        self.assertEqual(updated.active_recording_job_id, updated.recording_jobs[-1].job_id)
+        self.assertEqual(updated.active_recording_job_id_by_platform[updated.recording_jobs[-1].platform], updated.recording_jobs[-1].job_id)
 
     def test_ffmpeg_record_failed_http_503_keeps_job_retrying(self) -> None:
         self.agent_event_log.write_text(
@@ -1054,7 +1054,7 @@ class OrchestratorServiceTest(unittest.TestCase):
         self.assertEqual(state.recording_jobs[0].status, RecordingJobStatus.RETRYING)
         self.assertEqual(state.recording_jobs[0].failure_category, "http_5xx_retryable")
         self.assertTrue(state.recording_jobs[0].recoverable)
-        self.assertEqual(state.active_recording_job_id, job.job_id)
+        self.assertEqual(state.active_recording_job_id_by_platform[job.platform], job.job_id)
 
 
 if __name__ == "__main__":

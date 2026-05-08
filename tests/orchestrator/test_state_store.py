@@ -27,7 +27,7 @@ def _build_state_with_chinese_streamer() -> OrchestratorStateFile:
             started_at=datetime(2026, 5, 4, 8, 0, 21, tzinfo=timezone.utc),
         )
     )
-    state.active_session_id = state.sessions[0].session_id
+    state.active_session_id_by_platform[state.sessions[0].platform] = state.sessions[0].session_id
     return state
 
 

@@ -60,8 +60,12 @@ class OrchestratorStateFile(BaseModel):
     cursor_offset: int = 0
     recorder_cursor_offset: int = 0
     recorder_last_event_at_by_job_id: dict[str, datetime]
-    active_session_id: str | None = None
-    active_recording_job_id: str | None = None
+    # Per-platform active id maps. Multi-platform deployments need each
+    # platform to track its own active session/job independently; otherwise a
+    # live_started on one platform would supersede the other's already-live
+    # session.
+    active_session_id_by_platform: dict[str, str]
+    active_recording_job_id_by_platform: dict[str, str]
     sessions: list[SessionRecord]
     recording_jobs: list[RecordingJobRecord]
 ```
@@ -131,13 +135,13 @@ class RecordingJobRecord(BaseModel):
   - `snapshot.state` must be `offline`
   - `snapshot.reason` should be populated when the stop cause is known
 - State lifecycle contract:
-  - one active live session at a time in MVP
-  - one active recording job at a time in MVP
+  - one active live session per platform (`active_session_id_by_platform[platform]`); cross-platform sessions coexist
+  - one active recording job per platform (`active_recording_job_id_by_platform[platform]`); cross-platform jobs coexist
   - duplicate `live_started` for the same `(platform, room_url)` enriches the active session in place — must not create a second session/job, may update `stream_url` from `None` → known, and refreshes `stream_headers` from the latest snapshot (so probe-side token rotation propagates without a session restart)
-  - `live_started` from a different `(platform, room_url)` supersedes the active session — superseded session keeps `stop_reason="superseded_by_new_live_started"` and the new platform's session/job inherit `platform` + `stream_headers` from the new snapshot
+  - `live_started` from the SAME platform with a different `room_url` supersedes that platform's active session — superseded session keeps `stop_reason="superseded_by_new_live_started"` and the new room's session/job inherit `stream_url` + `stream_headers` from the new snapshot. Cross-platform `live_started` does NOT supersede; each platform's active session is tracked independently.
   - `live_stopped` closes the active session and active recording job if they exist
   - recorder audit events may transition recording job status:
-    - `recording_retry_scheduled` -> `retrying` and re-open `active_recording_job_id` to that job
+    - `recording_retry_scheduled` -> `retrying` and re-open `active_recording_job_id_by_platform[job.platform]` to that job
     - `recording_retry_exhausted`, `ffmpeg_skipped`, `ffmpeg_fallback_placeholder` -> `failed`
     - `ffmpeg_record_failed` -> `retrying` when failure is recoverable; otherwise `failed`
     - `ffmpeg_record_succeeded` after retry/failure -> `stopped`
@@ -169,7 +173,8 @@ class RecordingJobRecord(BaseModel):
 | `live_started` arrives while an active session is open | Do not create a new session/job; append duplicate audit event |
 | Duplicate `live_started` contains a new `stream_url` | Enrich active session `stream_url` before ignoring the duplicate |
 | Duplicate `live_started` arrives with a refreshed `stream_headers` dict | Replace `active_session.stream_headers` with the latest snapshot value (so probe-side token rotation reaches the recorder without a restart) |
-| `live_started` arrives for `(platform, room_url)` different from the active session | Supersede the active session with `stop_reason="superseded_by_new_live_started"`; create a new session/job inheriting `platform` + `stream_headers` from the new snapshot |
+| `live_started` arrives for the SAME platform with a different `room_url` | Supersede that platform's active session with `stop_reason="superseded_by_new_live_started"`; create a new session/job for the same platform with the new `room_url`, `stream_url`, and `stream_headers` |
+| `live_started` arrives for a DIFFERENT platform than any current active session | Create a new session/job for that platform; do NOT touch any other platform's active session |
 | Snapshot carries default `platform="douyin"` with empty `stream_headers` | Recorder ffmpeg command is byte-identical to the pre-PR2 path; no `-user_agent` / `-headers` flags emitted |
 | Snapshot carries `platform="bilibili"` with non-empty `stream_headers` | Recorder ffmpeg command emits `-user_agent <UA>` + `-headers "K: V\r\n..."` before `-i`; orchestrator session and job records preserve both fields for retry runs |
 | `live_started` carries `source_type=direct_stream` but `stream_url` is empty | Treat as producer contract violation in tests; producer must emit browser-capture fallback shape instead |
@@ -207,8 +212,9 @@ class RecordingJobRecord(BaseModel):
   - Assert exactly one active session and one recording job remain.
   - Assert `stream_url` enrichment works when the duplicate has more information.
   - Assert `stream_headers` refresh propagates from the latest snapshot to the active session in place.
-- Unit test: cross-platform `live_started` supersedes the active session (in `tests/orchestrator/test_multi_platform.py`).
-  - Assert different `(platform, room_url)` stops the previous session with `stop_reason="superseded_by_new_live_started"` and creates a new session/job carrying the new platform's `stream_headers`.
+- Unit test: multi-platform live sessions coexist (in `tests/orchestrator/test_multi_platform.py`).
+  - Assert `test_cross_platform_live_started_runs_concurrently`: live_started on platform B does NOT stop platform A's session; both `active_session_id_by_platform` entries are populated.
+  - Assert `test_same_platform_different_room_supersedes_active_session`: same-platform with a different `room_url` still triggers supersede (`stop_reason="superseded_by_new_live_started"`).
 - Unit test: Bilibili probe API contract (in `tests/windows_agent/test_bilibili_probe.py`).
   - Assert `live_status==1` + valid playinfo JSON maps to `LIVE` + `direct_stream` with the joined `host + base_url + extra` URL.
   - Assert `live_status==2` (carousel) maps to `OFFLINE` with `reason="carousel_playback"`.

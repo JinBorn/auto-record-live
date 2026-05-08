@@ -110,7 +110,40 @@ class OrchestratorStateFile(BaseModel):
     recorder_last_event_at_by_job_id: dict[str, datetime] = Field(default_factory=dict)
     unknown_failure_event_times_by_job_id: dict[str, list[datetime]] = Field(default_factory=dict)
     unknown_failure_last_escalated_at_by_job_id: dict[str, datetime] = Field(default_factory=dict)
-    active_session_id: str | None = None
-    active_recording_job_id: str | None = None
+    # Per-platform active id maps. Multi-platform deployments (e.g. ARL_PLATFORMS=
+    # douyin,bilibili) need each platform to track its own active session/job
+    # independently, otherwise a live_started on one platform would supersede the
+    # other's already-live session.
+    active_session_id_by_platform: dict[str, str] = Field(default_factory=dict)
+    active_recording_job_id_by_platform: dict[str, str] = Field(default_factory=dict)
     sessions: list[SessionRecord] = Field(default_factory=list)
     recording_jobs: list[RecordingJobRecord] = Field(default_factory=list)
+
+    # Legacy single-platform active id fields. Kept only to load older state
+    # files written before per-platform routing; excluded from serialization so
+    # new saves use the dict shape exclusively. Migrated into the dicts on load.
+    active_session_id: str | None = Field(default=None, exclude=True)
+    active_recording_job_id: str | None = Field(default=None, exclude=True)
+
+    @model_validator(mode="after")
+    def _migrate_legacy_active_ids(self) -> "OrchestratorStateFile":
+        if self.active_session_id and not self.active_session_id_by_platform:
+            for session in self.sessions:
+                if session.session_id == self.active_session_id:
+                    self.active_session_id_by_platform[session.platform] = (
+                        session.session_id
+                    )
+                    break
+            self.active_session_id = None
+        if (
+            self.active_recording_job_id
+            and not self.active_recording_job_id_by_platform
+        ):
+            for job in self.recording_jobs:
+                if job.job_id == self.active_recording_job_id:
+                    self.active_recording_job_id_by_platform[job.platform] = (
+                        job.job_id
+                    )
+                    break
+            self.active_recording_job_id = None
+        return self
