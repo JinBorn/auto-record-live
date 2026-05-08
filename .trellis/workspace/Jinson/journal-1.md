@@ -814,3 +814,69 @@ Implemented multi-platform live recording (Douyin + Bilibili) across 3 PRs all d
 ### Next Steps
 
 - None - task complete
+
+
+## Session 24: Real-room dual-platform smoke test + multi-platform supersede fix + quality (1080p60) probe upgrades
+
+**Date**: 2026-05-08
+**Task**: 测试并完善：抖音 + B 站双平台真实联调（journal Session 23 deferred operator smoke test）
+**Branch**: `main`
+
+### Summary
+
+Two-phase session, all inline (sub-agent 500-Panic still confirmed — 1st Explore call this session returned the same nil-pointer-deref signature documented in journals 21 and 23; everything done in main thread per user direction).
+
+**Phase D — Real联调 + multi-platform supersede bug fix**: ran Session 23 deferred B站 real-stream smoke test against 抖音 https://live.douyin.com/190626328582 (小柴) + B站 https://live.bilibili.com/6963590 (挖机牧魂人), .env switched in-place to ARL_PLATFORMS=douyin,bilibili + ARL_DIRECT_STREAM_TIMEOUT_SECONDS=30, ran agent --once → orchestrator --once → recorder serially. Both platforms LIVE / DIRECT_STREAM, both mp4s ffprobe-clean (8.06 MB / 6.50 MB at 720p/h264+aac), Bilibili stream_headers Referer+UA correctly injected via _build_ffmpeg_header_args. BUT inspecting orchestrator-state.json revealed a multi-platform state-machine bug: 抖音 session/job marked stopped/superseded_by_new_live_started while B站 marked live, even though both rooms were still streaming. Root cause: OrchestratorStateFile only had single active_session_id / active_recording_job_id fields, so _on_live_started supersede check at service.py:144-149 fired across platforms. Session 23 PR2 had encoded this buggy behavior in test_cross_platform_live_started_supersedes_active_session — 189 tests green was a false-green. Fix: refactored to active_session_id_by_platform + active_recording_job_id_by_platform dicts in OrchestratorStateFile (legacy single fields demoted to exclude=True with model_validator migration); _active_session(state, platform) / _active_job(state, platform) now take platform arg; supersede only triggers same-platform-different-room; _on_live_stopped routes via snapshot.platform; recorder event handlers route via job.platform (~7 sites). 7 files (models.py +37 / service.py +72/-72 / 4 test files / orchestration-contracts.md spec). Replaced wrong test with test_cross_platform_live_started_runs_concurrently asserting both stay LIVE + active id maps both populated; added test_same_platform_different_room_supersedes_active_session preserving legitimate same-platform supersede. Real smoke retest after fix: orchestrator audit log no longer emits session_replaced_by_new_live_started, both sessions correctly status=live concurrently.
+
+**Phase E — 1080p / 60fps quality patches**: user asked why both recordings were 720p, diagnosed: (a) Douyin probe.py _stream_url_score only weighted .m3u8 (50) > .flv (40) with no tier preference among origin/uhd/hd/sd/md/ld so picked arbitrarily (b) Bilibili _extract_stream_url returned the FIRST codec.url_info walked instead of highest current_qn so even with qn=10000 request the first-position qn=250 won. Patches: Douyin _QUALITY_TIER_PATTERN regex + tier scores (origin=1000…ld=25); Bilibili _extract_stream_url collects all (current_qn, joined_url) candidates and sorts by qn desc with bool-guarded _coerce_int. CRITICAL discovery during real test: Douyin pages embed BOTH signed leaf URLs (have sign= or wsSecret=, directly playable) AND unsigned master playlists (no signing token, ffmpeg gets 403). New tier-ranking initially regressed quality because unsigned _uhd master beats signed _hd in score. Fixed by adding signature-required filter in _is_likely_stream_url (Python) and isLikelyStreamUrl (mjs) — URL must contain sign= or wsSecret= in query string, otherwise dropped. Same dual-impl in src/arl/windows_agent/probe.py + scripts/probe_douyin_room.mjs (kept in sync, comment cross-references). Final smoke results: 抖音 went from 720p30 / ~2 Mbps (Phase D baseline) to **720p60 / 6.18 Mbps** stable across 2 retries (frame rate doubled, bitrate 3x). B站 went offline during retries so could not visually verify but established by API probe that anonymous access is HARD-CAPPED at qn=250 (720P 超清) regardless of requested qn — accept_qn=[10000, 400, 250] visible but API silently downgrades; reaching qn=400 (1080P 蓝光) or qn=10000 (1080P 原画) requires SESSDATA cookie support which is a separate future PR. Same anonymous-cap reality applies to Douyin _uhd/_origin: page only exposes them as unsigned master playlists, signed leaf URLs only go up to _hd — 720p60 IS the realistic anonymous max for that streamer. Tests: pytest 198 green (190 from Phase D + 8 new score/qn/signed-filter tests); node --test scripts/__tests__ 10 green (8 + 2 new). Bonus side-fix: discovered Playwright was broken (node_modules/playwright-core/lib/utils/network.js missing — partial install), npm install repaired it. Made Douyin Playwright probing reliable again.
+
+### Main Changes
+
+| File | Phase | Lines | Purpose |
+|------|-------|-------|---------|
+| `src/arl/orchestrator/models.py` | D | +37 | per-platform active id dicts + legacy migration |
+| `src/arl/orchestrator/service.py` | D | +72/-72 | per-platform routing in supersede + stop + recorder event handlers |
+| `tests/orchestrator/test_multi_platform.py` | D | +86 | replace cross-platform-supersede test with concurrent + add same-platform-supersede |
+| `tests/orchestrator/test_service.py` | D | +36/-36 | migrate legacy field reads to dict shape |
+| `tests/orchestrator/test_state_store.py` | D | +1/-1 | dict-shape assignment |
+| `tests/pipeline/test_ffmpeg_resilience.py` | D | +1/-3 | drop legacy kwargs + dict-shape assertion |
+| `.trellis/spec/backend/orchestration-contracts.md` | D | +14/-10 | per-platform contract + new error-matrix rows + revised test bullets |
+| `src/arl/windows_agent/probe.py` | E | +43/-15 | tier-aware score + signed-URL filter |
+| `src/arl/windows_agent/bilibili_probe.py` | E | +37/-8 | highest current_qn picker + bool-guarded coerce |
+| `scripts/probe_douyin_room.mjs` | E | +33/-16 | tier-aware score + signed-URL filter (mirror of probe.py) |
+| `scripts/__tests__/probe_douyin_room.test.mjs` | E | +37/-13 | rewrite fixtures with sign= + 2 new signed-filter tests |
+| `tests/windows_agent/test_probe.py` | E | +63/-8 | 4 new score tests + fixture sign= updates |
+| `tests/windows_agent/test_bilibili_probe.py` | E | +121 | 4 new qn-priority tests |
+| `.env` | runtime | (gitignored) | swap to dual-platform with smoke-target rooms; old backed up to `.env.bak.1778160539` |
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| (none yet — uncommitted at session end, deferred to next session per user direction "明天再继续") |
+
+### Testing
+
+- [OK] pytest tests/ → 198 passed (Phase D fix added 1 net test, Phase E added 8)
+- [OK] node --test scripts/__tests__/probe_douyin_room.test.mjs → 10 passed (8 baseline + 2 new)
+- [OK] Real smoke 抖音: 720p60 / 6.18 Mbps / 23 MB / 30s mp4, two retries clean
+- [PARTIAL] Real smoke B站: state-machine fix verified (concurrent LIVE) once; quality verification blocked because streamer went offline mid-session
+- [OK] orchestrator audit log post-fix has zero session_replaced_by_new_live_started events for cross-platform live_started
+
+### Status
+
+[IN_PROGRESS] code complete + tests green + journal written; **uncommitted, archive deferred to next session per user direction "明天再继续"**
+
+### Next Steps
+
+- **Tomorrow first action**: decide commit split. Suggested: 2 commits — (a) PR4 multi-platform supersede fix (7 files: orchestrator models + service + 4 test files + spec), (b) PR5 1080p probe quality (6 files: probe.py + bilibili_probe.py + mjs + 3 test files).
+- After commit: optional follow-up PR for SESSDATA/cookie support to break the anonymous-720p ceiling on both platforms (B站 can hit 1080P 蓝光 with cookie alone; 1080P 原画 needs higher account permissions; 抖音 cookie unlocks signed _uhd/_origin URLs in DOM).
+- Bonus / unrelated: investigate the one-off `moov atom not found` mp4 from earlier in this session (Douyin HLS master playlist ffmpeg `-c copy` edge case). Maybe add `-movflags +faststart+frag_keyframe+empty_moov` for resilience. Low priority.
+- Sub-agent 500-Panic now confirmed across **3 consecutive tasks** (migrate-pure-windows, add-bilibili-live-support, this one). Pattern is established. Worth flagging upstream if it persists.
+
+### Findings worth flagging
+
+- **Anonymous quality cap is a hard wall on both platforms**: B站 max=qn=250 (720P), 抖音 max=`_hd` signed (720p60). 1080P+ requires authenticated session. This is the SINGLE biggest blocker to true HD esports recording and worth treating as a planned PR not a quick fix.
+- **Test-author intent vs system-author intent gap**: Session 23's `test_cross_platform_live_started_supersedes_active_session` test name + comment ("the streamer has migrated platforms") shows the author thought of cross-platform as a streamer-migration scenario, but README simultaneously documented `ARL_PLATFORMS=douyin,bilibili` as concurrent monitoring. The test was wrong, not the README. Lesson: when a feature has two valid intents (migration vs concurrency), tests should pin which one and assertions must match docs.
+- **Dual-impl drift risk**: `probe.py` and `probe_douyin_room.mjs` both contain the URL extraction + scoring + signed-filter logic now. They MUST stay in sync (added cross-reference comments to both). A future refactor should consolidate (probably by having .mjs only collect + emit candidates, Python does the scoring) — but not today.
+- **`Path.read_text()` returns source-file bytes**: when patching test fixtures via Python script, escape sequences like `\/` in source code remain as literal `\` + `/` in the read string. Easy to forget. Use minimal anchored substrings (e.g. `abc.m3u8?token=1"` ending quote) rather than trying to match the full escape-laden line.
