@@ -123,6 +123,10 @@ class RecordingJobRecord(BaseModel):
   - if `snapshot.source_type == "direct_stream"`, then `snapshot.stream_url` must be a non-empty `http(s)` URL
   - if no direct stream URL is discoverable, emit `snapshot.source_type == "browser_capture"` with `snapshot.stream_url == null`
   - direct-stream discovery should prefer `m3u8` over `flv` when both are available, and must ignore static asset URLs (`.js`, `.css`, image/font files)
+  - strict quality gating applies before emitting `state=live` for direct-stream snapshots:
+    - Douyin: selected stream URL must satisfy `DouyinSettings.min_quality_tier` (default `uhd`, i.e. 1080p-grade); lower tiers (`hd/sd/md/ld`) and tier-unknown URLs are treated as unavailable (`state=offline` with quality reason)
+    - Bilibili: selected playinfo candidate must satisfy `BilibiliSettings.min_stream_qn` (default `400`, i.e. 1080p baseline); candidates below threshold are treated as unavailable (`state=offline` with quality reason)
+    - Bilibili bitrate gate (when metadata exists): if codec payload exposes `bandwidth`/`bitrate`/`bit_rate`, candidate must satisfy `BilibiliSettings.min_stream_bitrate_kbps` (default `4500`) or be treated as unavailable
   - direct-stream discovery may combine page HTML extraction and observed browser network URLs; when either channel yields a valid stream URL and no explicit offline marker is present, producer may emit `state=live` with `reason=stream_url_detected`
   - direct-stream candidate normalization should decode escaped and percent-encoded URL forms (for example `https%3A%2F%2F...m3u8`) before stream-url validation
   - normalization should also tolerate multi-layer percent-encoded payloads (for example `https%253A%252F%252F...`) and `\xNN`-escaped URL fragments that appear in script payloads
@@ -150,10 +154,12 @@ class RecordingJobRecord(BaseModel):
     - `recoverable`
     - `recovery_hint`
   - successful recorder completion (`ffmpeg_record_succeeded`) must clear failure metadata fields
-  - Recorder header injection contract:
+- Recorder header injection contract:
     - `RecordingJobRecord.stream_headers` (with `SessionRecord.stream_headers` as fallback) must reach ffmpeg before `-i` as: `-user_agent <value>` for the `User-Agent` entry (case-insensitive lookup) plus `-headers "K1: V1\r\nK2: V2\r\n..."` for every other entry joined with CRLF
     - empty `stream_headers` produces a byte-identical command to the pre-PR2 path, so Douyin recordings keep the same ffmpeg invocation
     - the User-Agent header rides on the dedicated `-user_agent` flag (not duplicated in `-headers`) to avoid quoting/escaping ambiguity at the shell layer
+  - Availability-over-fallback contract:
+    - For quality-gate failures (`quality_below_min_qn:*`, `quality_below_min_bitrate:*`, `quality_below_min_tier:*`, `quality_tier_unknown:*`), probes must emit `state=offline` instead of degrading to lower-quality direct-stream or browser-capture output.
   - orchestrator audit log must include recovery action routing:
     - `recording_job_recovery_retry_planned` for retry path
     - `recording_job_recovery_manual_required` for manual intervention path
@@ -172,6 +178,7 @@ class RecordingJobRecord(BaseModel):
 | Unknown `event_type` | Append audit event `ignored_unknown_event_type`; do not mutate active session/job |
 | `live_started` arrives while an active session is open | Do not create a new session/job; append duplicate audit event |
 | Duplicate `live_started` contains a new `stream_url` | Enrich active session `stream_url` before ignoring the duplicate |
+| Candidate stream URL exists but fails configured quality gate | Emit `OFFLINE` snapshot with quality reason; do not emit `LIVE` with downgraded stream |
 | Duplicate `live_started` arrives with a refreshed `stream_headers` dict | Replace `active_session.stream_headers` with the latest snapshot value (so probe-side token rotation reaches the recorder without a restart) |
 | `live_started` arrives for the SAME platform with a different `room_url` | Supersede that platform's active session with `stop_reason="superseded_by_new_live_started"`; create a new session/job for the same platform with the new `room_url`, `stream_url`, and `stream_headers` |
 | `live_started` arrives for a DIFFERENT platform than any current active session | Create a new session/job for that platform; do NOT touch any other platform's active session |
