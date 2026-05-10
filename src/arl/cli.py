@@ -18,6 +18,8 @@ from arl.segmenter.semantic_hints import SemanticStageHintService
 from arl.segmenter.service import SegmenterService
 from arl.shared.contracts import MatchStage
 from arl.subtitles.service import SubtitleService
+from arl.windows_agent.cookie_health import run_cookie_health
+from arl.windows_agent.registry import build_probes
 from arl.windows_agent.service import WindowsAgentService
 
 
@@ -76,6 +78,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--once",
         action="store_true",
         help="Probe once and emit state if it changed.",
+    )
+    subparsers.add_parser(
+        "cookie-health",
+        help=(
+            "Run one detection cycle per platform and report cookie status "
+            "(fresh / expired / not_configured / error). Exits non-zero if "
+            "any configured cookie is detected expired."
+        ),
     )
     orchestrator = subparsers.add_parser(
         "orchestrator",
@@ -285,6 +295,27 @@ def main() -> int:
     if args.command == "windows-agent":
         WindowsAgentService(settings).run(once=args.once)
         return 0
+
+    if args.command == "cookie-health":
+        report = run_cookie_health(build_probes(settings.platforms))
+        for row in report.rows:
+            print(
+                f"platform={row.platform} "
+                f"status={row.status} "
+                f"detail={row.detail}"
+            )
+        summary = (
+            "summary=expired_cookie_detected"
+            if report.exit_code != 0
+            else "summary=ok"
+        )
+        print(summary)
+        if report.exit_code != 0:
+            print(
+                "hint=Refresh the relevant cookie env var "
+                "(ARL_DOUYIN_COOKIE / ARL_BILIBILI_SESSDATA) per README cookie-grab instructions.",
+            )
+        return report.exit_code
 
     if args.command == "orchestrator":
         OrchestratorService(settings).run(once=args.once)

@@ -129,6 +129,26 @@ $env:ARL_PLATFORMS = "douyin,bilibili"
 - **ffmpeg header 自动注入**：B 站流强制要求 `Referer: https://live.bilibili.com`，由 `BilibiliRoomProbe.stream_headers()` 返回，orchestrator 透传到 recording job，recorder 注入为 ffmpeg `-headers` / `-user_agent` 参数。无需用户配置。
 - **流 URL 时效**：`getRoomPlayInfo` 返回的 URL 含短时效 token；如果 recorder 启动延迟过长导致 token 过期失败，下一轮 30s probe 会拿到新鲜 URL，emit `live_stopped` → `live_started` 自然恢复。
 
+### Cookie 配置与失效审计
+
+抖音和 B 站都支持可选的 cookie 注入，用于解锁 1080P+ 直链：
+
+- 抖音：`ARL_DOUYIN_COOKIE`（完整 Cookie header 值，例如 `sessionid=xxx; uid=123; ...`）。未配置时页面 DOM 只暴露匿名 `_hd`（720p60）层签名 URL，被严格质量门 `min_quality_tier=uhd` 拦截。
+- B 站：`ARL_BILIBILI_SESSDATA`（仅 SESSDATA 原值，不带 `SESSDATA=` 前缀）。未配置时 `getRoomPlayInfo` 最高只返回 qn=250（720p），被 `min_stream_qn=400` 拦截。
+
+Cookie 失效时不再静默降级到低画质，而是输出可查询信号：
+
+- **审计事件**：每次 probe 检测到 cookie 失效（B 站 `code=-101`；抖音质量门在匿名基线 `_hd` 处拒绝），windows-agent 在原 `live_started`/`live_stopped` 之外额外追加一行 `cookie_expired_for_<platform>` 写入 `data/tmp/windows-agent-events.jsonl`，orchestrator 再写入 `data/tmp/orchestrator-events.jsonl`。
+- **CLI 主动检查**：
+
+  ```powershell
+  .\.venv\Scripts\python.exe -m arl.cli cookie-health
+  ```
+
+  对每个已配置平台跑一次 `detect()` + `classify_cookie_state()`，逐行打印 `platform=... status=fresh|expired|not_configured|error detail=...`，全部 fresh/未配置时退出码 0；任一已配置 cookie 失效则退出码 1 并附 `hint=Refresh ...` 行。可串到 launcher 启动检查或定期巡检脚本里。
+
+抓取 cookie 的方式见各平台 dev tools 抓 Network → 复制 `Cookie` request header（抖音）/ Application → Cookies → SESSDATA（B 站）。
+
 ## 录制命令执行流程（MVP）
 
 ### 1) 先做单次链路验证（建议首次必跑）
