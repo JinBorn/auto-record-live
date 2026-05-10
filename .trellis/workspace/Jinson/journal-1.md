@@ -970,3 +970,40 @@ PR6.A 给 BilibiliRoomProbe 接 ARL_BILIBILI_SESSDATA，把 Cookie: SESSDATA=<va
 ### Next Steps
 
 - None - task complete
+
+
+## Session 25: auth-ready-1080p finalization + Trellis template/node_modules hygiene
+
+**Date**: 2026-05-10
+**Task**: auth-ready-1080p finalization + Trellis template/node_modules hygiene
+**Branch**: `main`
+
+### Summary
+
+auth-ready-1080p-douyin-bilibili 收尾会话。Phase 1/2/3.3 都在前一个 codex 会话已完成并三段提交：952c22d 给 BilibiliRoomProbe 加 _StreamCandidate NamedTuple + min_stream_qn=400 默认 + 可选 min_stream_bitrate_kbps gate、给 DouyinRoomProbe 加 _QUALITY_TIER_ORDER + min_quality_tier='uhd' 默认，三处 LIVE 出口（http live_marker / http stream_url / playwright payload）都接 _quality_gate_reason 并把不达标 candidate 改吐 state=offline + reason='quality_below_min_tier:<tier>' / 'quality_below_min_qn:<n>' / 'quality_below_min_bitrate:<kbps>'；3f13845 把可用性合约写进 .trellis/spec/backend/orchestration-contracts.md；186de5b 把 prd.md/implement.jsonl/check.jsonl 落库。本次会话从 /trellis:continue 进入，发现 task 状态仍是 in_progress 但工作树有 424 脏文件全是非任务工作（Trellis 框架/平台镜像升级 + 350 个历史遗留的 node_modules 已 tracked + 一个 .env.bak 备份）。逐项处理：inline 跑 pytest（54 聚焦 + 214 全量全绿）→ 删 .env.bak.1778160539 → cdb4ddb 把 .trellis/scripts、workflow.md、config.yaml、.template-hashes.json、.version 加 .agents/.claude/.codex 三平台镜像加新增的 trellis-start skill 加 safe_commit/trellis_config 两个新 helper 加 AGENTS.md 一并 chore commit（32 文件 +1320 -144）→ 1d850ee 用 git rm --cached -r node_modules 把 356 个文件从 index 退出（磁盘不动，配合已生效的 .gitignore，未来 npm install 不再造成脏 diff）。git add 全程严格走显式路径名单，未用 -A / 整树 add，规避 safe_commit.py docstring 警示的'.gitignore 列出 .trellis/ 时被 git add -f 灾难性吃 548 文件'类事故。最终干净树 + 五段提交历史交给 /finish-work 归档。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `952c22d` | (see git log) |
+| `3f13845` | (see git log) |
+| `186de5b` | (see git log) |
+| `cdb4ddb` | (see git log) |
+| `1d850ee` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
