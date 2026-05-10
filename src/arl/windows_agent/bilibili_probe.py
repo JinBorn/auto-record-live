@@ -9,7 +9,7 @@ import httpx
 from arl.config import BilibiliSettings
 from arl.shared.contracts import LiveState, SourceType
 from arl.windows_agent.models import AgentSnapshot
-from arl.windows_agent.platform_probe import PlatformProbe
+from arl.windows_agent.platform_probe import CookieState, PlatformProbe
 
 
 _USER_AGENT = (
@@ -53,6 +53,18 @@ class BilibiliRoomProbe(PlatformProbe):
         if self.settings.sessdata:
             headers["Cookie"] = f"SESSDATA={self.settings.sessdata}"
         return headers
+
+    def classify_cookie_state(self, snapshot: AgentSnapshot) -> CookieState:
+        # SESSDATA expiration surfaces as Bilibili API code=-101 (账号未登录),
+        # caught by _fetch_json and turned into snapshot.reason starting with
+        # "api_error:code=-101:". When SESSDATA is unset the same API response
+        # is meaningless for cookie-health (the user never authenticated).
+        if not self.settings.sessdata:
+            return CookieState.NOT_CONFIGURED
+        reason = snapshot.reason or ""
+        if reason.startswith("api_error:code=-101"):
+            return CookieState.EXPIRED
+        return CookieState.FRESH
 
     def detect(self) -> AgentSnapshot:
         now = datetime.now(timezone.utc)

@@ -14,7 +14,7 @@ import httpx
 from arl.config import DouyinSettings
 from arl.shared.contracts import LiveState, SourceType
 from arl.windows_agent.models import AgentSnapshot
-from arl.windows_agent.platform_probe import PlatformProbe
+from arl.windows_agent.platform_probe import CookieState, PlatformProbe
 
 
 class DouyinRoomProbe(PlatformProbe):
@@ -92,6 +92,21 @@ class DouyinRoomProbe(PlatformProbe):
         if self.settings.cookie:
             return {"Cookie": self.settings.cookie}
         return {}
+
+    def classify_cookie_state(self, snapshot: AgentSnapshot) -> CookieState:
+        # When ARL_DOUYIN_COOKIE expires, the page DOM falls back to the
+        # anonymous _hd (720p60) baseline — higher tiers stop being signed.
+        # The strict quality gate then rejects the candidate with reason
+        # "quality_below_min_tier:hd<<configured>". Other rejection tiers
+        # (sd/md/ld) or "quality_tier_unknown:*" are NOT cookie-expiration
+        # signals — they may indicate streamer-side bandwidth or upstream
+        # degradation, so the high-confidence rule limits matching to "hd<".
+        if not self.settings.cookie:
+            return CookieState.NOT_CONFIGURED
+        reason = snapshot.reason or ""
+        if reason.startswith("quality_below_min_tier:hd<"):
+            return CookieState.EXPIRED
+        return CookieState.FRESH
 
     def detect(self) -> AgentSnapshot:
         now = datetime.now(timezone.utc)

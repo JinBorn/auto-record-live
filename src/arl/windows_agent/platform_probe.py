@@ -1,9 +1,28 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from enum import Enum
 from typing import ClassVar
 
 from arl.windows_agent.models import AgentSnapshot
+
+
+class CookieState(str, Enum):
+    """Authentication cookie health classification for one probe cycle.
+
+    - ``FRESH``: the platform's auth cookie is configured and the latest
+      snapshot does not match a cookie-expiration signature.
+    - ``EXPIRED``: the cookie is configured and the latest snapshot matches a
+      high-confidence cookie-expiration signature (Bilibili ``code=-101`` at
+      playinfo; Douyin gate-rejection at the ``_hd`` anonymous baseline).
+    - ``NOT_CONFIGURED``: the platform has no auth cookie set, so cookie
+      health is not applicable. Probes without cookie support keep this as
+      the default to avoid false-positive ``EXPIRED`` events.
+    """
+
+    FRESH = "fresh"
+    EXPIRED = "expired"
+    NOT_CONFIGURED = "not_configured"
 
 
 class PlatformProbe(ABC):
@@ -20,6 +39,12 @@ class PlatformProbe(ABC):
     the recorder must forward to ffmpeg. Default returns an empty dict so
     platforms with no header requirements (Douyin) keep the existing recorder
     behavior unchanged.
+
+    ``classify_cookie_state()`` lets a probe expose authentication-cookie
+    health on top of the snapshot it just produced. Default returns
+    ``NOT_CONFIGURED`` so probes that don't rely on cookie auth never emit a
+    cookie-expired event. Cookie-aware subclasses override this to recognize
+    their platform-specific expiration signature.
     """
 
     platform_name: ClassVar[str]
@@ -30,3 +55,6 @@ class PlatformProbe(ABC):
 
     def stream_headers(self) -> dict[str, str]:
         return {}
+
+    def classify_cookie_state(self, snapshot: AgentSnapshot) -> CookieState:
+        return CookieState.NOT_CONFIGURED
