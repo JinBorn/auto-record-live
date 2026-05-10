@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Quality gate checklist for tests, reliability, and failure handling."}
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "Verify probe outputs still satisfy orchestrator contract semantics."}
+{"file": ".trellis/tasks/05-10-auth-ready-1080p-douyin-bilibili/prd.md", "reason": "Validate implementation against strict 1080p availability requirements."}
