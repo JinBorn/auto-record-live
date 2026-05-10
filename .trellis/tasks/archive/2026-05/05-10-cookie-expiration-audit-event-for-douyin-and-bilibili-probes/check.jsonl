@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Quality bar checklist for tests, coverage, and forbidden patterns."}
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "Cross-stage contract verification — confirm new event_type is registered and orchestrator dispatch matches the spec."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Verify the inferential detection paths align with documented error classification conventions."}
+{"file": ".trellis/tasks/05-10-cookie-expiration-audit-event-for-douyin-and-bilibili-probes/prd.md", "reason": "Validate implementation against acceptance criteria for both platforms' positive/negative paths and CLI behavior."}

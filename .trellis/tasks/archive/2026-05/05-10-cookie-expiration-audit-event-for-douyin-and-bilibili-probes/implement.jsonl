@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend scope and spec index — entry point for windows-agent + orchestrator changes."}
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "event_type registry contract — adding cookie_expired_for_<platform> requires updating this spec; also documents AgentEvent / AgentSnapshot / orchestrator dispatch invariants."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Required coding patterns, forbidden patterns, and test-coverage expectations for backend changes."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Error classification conventions — guides how the inferential cookie-expired detection paths should integrate with existing reason taxonomy."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Structured logging conventions — applies to the new agent + orchestrator log lines that accompany cookie_expired events."}
