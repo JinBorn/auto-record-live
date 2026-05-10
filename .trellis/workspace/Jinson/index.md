@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 25
+- **Total Sessions**: 26
 - **Last Active**: 2026-05-10
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1009 | Active |
+| `journal-1.md` | ~1075 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 26 | 2026-05-10 | cookie-expiration audit event + cookie-health CLI | `230b5fc`, `f4bc0a1`, `faf81f6` | `main` |
 | 25 | 2026-05-10 | auth-ready-1080p finalization + Trellis template/node_modules hygiene | `952c22d`, `3f13845`, `186de5b`, `cdb4ddb`, `1d850ee` | `main` |
 | 24 | 2026-05-09 | PR6: cookie/SESSDATA injection unlocks 1080P recording on bilibili + douyin | `46ce327` | `main` |
 | 23 | 2026-05-07 | Add Bilibili live support: PR1+PR2+PR3 | `d36e485`, `26b49ec`, `a4ecff3` | `main` |

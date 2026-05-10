@@ -1007,3 +1007,69 @@ auth-ready-1080p-douyin-bilibili 收尾会话。Phase 1/2/3.3 都在前一个 co
 ### Next Steps
 
 - None - task complete
+
+## Session 26: cookie-expiration audit event + cookie-health CLI
+
+**Date**: 2026-05-10
+**Task**: cookie expiration audit event for douyin and bilibili probes
+**Branch**: `main`
+
+### Summary
+
+952c22d 上线严格 1080p+ 质量门后，过期的 ARL_DOUYIN_COOKIE / ARL_BILIBILI_SESSDATA 不再静默降到 720p 而是直接录制静默，用户无法分辨"主播没开播"和"cookie 过期"。本任务从 /trellis:continue 进入，task 已是 in_progress 且 prd.md 三 PR 计划完整、决策确定、acceptance criteria 锁定，工作树仅 .trellis/tasks/ 任务目录未跟踪、源码零改动 → 直接进 Phase 2.1。memory note "trellis-implement / trellis-check 子代理 500" 触发 fall-back inline 执行。三 PR 内联落地：(1) PR1 给 PlatformProbe 加 CookieState (fresh/expired/not_configured) + classify_cookie_state(snapshot) 默认 not_configured；BilibiliRoomProbe 重载：sessdata 配置 + reason 起首 api_error:code=-101 → expired，sessdata 配置 + 其它 → fresh，否则 not_configured；DouyinRoomProbe 重载：cookie 配置 + reason 起首 quality_below_min_tier:hd< → expired（精确匿名 _hd 基线），cookie 配置 + 其它 → fresh，否则 not_configured（高置信策略：sd/md/ld 子基线 / quality_tier_unknown 一律不算 cookie 过期，避免主播带宽问题误报）。(2) PR2 给 WindowsAgentService.run_once 在原 live_started/live_stopped 之后追加 classify_cookie_state，EXPIRED 时多 emit 一行 cookie_expired_for_<platform> 事件，与原事件共享 _has_changed dedup 门 → 持续过期 cookie 一次 transition 只一行；OrchestratorService._handle_event 加 startswith("cookie_expired_for_") 分支走 append_audit (event_type 直接当 audit name)，绝不走 ignored_unknown_event_type fallback；不动 session/job state，纯审计。orchestration-contracts.md 同步：event_type 注册表加新值、新 cookie_expired contract 块、Validation/Error Matrix 加四行（包含 "cookie 未配置时即使 reason 匹配也不发"）、Tests Required 加六条覆盖三个测试文件。(3) PR3 抽 src/arl/windows_agent/cookie_health.py 模块（CookieHealthRow/CookieHealthReport dataclass + run_cookie_health(probes) 函数，捕获 detect 异常并报 status=error 但不影响退出码，仅 expired 时 exit_code=1）；arl.cli 加 cookie-health 子命令，逐行打印 platform=... status=... detail=... + summary + 失效时附 hint 行；README 在 B 站接入小节后插"Cookie 配置与失效审计"段落，写明 ARL_DOUYIN_COOKIE / ARL_BILIBILI_SESSDATA 用途、新审计事件路径、cookie-health CLI 使用与退出码语义。Tests: +13 (PR1 cookie_state) + +9 (PR2 service_cookie_events / orchestrator cookie_expired_event) + +11 (PR3 cookie_health module + cli) = +33；pytest 全量 247 通过（baseline 214 → 247，零回归）。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+
+### Testing
+
+- [OK] pytest 全量 247 通过（baseline 214 + 33 新增）
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 26: cookie-expiration audit event + cookie-health CLI
+
+**Date**: 2026-05-10
+**Task**: cookie-expiration audit event + cookie-health CLI
+**Branch**: `main`
+
+### Summary
+
+Resumed cookie-expiration task at Phase 2.1 and shipped the prd.md three-PR plan inline (per memory note that trellis-implement / trellis-check sub-agents 500). PR1 added CookieState enum + classify_cookie_state on PlatformProbe with high-confidence overrides on Bilibili (sessdata + api_error:code=-101) and Douyin (cookie + quality_below_min_tier:hd< anonymous baseline). PR2 wired WindowsAgentService.run_once to emit cookie_expired_for_<platform> alongside the underlying live event, gated on the existing _has_changed dedup so persistent expiration produces one event per transition; OrchestratorService._handle_event routes the new prefix to the audit log without falling into ignored_unknown_event_type; orchestration-contracts.md picked up event_type registration, contract block, validation matrix rows, and tests-required. PR3 added cookie_health.py module + arl cookie-health CLI (exits 1 on any expired) plus README cookie-config / audit-signal section. Tests +33 (13 PR1 + 9 PR2 + 11 PR3); pytest 247 green from baseline 214; no lint/typecheck configured in repo.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `230b5fc` | (see git log) |
+| `f4bc0a1` | (see git log) |
+| `faf81f6` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
