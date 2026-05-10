@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from typing import ClassVar
+from typing import ClassVar, NamedTuple
 
 import httpx
 
@@ -39,6 +39,11 @@ class BilibiliRoomProbe(PlatformProbe):
     )
     _ROOM_ID_PATTERN = re.compile(r"live\.bilibili\.com/(\d+)")
     _HTTP_TIMEOUT_SECONDS = 10.0
+
+    class _StreamCandidate(NamedTuple):
+        current_qn: int
+        bitrate_kbps: int | None
+        url: str
 
     def __init__(self, settings: BilibiliSettings) -> None:
         self.settings = settings
@@ -151,8 +156,8 @@ class BilibiliRoomProbe(PlatformProbe):
                 platform=self.platform_name,
             )
 
-        stream_url = self._extract_stream_url(playinfo_payload)
-        if stream_url is None:
+        candidate = self._extract_stream_candidate(playinfo_payload)
+        if candidate is None:
             return AgentSnapshot(
                 state=LiveState.LIVE,
                 streamer_name=streamer_name,
@@ -165,12 +170,21 @@ class BilibiliRoomProbe(PlatformProbe):
                 platform=self.platform_name,
             )
 
+        quality_reason = self._quality_gate_reason(candidate)
+        if quality_reason is not None:
+            return self._offline(
+                room_url=room_url,
+                streamer_name=streamer_name,
+                reason=quality_reason,
+                now=now,
+            )
+
         return AgentSnapshot(
             state=LiveState.LIVE,
             streamer_name=streamer_name,
             room_url=room_url,
             source_type=SourceType.DIRECT_STREAM,
-            stream_url=stream_url,
+            stream_url=candidate.url,
             stream_headers=self.stream_headers(),
             reason="api_live_with_stream_url",
             detected_at=now,
@@ -246,7 +260,7 @@ class BilibiliRoomProbe(PlatformProbe):
         return None
 
     @classmethod
-    def _extract_stream_url(cls, payload: dict[str, object]) -> str | None:
+    def _extract_stream_candidate(cls, payload: dict[str, object]) -> _StreamCandidate | None:
         """Drill into data.playurl_info.playurl.stream[].format[].codec[].url_info[]
         and return the URL with the highest current_qn.
 
@@ -276,7 +290,7 @@ class BilibiliRoomProbe(PlatformProbe):
         if not isinstance(streams, list):
             return None
 
-        candidates: list[tuple[int, str]] = []
+        candidates: list[BilibiliRoomProbe._StreamCandidate] = []
         for stream in streams:
             if not isinstance(stream, dict):
                 continue
@@ -296,6 +310,7 @@ class BilibiliRoomProbe(PlatformProbe):
                     if not isinstance(base_url, str) or not base_url:
                         continue
                     current_qn = cls._coerce_int(codec_entry.get("current_qn"))
+                    bitrate_kbps = cls._extract_bitrate_kbps(codec_entry)
                     url_infos = codec_entry.get("url_info")
                     if not isinstance(url_infos, list):
                         continue
@@ -309,7 +324,11 @@ class BilibiliRoomProbe(PlatformProbe):
                         if not isinstance(extra, str):
                             extra = ""
                         candidates.append(
-                            (current_qn, f"{host}{base_url}{extra}")
+                            cls._StreamCandidate(
+                                current_qn=current_qn,
+                                bitrate_kbps=bitrate_kbps,
+                                url=f"{host}{base_url}{extra}",
+                            )
                         )
 
         if not candidates:
@@ -317,8 +336,44 @@ class BilibiliRoomProbe(PlatformProbe):
         # Highest current_qn wins. Stable sort preserves response ordering on
         # ties (so within one qn we still pick the host the API put first,
         # which is typically the closest CDN node).
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        return candidates[0][1]
+        candidates.sort(key=lambda item: item.current_qn, reverse=True)
+        return candidates[0]
+
+    @classmethod
+    def _extract_stream_url(cls, payload: dict[str, object]) -> str | None:
+        """Back-compat helper used by existing tests."""
+        candidate = cls._extract_stream_candidate(payload)
+        if candidate is None:
+            return None
+        return candidate.url
+
+    def _quality_gate_reason(self, candidate: _StreamCandidate) -> str | None:
+        if candidate.current_qn < self.settings.min_stream_qn:
+            return (
+                f"quality_below_min_qn:"
+                f"{candidate.current_qn}<{self.settings.min_stream_qn}"
+            )
+        if (
+            candidate.bitrate_kbps is not None
+            and candidate.bitrate_kbps < self.settings.min_stream_bitrate_kbps
+        ):
+            return (
+                f"quality_below_min_bitrate:"
+                f"{candidate.bitrate_kbps}<{self.settings.min_stream_bitrate_kbps}"
+            )
+        return None
+
+    @classmethod
+    def _extract_bitrate_kbps(cls, codec_entry: dict[str, object]) -> int | None:
+        for key in ("bandwidth", "bitrate", "bit_rate"):
+            raw = codec_entry.get(key)
+            value = cls._coerce_int(raw)
+            if value <= 0:
+                continue
+            if value > 100_000:
+                return max(1, value // 1000)
+            return value
+        return None
 
     @staticmethod
     def _coerce_int(raw: object) -> int:

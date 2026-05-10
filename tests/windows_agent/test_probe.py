@@ -25,6 +25,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
             streamer_name="streamer-a",
             playwright_script=script_path,
             use_playwright_probe=True,
+            min_quality_tier="hd",
         )
         self.probe = DouyinRoomProbe(self.settings)
         self.now = datetime.now(timezone.utc)
@@ -35,7 +36,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
     def test_playwright_live_payload_with_stream_url_maps_to_direct_stream(self) -> None:
         payload = (
             '{"ok":true,"state":"live","sourceType":"direct_stream",'
-            '"streamUrl":"https://cdn.example/live.m3u8","reason":"page_marker_detected"}\n'
+            '"streamUrl":"https://cdn.example/live_hd.m3u8","reason":"page_marker_detected"}\n'
         )
         result = subprocess.CompletedProcess(
             args=["node"],
@@ -53,7 +54,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
 
         self.assertEqual(snapshot.state, LiveState.LIVE)
         self.assertEqual(snapshot.source_type, SourceType.DIRECT_STREAM)
-        self.assertEqual(snapshot.stream_url, "https://cdn.example/live.m3u8")
+        self.assertEqual(snapshot.stream_url, "https://cdn.example/live_hd.m3u8")
         self.assertEqual(snapshot.platform, "douyin")
 
     def test_playwright_live_payload_without_stream_url_keeps_browser_capture(self) -> None:
@@ -84,7 +85,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
             "[probe] opening browser context\n"
             "[probe] room loaded\n"
             '{"ok":true,"state":"live","sourceType":"direct_stream",'
-            '"streamUrl":"https://cdn.example/live.m3u8","reason":"page_marker_detected"}\n'
+            '"streamUrl":"https://cdn.example/live_hd.m3u8","reason":"page_marker_detected"}\n'
         )
         result = subprocess.CompletedProcess(
             args=["node"],
@@ -102,7 +103,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
 
         self.assertEqual(snapshot.state, LiveState.LIVE)
         self.assertEqual(snapshot.source_type, SourceType.DIRECT_STREAM)
-        self.assertEqual(snapshot.stream_url, "https://cdn.example/live.m3u8")
+        self.assertEqual(snapshot.stream_url, "https://cdn.example/live_hd.m3u8")
 
     def test_playwright_none_stdout_is_handled_without_attribute_error(self) -> None:
         result = subprocess.CompletedProcess(
@@ -143,7 +144,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
     def test_playwright_invalid_source_type_with_stream_url_falls_back_to_direct_stream(self) -> None:
         payload = (
             '{"ok":true,"state":"live","sourceType":"unexpected_type",'
-            '"streamUrl":"https://cdn.example/live.m3u8","reason":"page_marker_detected"}\n'
+            '"streamUrl":"https://cdn.example/live_hd.m3u8","reason":"page_marker_detected"}\n'
         )
         result = subprocess.CompletedProcess(
             args=["node"],
@@ -161,7 +162,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
 
         self.assertEqual(snapshot.state, LiveState.LIVE)
         self.assertEqual(snapshot.source_type, SourceType.DIRECT_STREAM)
-        self.assertEqual(snapshot.stream_url, "https://cdn.example/live.m3u8")
+        self.assertEqual(snapshot.stream_url, "https://cdn.example/live_hd.m3u8")
 
     def test_playwright_direct_stream_without_stream_url_downgrades_to_browser_capture(self) -> None:
         payload = (
@@ -186,6 +187,33 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
         self.assertEqual(snapshot.source_type, SourceType.BROWSER_CAPTURE)
         self.assertIsNone(snapshot.stream_url)
 
+    def test_playwright_direct_stream_below_quality_gate_is_unavailable(self) -> None:
+        payload = (
+            '{"ok":true,"state":"live","sourceType":"direct_stream",'
+            '"streamUrl":"https://cdn.example/live/room_hd.m3u8?sign=abc",'
+            '"reason":"page_marker_detected"}\n'
+        )
+        result = subprocess.CompletedProcess(
+            args=["node"],
+            returncode=0,
+            stdout=payload,
+            stderr="",
+        )
+
+        settings = self.settings.model_copy(update={"min_quality_tier": "uhd"})
+        probe = DouyinRoomProbe(settings)
+        with patch("arl.windows_agent.probe.subprocess.run", return_value=result):
+            snapshot = probe._probe_with_playwright(
+                room_url=settings.room_url,
+                streamer_name=settings.streamer_name,
+                now=self.now,
+            )
+
+        self.assertEqual(snapshot.state, LiveState.OFFLINE)
+        self.assertIsNone(snapshot.source_type)
+        self.assertIsNone(snapshot.stream_url)
+        self.assertEqual(snapshot.reason, "quality_below_min_tier:hd<uhd")
+
     def test_detect_falls_back_to_http_when_playwright_fails(self) -> None:
         failing_payload = '{"ok":false,"error":"browser_crashed"}\n'
         playwright_result = subprocess.CompletedProcess(
@@ -198,7 +226,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
             status_code=200,
             text=(
                 '<html><script>'
-                '"hls_pull_url":"https:\\/\\/pull.example.com\\/live\\/abc.m3u8?token=1&sign=hls"'
+                '"hls_pull_url":"https:\\/\\/pull.example.com\\/live\\/abc_hd.m3u8?token=1&sign=hls"'
                 "</script></html>"
             ),
         )
@@ -211,7 +239,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
         self.assertEqual(snapshot.state, LiveState.LIVE)
         self.assertEqual(snapshot.source_type, SourceType.DIRECT_STREAM)
         self.assertEqual(snapshot.reason, "stream_url_detected_http")
-        self.assertEqual(snapshot.stream_url, "https://pull.example.com/live/abc.m3u8?token=1&sign=hls")
+        self.assertEqual(snapshot.stream_url, "https://pull.example.com/live/abc_hd.m3u8?token=1&sign=hls")
 
     def test_detect_http_live_marker_uses_direct_stream_when_available(self) -> None:
         settings = self.settings.model_copy(update={"use_playwright_probe": False})
@@ -219,8 +247,8 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
         http_response = SimpleNamespace(
             status_code=200,
             text=(
-                '<html><body>直播中<script>'
-                '"stream_url":"https%3A%2F%2Fpull.example.com%2Flive%2Froom.m3u8%3Ftoken%3D1%26sign%3Dxyz"'
+                '<html><body>鐩存挱涓?script>'
+                '"stream_url":"https%3A%2F%2Fpull.example.com%2Flive%2Froom_hd.m3u8%3Ftoken%3D1%26sign%3Dxyz"'
                 "</script></body></html>"
             ),
         )
@@ -229,8 +257,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
 
         self.assertEqual(snapshot.state, LiveState.LIVE)
         self.assertEqual(snapshot.source_type, SourceType.DIRECT_STREAM)
-        self.assertEqual(snapshot.reason, "page_marker_detected")
-        self.assertEqual(snapshot.stream_url, "https://pull.example.com/live/room.m3u8?token=1&sign=xyz")
+        self.assertEqual(snapshot.stream_url, "https://pull.example.com/live/room_hd.m3u8?token=1&sign=xyz")
 
     def test_detect_http_percent_encoded_direct_url_without_markers_is_still_live(self) -> None:
         settings = self.settings.model_copy(update={"use_playwright_probe": False})
@@ -239,7 +266,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
             status_code=200,
             text=(
                 '<html><body><script>'
-                '"https%3A%2F%2Fpull.example.com%2Flive%2Fencoded-room.m3u8%3Ftoken%3D1%26sign%3Dabc"'
+                '"https%3A%2F%2Fpull.example.com%2Flive%2Fencoded-room_hd.m3u8%3Ftoken%3D1%26sign%3Dabc"'
                 "</script></body></html>"
             ),
         )
@@ -251,7 +278,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
         self.assertEqual(snapshot.reason, "stream_url_detected_http")
         self.assertEqual(
             snapshot.stream_url,
-            "https://pull.example.com/live/encoded-room.m3u8?token=1&sign=abc",
+            "https://pull.example.com/live/encoded-room_hd.m3u8?token=1&sign=abc",
         )
 
     def test_detect_http_multilayer_percent_encoded_and_x_escaped_stream_url(self) -> None:
@@ -261,7 +288,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
             status_code=200,
             text=(
                 '<html><body><script>'
-                '"stream_url":"\\x68\\x74\\x74\\x70\\x73%253A%252F%252Fpull.example.com%252Flive%252Fdeep-room.m3u8%253Ftoken%253D1%2526sign%253Dabc"'
+                '"stream_url":"\\x68\\x74\\x74\\x70\\x73%253A%252F%252Fpull.example.com%252Flive%252Fdeep-room_hd.m3u8%253Ftoken%253D1%2526sign%253Dabc"'
                 "</script></body></html>"
             ),
         )
@@ -273,7 +300,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
         self.assertEqual(snapshot.reason, "stream_url_detected_http")
         self.assertEqual(
             snapshot.stream_url,
-            "https://pull.example.com/live/deep-room.m3u8?token=1&sign=abc",
+            "https://pull.example.com/live/deep-room_hd.m3u8?token=1&sign=abc",
         )
 
     def test_detect_http_ignores_static_assets_without_live_markers(self) -> None:
@@ -343,7 +370,7 @@ class DouyinRoomProbeStreamUrlScoreTests(unittest.TestCase):
         )
 
     def test_origin_hls_suffix_matches_origin_tier(self) -> None:
-        # Douyin sometimes serves "_origin_hls.flv" — the leading "_origin"
+        # Douyin sometimes serves "_origin_hls.flv" 鈥?the leading "_origin"
         # should still be detected even though the path continues.
         url = "http://pull-flv.douyincdn.com/game/stream-1_origin_hls.flv?t=x"
         # Score must include the origin-tier bonus (1000), not just the flv (40)
@@ -351,8 +378,66 @@ class DouyinRoomProbeStreamUrlScoreTests(unittest.TestCase):
         self.assertGreater(DouyinRoomProbe._stream_url_score(url), 1000)
 
 
+class DouyinRoomProbeQualityGateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._settings = DouyinSettings(
+            room_url="https://live.douyin.com/room",
+            streamer_name="streamer-gate",
+            use_playwright_probe=False,
+            min_quality_tier="uhd",
+        )
+
+    def test_quality_tier_below_threshold_is_unavailable(self) -> None:
+        probe = DouyinRoomProbe(self._settings)
+        http_response = SimpleNamespace(
+            status_code=200,
+            text=(
+                '<html><body>閻╁瓨鎸辨稉?script>'
+                '"stream_url":"https%3A%2F%2Fpull.example.com%2Flive%2Froom_hd.m3u8%3Ftoken%3D1%26sign%3Dxyz"'
+                "</script></body></html>"
+            ),
+        )
+        with patch("arl.windows_agent.probe.httpx.get", return_value=http_response):
+            snapshot = probe.detect()
+
+        self.assertEqual(snapshot.state, LiveState.OFFLINE)
+        self.assertTrue((snapshot.reason or "").startswith("quality_below_min_tier:"))
+
+    def test_quality_tier_meets_threshold_is_live(self) -> None:
+        probe = DouyinRoomProbe(self._settings)
+        http_response = SimpleNamespace(
+            status_code=200,
+            text=(
+                '<html><body>閻╁瓨鎸辨稉?script>'
+                '"stream_url":"https%3A%2F%2Fpull.example.com%2Flive%2Froom_uhd.m3u8%3Ftoken%3D1%26sign%3Dxyz"'
+                "</script></body></html>"
+            ),
+        )
+        with patch("arl.windows_agent.probe.httpx.get", return_value=http_response):
+            snapshot = probe.detect()
+
+        self.assertEqual(snapshot.state, LiveState.LIVE)
+        self.assertEqual(snapshot.source_type, SourceType.DIRECT_STREAM)
+
+    def test_unknown_tier_is_unavailable(self) -> None:
+        probe = DouyinRoomProbe(self._settings)
+        http_response = SimpleNamespace(
+            status_code=200,
+            text=(
+                '<html><body><script>'
+                '"stream_url":"https%3A%2F%2Fpull.example.com%2Flive%2Froom.m3u8%3Ftoken%3D1%26sign%3Dxyz"'
+                "</script></body></html>"
+            ),
+        )
+        with patch("arl.windows_agent.probe.httpx.get", return_value=http_response):
+            snapshot = probe.detect()
+
+        self.assertEqual(snapshot.state, LiveState.OFFLINE)
+        self.assertTrue((snapshot.reason or "").startswith("quality_tier_unknown:"))
+
+
 class DouyinRoomProbeCookieInjectionTests(unittest.TestCase):
-    """PR6.B — ARL_DOUYIN_COOKIE injection across all three pipelines:
+    """PR6.B 鈥?ARL_DOUYIN_COOKIE injection across all three pipelines:
     Playwright subprocess --cookie arg, httpx HTTP-fallback Cookie header,
     and stream_headers() so ffmpeg gets the same cookie via -headers.
 
@@ -431,7 +516,7 @@ class DouyinRoomProbeCookieInjectionTests(unittest.TestCase):
         )
         http_response = SimpleNamespace(
             status_code=200,
-            text='<html><body>暂未开播</body></html>',
+            text='<html><body>鏆傛湭寮€鎾?/body></html>',
         )
         with (
             patch(
@@ -460,9 +545,9 @@ class DouyinRoomProbeCookieInjectionTests(unittest.TestCase):
     def test_uhd_url_with_backslash_unicode_escape_is_extracted_signed(self) -> None:
         # Regression: Douyin's HTML JSON-encodes `&` as `&`. Earlier the
         # _URL_PATTERN char class excluded backslash, truncating the URL at
-        # `&` and dropping the `sign=` segment — making every signed _uhd
+        # `&` and dropping the `sign=` segment 鈥?making every signed _uhd
         # URL look unsigned and get rejected. With backslash allowed in the
-        # match and _normalize_stream_url decoding `&` → `&` afterward,
+        # match and _normalize_stream_url decoding `&` 鈫?`&` afterward,
         # the signed _uhd candidate must reach the score function and beat
         # the lower _hd tier.
         html = (

@@ -34,6 +34,8 @@ def _ok_playinfo_payload() -> dict:
                                 {
                                     "codec": [
                                         {
+                                            "current_qn": 400,
+                                            "bitrate": 6000,
                                             "base_url": base_url,
                                             "url_info": [
                                                 {
@@ -339,6 +341,90 @@ class BilibiliRoomProbeQnPriorityTests(unittest.TestCase):
     def test_single_codec_without_current_qn_still_returns_url(self) -> None:
         url = BilibiliRoomProbe._extract_stream_url(_ok_playinfo_payload())
         self.assertEqual(url, _expected_stream_url())
+
+
+class BilibiliRoomProbeQualityGateTests(unittest.TestCase):
+    def _build_probe(
+        self,
+        *,
+        min_qn: int = 400,
+        min_bitrate_kbps: int = 4500,
+    ) -> BilibiliRoomProbe:
+        settings = BilibiliSettings(
+            room_url="https://live.bilibili.com/12345",
+            streamer_name="bili-streamer",
+            min_stream_qn=min_qn,
+            min_stream_bitrate_kbps=min_bitrate_kbps,
+        )
+        return BilibiliRoomProbe(settings)
+
+    @staticmethod
+    def _playinfo_payload(*, qn: int, bitrate_kbps: int | None = None) -> dict:
+        codec_entry: dict[str, object] = {
+            "current_qn": qn,
+            "base_url": "/live/abc.flv",
+            "url_info": [{"host": "https://cdn.example.com", "extra": "?token=xyz"}],
+        }
+        if bitrate_kbps is not None:
+            codec_entry["bitrate"] = bitrate_kbps
+        return {
+            "code": 0,
+            "message": "0",
+            "data": {
+                "playurl_info": {
+                    "playurl": {
+                        "stream": [
+                            {"format": [{"codec": [codec_entry]}]},
+                        ]
+                    }
+                }
+            },
+        }
+
+    def test_detect_rejects_qn_below_threshold(self) -> None:
+        probe = self._build_probe(min_qn=400)
+        responses = [
+            _http_response(200, _ok_status_payload(1)),
+            _http_response(200, self._playinfo_payload(qn=250, bitrate_kbps=6000)),
+        ]
+        with patch("arl.windows_agent.bilibili_probe.httpx.get", side_effect=responses):
+            snapshot = probe.detect()
+        self.assertEqual(snapshot.state, LiveState.OFFLINE)
+        self.assertTrue((snapshot.reason or "").startswith("quality_below_min_qn:"))
+
+    def test_detect_rejects_bitrate_below_threshold_when_present(self) -> None:
+        probe = self._build_probe(min_qn=400, min_bitrate_kbps=6000)
+        responses = [
+            _http_response(200, _ok_status_payload(1)),
+            _http_response(200, self._playinfo_payload(qn=400, bitrate_kbps=2500)),
+        ]
+        with patch("arl.windows_agent.bilibili_probe.httpx.get", side_effect=responses):
+            snapshot = probe.detect()
+        self.assertEqual(snapshot.state, LiveState.OFFLINE)
+        self.assertTrue((snapshot.reason or "").startswith("quality_below_min_bitrate:"))
+
+    def test_detect_accepts_when_qn_and_bitrate_meet_threshold(self) -> None:
+        probe = self._build_probe(min_qn=400, min_bitrate_kbps=4500)
+        responses = [
+            _http_response(200, _ok_status_payload(1)),
+            _http_response(200, self._playinfo_payload(qn=400, bitrate_kbps=6000)),
+        ]
+        with patch("arl.windows_agent.bilibili_probe.httpx.get", side_effect=responses):
+            snapshot = probe.detect()
+        self.assertEqual(snapshot.state, LiveState.LIVE)
+        self.assertEqual(snapshot.source_type, SourceType.DIRECT_STREAM)
+        self.assertEqual(snapshot.reason, "api_live_with_stream_url")
+
+    def test_detect_accepts_when_bitrate_metadata_missing(self) -> None:
+        probe = self._build_probe(min_qn=400, min_bitrate_kbps=9000)
+        responses = [
+            _http_response(200, _ok_status_payload(1)),
+            _http_response(200, self._playinfo_payload(qn=400, bitrate_kbps=None)),
+        ]
+        with patch("arl.windows_agent.bilibili_probe.httpx.get", side_effect=responses):
+            snapshot = probe.detect()
+        self.assertEqual(snapshot.state, LiveState.LIVE)
+        self.assertEqual(snapshot.source_type, SourceType.DIRECT_STREAM)
 
 
 class BilibiliRoomProbeCookieInjectionTests(unittest.TestCase):

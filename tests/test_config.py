@@ -107,6 +107,24 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertIsInstance(settings.platforms[0], BilibiliSettings)
         self.assertIsInstance(settings.platforms[1], DouyinSettings)
 
+    def test_quality_gate_envs_load_into_platform_settings(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_PLATFORMS"] = "douyin,bilibili"
+            os.environ["ARL_DOUYIN_ROOM_URL"] = "https://live.douyin.com/123"
+            os.environ["ARL_BILIBILI_ROOM_URL"] = "https://live.bilibili.com/12345"
+            os.environ["ARL_DOUYIN_MIN_QUALITY_TIER"] = "origin"
+            os.environ["ARL_BILIBILI_MIN_STREAM_QN"] = "10000"
+            os.environ["ARL_BILIBILI_MIN_STREAM_BITRATE_KBPS"] = "6000"
+            settings = load_settings()
+
+        douyin = settings.platforms[0]
+        bilibili = settings.platforms[1]
+        self.assertIsInstance(douyin, DouyinSettings)
+        self.assertIsInstance(bilibili, BilibiliSettings)
+        self.assertEqual(douyin.min_quality_tier, "origin")
+        self.assertEqual(bilibili.min_stream_qn, 10000)
+        self.assertEqual(bilibili.min_stream_bitrate_kbps, 6000)
+
 
 class SettingsValidatorTests(unittest.TestCase):
     def test_settings_with_empty_platforms_defaults_to_douyin(self) -> None:

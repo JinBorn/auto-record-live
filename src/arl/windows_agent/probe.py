@@ -55,6 +55,14 @@ class DouyinRoomProbe(PlatformProbe):
         "md": 50,
         "ld": 25,
     }
+    _QUALITY_TIER_ORDER = {
+        "ld": 0,
+        "md": 1,
+        "sd": 2,
+        "hd": 3,
+        "uhd": 4,
+        "origin": 5,
+    }
 
     _BLOCKED_SUFFIXES = (
         ".js",
@@ -154,6 +162,16 @@ class DouyinRoomProbe(PlatformProbe):
             "直播中",
         ]
         if any(marker in text for marker in live_markers):
+            quality_reason = self._quality_gate_reason(stream_url)
+            if quality_reason is not None:
+                return AgentSnapshot(
+                    state=LiveState.OFFLINE,
+                    streamer_name=streamer_name,
+                    room_url=room_url,
+                    reason=quality_reason,
+                    detected_at=now,
+                    stream_headers=self.stream_headers(),
+                )
             return AgentSnapshot(
                 state=LiveState.LIVE,
                 streamer_name=streamer_name,
@@ -182,6 +200,16 @@ class DouyinRoomProbe(PlatformProbe):
             )
 
         if stream_url:
+            quality_reason = self._quality_gate_reason(stream_url)
+            if quality_reason is not None:
+                return AgentSnapshot(
+                    state=LiveState.OFFLINE,
+                    streamer_name=streamer_name,
+                    room_url=room_url,
+                    reason=quality_reason,
+                    detected_at=now,
+                    stream_headers=self.stream_headers(),
+                )
             return AgentSnapshot(
                 state=LiveState.LIVE,
                 streamer_name=streamer_name,
@@ -288,6 +316,16 @@ class DouyinRoomProbe(PlatformProbe):
         stream_url = stream_url_raw if isinstance(stream_url_raw, str) else None
         reason_raw = payload.get("reason", "playwright_probe")
         reason = reason_raw if isinstance(reason_raw, str) else "playwright_probe"
+        quality_reason = self._quality_gate_reason(stream_url)
+        if state == LiveState.LIVE and quality_reason is not None:
+            return AgentSnapshot(
+                state=LiveState.OFFLINE,
+                streamer_name=streamer_name,
+                room_url=room_url,
+                reason=quality_reason,
+                detected_at=now,
+                stream_headers=self.stream_headers(),
+            )
         return AgentSnapshot(
             state=state,
             streamer_name=streamer_name,
@@ -445,6 +483,28 @@ class DouyinRoomProbe(PlatformProbe):
         if match:
             score += cls._QUALITY_TIER_SCORES[match.group(1).lower()]
         return score
+
+    @classmethod
+    def _extract_quality_tier(cls, url: str) -> str | None:
+        no_query = url.lower().split("?", 1)[0]
+        match = cls._QUALITY_TIER_PATTERN.search(no_query)
+        if match is None:
+            return None
+        return match.group(1).lower()
+
+    def _quality_gate_reason(self, stream_url: str | None) -> str | None:
+        if stream_url is None:
+            return None
+        detected_tier = self._extract_quality_tier(stream_url)
+        if detected_tier is None:
+            return f"quality_tier_unknown:min_required={self.settings.min_quality_tier}"
+
+        configured = (self.settings.min_quality_tier or "").strip().lower()
+        if configured not in self._QUALITY_TIER_ORDER:
+            configured = "uhd"
+        if self._QUALITY_TIER_ORDER[detected_tier] < self._QUALITY_TIER_ORDER[configured]:
+            return f"quality_below_min_tier:{detected_tier}<{configured}"
+        return None
 
     def _forced_snapshot(
         self,

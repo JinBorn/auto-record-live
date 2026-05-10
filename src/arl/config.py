@@ -57,6 +57,9 @@ class DouyinSettings(PlatformSettings):
     # (720p60) signed leaf URLs; the higher _uhd / _origin tiers stay
     # unsigned and unrecordable.
     cookie: str = ""
+    # Minimum accepted Douyin quality tier for direct-stream availability.
+    # Default "uhd" enforces 1080p-grade streams only.
+    min_quality_tier: str = "uhd"
 
 
 class BilibiliSettings(PlatformSettings):
@@ -70,6 +73,12 @@ class BilibiliSettings(PlatformSettings):
     # ffmpeg stream headers so the response unlocks qn>=400 (1080P 蓝光);
     # anonymous calls are capped at qn=250 (720p).
     sessdata: str = ""
+    # Minimum accepted current_qn for direct-stream availability.
+    # Default 400 enforces 1080p baseline.
+    min_stream_qn: int = 400
+    # Optional minimum bitrate gate (kbps). Applied only when codec bitrate
+    # metadata is present in playinfo payload.
+    min_stream_bitrate_kbps: int = 4500
 
 
 class WindowsAgentSettings(BaseModel):
@@ -190,6 +199,7 @@ def _load_douyin_settings() -> DouyinSettings:
         ),
         use_playwright_probe=os.getenv("ARL_USE_PLAYWRIGHT_PROBE", "1") != "0",
         cookie=os.getenv("ARL_DOUYIN_COOKIE", ""),
+        min_quality_tier=os.getenv("ARL_DOUYIN_MIN_QUALITY_TIER", "uhd"),
     )
 
 
@@ -198,6 +208,11 @@ def _load_bilibili_settings() -> BilibiliSettings:
         room_url=os.getenv("ARL_BILIBILI_ROOM_URL", ""),
         streamer_name=os.getenv("ARL_BILIBILI_STREAMER_NAME", ""),
         sessdata=os.getenv("ARL_BILIBILI_SESSDATA", ""),
+        min_stream_qn=_env_int("ARL_BILIBILI_MIN_STREAM_QN", 400),
+        min_stream_bitrate_kbps=max(
+            0,
+            _env_int("ARL_BILIBILI_MIN_STREAM_BITRATE_KBPS", 4500),
+        ),
     )
 
 
