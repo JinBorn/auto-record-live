@@ -126,11 +126,38 @@ class OrchestratorService:
         if event.event_type == "live_stopped":
             self._on_live_stopped(state, event)
             return
+        if event.event_type.startswith("cookie_expired_for_"):
+            self._on_cookie_expired(state, event)
+            return
         self.state_store.append_audit(
             "ignored_unknown_event_type",
             message=f"event_type={event.event_type}",
         )
         log("orchestrator", f"ignored unknown event_type={event.event_type}")
+
+    def _on_cookie_expired(
+        self,
+        state: OrchestratorStateFile,
+        event: AgentEventPayload,
+    ) -> None:
+        # Informational only: surface the cookie-expiration signal in the
+        # audit log so operators can grep for it. Do not mutate session/job
+        # state — the live_stopped event that accompanies this one already
+        # closed the relevant records.
+        snapshot = event.snapshot
+        self.state_store.append_audit(
+            event.event_type,
+            message=(
+                f"platform={snapshot.platform} "
+                f"streamer={snapshot.streamer_name} "
+                f"reason={snapshot.reason or 'n/a'}"
+            ),
+        )
+        log(
+            "orchestrator",
+            f"cookie expired event recorded event_type={event.event_type} "
+            f"platform={snapshot.platform}",
+        )
 
     def _on_live_started(
         self,

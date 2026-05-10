@@ -113,6 +113,7 @@ class RecordingJobRecord(BaseModel):
 - `event_type` currently supports only:
   - `live_started`
   - `live_stopped`
+  - `cookie_expired_for_<platform>` (informational; one of the registered platforms in `PROBE_REGISTRY`, e.g. `cookie_expired_for_bilibili`, `cookie_expired_for_douyin`)
 - `live_started` contract:
   - `snapshot.state` must be `live`
   - `snapshot.streamer_name`, `snapshot.room_url`, and `snapshot.detected_at` are required
@@ -138,6 +139,14 @@ class RecordingJobRecord(BaseModel):
 - `live_stopped` contract:
   - `snapshot.state` must be `offline`
   - `snapshot.reason` should be populated when the stop cause is known
+- `cookie_expired_for_<platform>` contract:
+  - Emitted by the windows agent in addition to (not instead of) the underlying `live_started`/`live_stopped` event when `PlatformProbe.classify_cookie_state(snapshot)` returns `expired` AND the snapshot has just transitioned (`_has_changed` returned True). High-confidence detection only:
+    - Bilibili: `BilibiliSettings.sessdata` is non-empty AND `snapshot.reason` starts with `api_error:code=-101`
+    - Douyin: `DouyinSettings.cookie` is non-empty AND `snapshot.reason` starts with `quality_below_min_tier:hd<` (the anonymous baseline tier)
+  - `<platform>` MUST equal a registered `PROBE_REGISTRY` key. Unknown platforms must not produce this event.
+  - The probe MUST NOT emit this event when the relevant cookie env var is unset, regardless of the snapshot's reason — there is no cookie to call expired.
+  - The accompanying snapshot is the same payload emitted with the underlying event; no extra fields are required.
+  - Orchestrator: `process_agent_event` MUST route any `cookie_expired_for_<platform>` event to the audit log (one structured row per event) and MUST NOT classify it as `ignored_unknown_event_type`. This event is informational and does NOT mutate session/job state.
 - State lifecycle contract:
   - one active live session per platform (`active_session_id_by_platform[platform]`); cross-platform sessions coexist
   - one active recording job per platform (`active_recording_job_id_by_platform[platform]`); cross-platform jobs coexist
@@ -176,6 +185,9 @@ class RecordingJobRecord(BaseModel):
 | JSONL line is blank | Skip silently |
 | JSONL line is invalid JSON or fails Pydantic validation | Count as invalid line; continue processing later lines |
 | Unknown `event_type` | Append audit event `ignored_unknown_event_type`; do not mutate active session/job |
+| `event_type` starts with `cookie_expired_for_` | Append one audit row whose name is the same `event_type`, with `platform`, `streamer_name`, and `reason` in the message; do NOT classify as `ignored_unknown_event_type`; do NOT mutate session/job state |
+| Probe-side: cookie env var unset and snapshot carries cookie-expiration shape (`api_error:code=-101` for Bilibili, `quality_below_min_tier:hd<*` for Douyin) | Do NOT emit `cookie_expired_for_<platform>`; the user never authenticated, so there is no cookie to declare expired |
+| Probe-side: cookie env var set and snapshot does not match the platform's expiration shape | Do NOT emit `cookie_expired_for_<platform>`; classify only on high-confidence reasons |
 | `live_started` arrives while an active session is open | Do not create a new session/job; append duplicate audit event |
 | Duplicate `live_started` contains a new `stream_url` | Enrich active session `stream_url` before ignoring the duplicate |
 | Candidate stream URL exists but fails configured quality gate | Emit `OFFLINE` snapshot with quality reason; do not emit `LIVE` with downgraded stream |
@@ -265,6 +277,20 @@ class RecordingJobRecord(BaseModel):
 - Unit test: recovery audit routing is emitted.
   - Assert retry path emits `recording_job_recovery_retry_planned`.
   - Assert terminal/manual path emits `recording_job_recovery_manual_required`.
+- Unit test: `PlatformProbe.classify_cookie_state` (in `tests/windows_agent/test_cookie_state.py`).
+  - Assert default base implementation returns `not_configured` for any snapshot.
+  - Assert Bilibili returns `expired` only when `sessdata` is set AND `snapshot.reason` starts with `api_error:code=-101`.
+  - Assert Bilibili returns `not_configured` when `sessdata` is unset, regardless of snapshot reason.
+  - Assert Douyin returns `expired` only when `cookie` is set AND `snapshot.reason` starts with `quality_below_min_tier:hd<`.
+  - Assert Douyin returns `not_configured` when `cookie` is unset, regardless of snapshot reason.
+  - Assert `fresh` covers cookie-set + LIVE state and cookie-set + non-cookie offline reasons (e.g., `not_live`, sub-baseline gate rejection).
+- Unit test: agent emits `cookie_expired_for_<platform>` only on snapshot transition (in `tests/windows_agent/test_service.py` or new test).
+  - Assert when the probe's cookie state is `expired` AND the snapshot transitioned, two events are appended: the underlying `live_stopped`/`live_started` event AND the `cookie_expired_for_<platform>` event.
+  - Assert when cookie is unset, no `cookie_expired_for_<platform>` event is emitted even if the snapshot reason matches the expiration shape.
+- Unit test: orchestrator dispatches `cookie_expired_for_<platform>` (in `tests/orchestrator/test_service.py`).
+  - Assert the event appears in the audit log under its own event name.
+  - Assert no `ignored_unknown_event_type` row is emitted for this event.
+  - Assert session and recording-job state are unchanged by the event.
 
 ### 7. Wrong vs Correct
 

@@ -6,7 +6,7 @@ from arl.config import Settings
 from arl.shared.contracts import LiveState
 from arl.shared.logging import log
 from arl.windows_agent.models import AgentEvent, AgentSnapshot, AgentStateFile
-from arl.windows_agent.platform_probe import PlatformProbe
+from arl.windows_agent.platform_probe import CookieState, PlatformProbe
 from arl.windows_agent.registry import build_probes
 from arl.windows_agent.state_store import WindowsAgentStateStore
 
@@ -71,6 +71,23 @@ class WindowsAgentService:
                 "windows-agent",
                 f"emitted event={event.event_type} platform={snapshot.platform}",
             )
+
+            cookie_state = probe.classify_cookie_state(snapshot)
+            if cookie_state == CookieState.EXPIRED:
+                # Supplementary informational event riding on the same
+                # _has_changed dedup gate as the live_started/live_stopped
+                # event above — so a persistently-expired cookie produces
+                # one event per snapshot transition, not one per cycle.
+                cookie_event = AgentEvent(
+                    event_type=f"cookie_expired_for_{snapshot.platform}",
+                    snapshot=snapshot,
+                )
+                self.state_store.append_event(cookie_event)
+                log(
+                    "windows-agent",
+                    f"emitted event={cookie_event.event_type} "
+                    f"platform={snapshot.platform}",
+                )
 
         if new_snapshots:
             for snapshot in new_snapshots:
