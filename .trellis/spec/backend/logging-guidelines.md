@@ -77,6 +77,7 @@ For these events only:
 `reason_code` must be strict enum:
 
 - `http_4xx`
+- `http_403_forbidden` (subtype of `http_4xx_non_retryable`: same retry semantics, distinct reason_code so recorder can gate `cookie_expired_for_<platform>` on it)
 - `http_5xx`
 - `network_timeout`
 - `ffmpeg_process_error`
@@ -121,7 +122,7 @@ Unknown-classification rule:
   - `is_retryable: bool`
   - `reason_code: str` (strict enum)
   - `reason_detail: str`
-- `reason_code` enum: `http_4xx | http_5xx | network_timeout | ffmpeg_process_error | unknown_unclassified`
+- `reason_code` enum: `http_4xx | http_403_forbidden | http_5xx | network_timeout | ffmpeg_process_error | unknown_unclassified`
 - `failure_category` enum:
   - `http_4xx_non_retryable`
   - `http_5xx_retryable`

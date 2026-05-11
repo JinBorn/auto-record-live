@@ -113,7 +113,7 @@ class RecordingJobRecord(BaseModel):
 - `event_type` currently supports only:
   - `live_started`
   - `live_stopped`
-  - `cookie_expired_for_<platform>` (informational; one of the registered platforms in `PROBE_REGISTRY`, e.g. `cookie_expired_for_bilibili`, `cookie_expired_for_douyin`)
+  - `cookie_expired_for_<platform>` (informational; one of the registered platforms in `PROBE_REGISTRY`, e.g. `cookie_expired_for_bilibili`, `cookie_expired_for_douyin`). Two writers share this event type: windows-agent probes (probe-time detection) and recorder (record-time 403 detection). Both end up on `orchestrator-events.jsonl` so consumers can grep both sources with one pattern.
 - `live_started` contract:
   - `snapshot.state` must be `live`
   - `snapshot.streamer_name`, `snapshot.room_url`, and `snapshot.detected_at` are required
@@ -143,10 +143,12 @@ class RecordingJobRecord(BaseModel):
   - Emitted by the windows agent in addition to (not instead of) the underlying `live_started`/`live_stopped` event when `PlatformProbe.classify_cookie_state(snapshot)` returns `expired` AND the snapshot has just transitioned (`_has_changed` returned True). High-confidence detection only:
     - Bilibili: `BilibiliSettings.sessdata` is non-empty AND `snapshot.reason` starts with `api_error:code=-101`
     - Douyin: `DouyinSettings.cookie` is non-empty AND `snapshot.reason` starts with `quality_below_min_tier:hd<` (the anonymous baseline tier)
+  - Also emitted by the recorder, alongside (not instead of) the underlying `ffmpeg_record_failed` audit row, when the failure classifier returns `reason_code="http_403_forbidden"` AND the operator opted into cookie-based auth for that platform (`DouyinSettings.cookie != ""` or the configured `BilibiliSettings.sessdata != ""`). Recorder writes the row to `data/tmp/recorder-events.jsonl`; orchestrator picks it up via `_handle_recorder_event` and re-emits to `orchestrator-events.jsonl` audit log. `reason` on the recorder row carries the ffmpeg failure stderr excerpt (same string as on the matching `ffmpeg_record_failed` row).
+    - Bilibili note: the stream URL token returned by `getRoomPlayInfo` is short-lived and SESSDATA-independent. A 403 on a stale token will trip this signal even when SESSDATA is still fresh. Operators should confirm with `arl cookie-health` before refreshing SESSDATA — the probe-side classifier is the authoritative check.
   - `<platform>` MUST equal a registered `PROBE_REGISTRY` key. Unknown platforms must not produce this event.
-  - The probe MUST NOT emit this event when the relevant cookie env var is unset, regardless of the snapshot's reason — there is no cookie to call expired.
-  - The accompanying snapshot is the same payload emitted with the underlying event; no extra fields are required.
-  - Orchestrator: `process_agent_event` MUST route any `cookie_expired_for_<platform>` event to the audit log (one structured row per event) and MUST NOT classify it as `ignored_unknown_event_type`. This event is informational and does NOT mutate session/job state.
+  - The probe MUST NOT emit this event when the relevant cookie env var is unset, regardless of the snapshot's reason — there is no cookie to call expired. The recorder MUST apply the same gate before emitting from the 403 path.
+  - The accompanying snapshot (probe path) is the same payload emitted with the underlying event; no extra fields are required. The recorder-path row carries `session_id`, `job_id`, `source_type`, and `reason` only — all canonical decision fields (`decision`, `failure_category`, `is_retryable`, `reason_code`, `reason_detail`) MUST be omitted/`null` since this row is informational, not a core decision event.
+  - Orchestrator: `_handle_event` MUST route any agent-side `cookie_expired_for_<platform>` event to the audit log; `_handle_recorder_event` MUST route any recorder-side `cookie_expired_for_<platform>` event to the audit log without classifying it as `recorder_event_ignored` and without advancing the per-job monotonic watermark (so the accompanying `ffmpeg_record_failed` at the same `created_at` is not skipped as stale). Neither path mutates session/job state.
 - State lifecycle contract:
   - one active live session per platform (`active_session_id_by_platform[platform]`); cross-platform sessions coexist
   - one active recording job per platform (`active_recording_job_id_by_platform[platform]`); cross-platform jobs coexist
@@ -188,6 +190,11 @@ class RecordingJobRecord(BaseModel):
 | `event_type` starts with `cookie_expired_for_` | Append one audit row whose name is the same `event_type`, with `platform`, `streamer_name`, and `reason` in the message; do NOT classify as `ignored_unknown_event_type`; do NOT mutate session/job state |
 | Probe-side: cookie env var unset and snapshot carries cookie-expiration shape (`api_error:code=-101` for Bilibili, `quality_below_min_tier:hd<*` for Douyin) | Do NOT emit `cookie_expired_for_<platform>`; the user never authenticated, so there is no cookie to declare expired |
 | Probe-side: cookie env var set and snapshot does not match the platform's expiration shape | Do NOT emit `cookie_expired_for_<platform>`; classify only on high-confidence reasons |
+| Recorder-side: ffmpeg failure stderr contains "403 forbidden" or "server returned 403" | Classifier returns `reason_code="http_403_forbidden"` under `failure_category="http_4xx_non_retryable"` (retry semantics unchanged) |
+| Recorder-side: classifier returned `reason_code="http_403_forbidden"` AND that platform's cookie env var is non-empty | Recorder appends one `cookie_expired_for_<platform>` row to `recorder-events.jsonl` alongside the `ffmpeg_record_failed` row; decision/failure_category/is_retryable/reason_code/reason_detail MUST be omitted on the cookie row |
+| Recorder-side: classifier returned `reason_code="http_403_forbidden"` AND that platform's cookie env var is empty | Recorder does NOT emit `cookie_expired_for_<platform>`; only the `ffmpeg_record_failed` row appears |
+| Recorder-side: classifier returned `reason_code="http_4xx"` (401/404/410/other 4xx) regardless of cookie env state | Recorder does NOT emit `cookie_expired_for_<platform>`; only the `ffmpeg_record_failed` row appears |
+| Orchestrator receives recorder-side `cookie_expired_for_<platform>` event | Append one audit row to `orchestrator-events.jsonl` with `platform=<job.platform>` and the recorder `reason` in the message; do NOT advance per-job monotonic watermark; do NOT mutate job state |
 | `live_started` arrives while an active session is open | Do not create a new session/job; append duplicate audit event |
 | Duplicate `live_started` contains a new `stream_url` | Enrich active session `stream_url` before ignoring the duplicate |
 | Candidate stream URL exists but fails configured quality gate | Emit `OFFLINE` snapshot with quality reason; do not emit `LIVE` with downgraded stream |
