@@ -430,6 +430,26 @@ class OrchestratorService:
             )
             return
 
+        # Recorder-side cookie_expired_for_<platform> rides on the same recorder
+        # audit log alongside ffmpeg_record_failed. It is informational only —
+        # the underlying ffmpeg_record_failed already carries failure metadata
+        # and drives session/job state. Route to audit-only here, mirroring the
+        # agent-event _on_cookie_expired path; skip stale-check and state
+        # mutation so subsequent ffmpeg events are not blocked by the watermark.
+        if event.event_type.startswith("cookie_expired_for_"):
+            self.state_store.append_audit(
+                event.event_type,
+                session_id=job.session_id,
+                job_id=job.job_id,
+                message=f"platform={job.platform} reason={event.reason or 'n/a'}",
+            )
+            log(
+                "orchestrator",
+                f"cookie expired recorder event recorded event_type={event.event_type} "
+                f"job_id={job.job_id}",
+            )
+            return
+
         known_event_types = {
             "recording_retry_scheduled",
             "recording_retry_exhausted",

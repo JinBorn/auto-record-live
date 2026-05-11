@@ -24,12 +24,23 @@ from arl.shared.contracts import RecordingAsset, SourceType
 from arl.shared.failure_contracts import (
     FAILURE_CATEGORY_FFMPEG_PROCESS_ERROR_RETRYABLE,
     FAILURE_CATEGORY_UNKNOWN_UNCLASSIFIED_NON_RETRYABLE,
+    REASON_CODE_HTTP_403_FORBIDDEN,
     REASON_CODE_UNKNOWN_UNCLASSIFIED,
     CANONICAL_FAILURE_CATEGORIES,
     classify_failure_reason,
 )
 from arl.shared.jsonl_store import append_model
 from arl.shared.logging import log
+
+
+# Maps a recording job's platform to the field name on the matching
+# PlatformSettings entry whose non-empty value indicates the operator opted
+# into cookie-based auth for that platform. Used by recorder to decide whether
+# a 403 ffmpeg failure deserves a cookie_expired_for_<platform> audit signal.
+_PLATFORM_COOKIE_FIELD = {
+    "douyin": "cookie",
+    "bilibili": "sessdata",
+}
 
 
 @dataclass
@@ -143,6 +154,7 @@ class RecorderService:
             outcome = self._build_recording(
                 session_id=session.session_id,
                 job_id=job.job_id,
+                platform=job.platform,
                 source_type=source_type,
                 stream_url=stream_url,
                 stream_headers=stream_headers,
@@ -251,6 +263,7 @@ class RecorderService:
         *,
         session_id: str,
         job_id: str,
+        platform: str,
         source_type: SourceType,
         stream_url: str | None,
         stream_headers: dict[str, str],
@@ -265,6 +278,7 @@ class RecorderService:
                 result_path, failure_reason = self._record_with_ffmpeg(
                     session_id=session_id,
                     job_id=job_id,
+                    platform=platform,
                     stream_url=stream_url,
                     stream_headers=stream_headers,
                 )
@@ -315,6 +329,7 @@ class RecorderService:
                 result_path, failure_reason = self._record_browser_capture_with_ffmpeg(
                     session_id=session_id,
                     job_id=job_id,
+                    platform=platform,
                     capture_format=capture_format,
                     capture_input=selected_input,
                 )
@@ -425,6 +440,7 @@ class RecorderService:
         *,
         session_id: str,
         job_id: str,
+        platform: str,
         stream_url: str,
         stream_headers: dict[str, str],
     ) -> tuple[Path | None, str | None]:
@@ -503,6 +519,14 @@ class RecorderService:
                     stderr_excerpt=stderr_excerpt,
                     stderr_log_path=stderr_log_path,
                 )
+                self._maybe_emit_cookie_expired(
+                    platform=platform,
+                    session_id=session_id,
+                    job_id=job_id,
+                    source_type=SourceType.DIRECT_STREAM,
+                    reason=failure_reason,
+                    reason_code=failure_decision.reason_code,
+                )
                 # Both transient and non-retryable yield after a single ffmpeg
                 # invocation: transient yields to the next probe (orchestrator
                 # can refresh a stale stream URL); non-retryable stops in-run
@@ -532,6 +556,7 @@ class RecorderService:
         *,
         session_id: str,
         job_id: str,
+        platform: str,
         capture_format: str,
         capture_input: str,
     ) -> tuple[Path | None, str | None]:
@@ -614,6 +639,14 @@ class RecorderService:
                     max_attempts=attempts,
                     stderr_excerpt=stderr_excerpt,
                     stderr_log_path=stderr_log_path,
+                )
+                self._maybe_emit_cookie_expired(
+                    platform=platform,
+                    session_id=session_id,
+                    job_id=job_id,
+                    source_type=SourceType.BROWSER_CAPTURE,
+                    reason=failure_reason,
+                    reason_code=failure_decision.reason_code,
                 )
                 break
 
@@ -1003,3 +1036,48 @@ class RecorderService:
                 created_at=datetime.now(timezone.utc),
             ),
         )
+
+    def _maybe_emit_cookie_expired(
+        self,
+        *,
+        platform: str | None,
+        session_id: str,
+        job_id: str,
+        source_type: SourceType,
+        reason: str,
+        reason_code: str | None,
+    ) -> None:
+        # Recorder-side cookie-expiration signal: emit only on 403 (high-
+        # confidence cookie suspect) AND when the operator opted into cookie-
+        # based auth for this platform (env var set). Mirrors the probe-side
+        # cookie_expired_for_<platform> audit shape so consumers can grep both
+        # sources from orchestrator-events.jsonl with one pattern.
+        if reason_code != REASON_CODE_HTTP_403_FORBIDDEN:
+            return
+        if not self._platform_cookie_configured(platform):
+            return
+        event_type = f"cookie_expired_for_{platform}"
+        self._append_audit(
+            event_type,
+            session_id=session_id,
+            job_id=job_id,
+            source_type=source_type,
+            reason=reason,
+        )
+        log(
+            "recorder",
+            f"emitted event={event_type} session_id={session_id} job_id={job_id}",
+        )
+
+    def _platform_cookie_configured(self, platform: str | None) -> bool:
+        if platform is None:
+            return False
+        field_name = _PLATFORM_COOKIE_FIELD.get(platform)
+        if field_name is None:
+            return False
+        for entry in self.settings.platforms:
+            if entry.type != platform:
+                continue
+            value = getattr(entry, field_name, "")
+            return bool(value)
+        return False

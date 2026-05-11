@@ -18,6 +18,7 @@ CANONICAL_FAILURE_CATEGORIES = {
 }
 
 REASON_CODE_HTTP_4XX = "http_4xx"
+REASON_CODE_HTTP_403_FORBIDDEN = "http_403_forbidden"
 REASON_CODE_HTTP_5XX = "http_5xx"
 REASON_CODE_NETWORK_TIMEOUT = "network_timeout"
 REASON_CODE_FFMPEG_PROCESS_ERROR = "ffmpeg_process_error"
@@ -25,6 +26,7 @@ REASON_CODE_UNKNOWN_UNCLASSIFIED = "unknown_unclassified"
 
 CANONICAL_REASON_CODES = {
     REASON_CODE_HTTP_4XX,
+    REASON_CODE_HTTP_403_FORBIDDEN,
     REASON_CODE_HTTP_5XX,
     REASON_CODE_NETWORK_TIMEOUT,
     REASON_CODE_FFMPEG_PROCESS_ERROR,
@@ -56,9 +58,20 @@ def classify_failure_reason(reason: str | None) -> FailureDecision:
     def contains(*markers: str) -> bool:
         return any(marker in text for marker in markers)
 
+    # 403 is the high-confidence cookie-expiration signal. Same retry semantics
+    # as other 4xx (non-retryable), but a distinct reason_code so downstream
+    # consumers can link it to the cookie_expired_for_<platform> audit channel.
+    # Must be matched before the generic 4xx branch so "server returned 403"
+    # does not get swallowed by the "server returned 4" prefix.
+    if contains("403 forbidden", "server returned 403"):
+        return FailureDecision(
+            failure_category=FAILURE_CATEGORY_HTTP_4XX_NON_RETRYABLE,
+            is_retryable=False,
+            reason_code=REASON_CODE_HTTP_403_FORBIDDEN,
+        )
+
     if contains(
         "401 unauthorized",
-        "403 forbidden",
         "404 not found",
         "410 gone",
         "server returned 4",

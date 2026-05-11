@@ -1854,5 +1854,238 @@ class RecorderHardeningTest(unittest.TestCase):
         self.assertIn("recording_job_failed", orch_event_types)
 
 
+class RecorderCookieExpiredEmitTest(unittest.TestCase):
+    """Recorder-side cookie_expired_for_<platform> gating: emit only on 403 AND
+    when the operator opted into cookie-based auth for that platform."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.temp_root = root / "tmp"
+        self.raw_root = root / "raw"
+        self.processed_root = root / "processed"
+        self.export_root = root / "exports"
+        self.orchestrator_state_path = self.temp_root / "orchestrator-state.json"
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    # ----- helpers -----
+
+    def _settings(
+        self,
+        *,
+        douyin_cookie: str = "",
+        bilibili_sessdata: str = "",
+        include_bilibili: bool = False,
+    ) -> Settings:
+        from arl.config import BilibiliSettings
+
+        douyin = DouyinSettings(cookie=douyin_cookie)
+        platforms: list = [douyin]
+        if include_bilibili:
+            platforms.append(BilibiliSettings(sessdata=bilibili_sessdata))
+        return Settings(
+            douyin=douyin,
+            platforms=platforms,
+            storage=StorageSettings(
+                raw_dir=self.raw_root,
+                processed_dir=self.processed_root,
+                export_dir=self.export_root,
+                temp_dir=self.temp_root,
+            ),
+            orchestrator=OrchestratorSettings(
+                state_file=self.orchestrator_state_path,
+                agent_event_log_path=self.temp_root / "windows-agent-events.jsonl",
+                recorder_event_log_path=self.temp_root / "recorder-events.jsonl",
+                audit_log_path=self.temp_root / "orchestrator-events.jsonl",
+            ),
+            recording=RecordingSettings(
+                enable_ffmpeg=True,
+                ffmpeg_max_retries=2,
+                direct_stream_timeout_seconds=5,
+                auto_retry_max_attempts=0,  # avoid cross-run retry noise for 4xx
+                session_retry_budget=3,
+                stderr_retain_count=4,
+            ),
+            subtitles=SubtitleSettings(enabled=True),
+            export=ExportSettings(enable_ffmpeg=False),
+        )
+
+    def _seed_state(
+        self,
+        *,
+        platform: str,
+        session_id: str,
+        job_id: str,
+        source_type: SourceType = SourceType.DIRECT_STREAM,
+    ) -> None:
+        started_at = datetime(2026, 5, 12, 1, 0, tzinfo=timezone.utc)
+        state = OrchestratorStateFile(
+            sessions=[
+                SessionRecord(
+                    session_id=session_id,
+                    streamer_name="streamer-x",
+                    room_url=f"https://live.{platform}.example/room",
+                    platform=platform,
+                    source_type=source_type,
+                    stream_url="https://example.invalid/live.m3u8",
+                    status=SessionStatus.STOPPED,
+                    started_at=started_at,
+                )
+            ],
+            recording_jobs=[
+                RecordingJobRecord(
+                    job_id=job_id,
+                    session_id=session_id,
+                    platform=platform,
+                    source_type=source_type,
+                    stream_url="https://example.invalid/live.m3u8",
+                    status=RecordingJobStatus.STOPPED,
+                    created_at=started_at,
+                )
+            ],
+        )
+        self.orchestrator_state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.orchestrator_state_path.write_text(
+            state.model_dump_json(indent=2) + "\n", encoding="utf-8"
+        )
+
+    def _audit_payloads(self) -> list[dict]:
+        path = self.temp_root / "recorder-events.jsonl"
+        if not path.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    def _run_with_ffmpeg_error(
+        self, settings: Settings, error: BaseException
+    ) -> int:
+        with patch(
+            "arl.recorder.service.shutil.which", return_value="/usr/bin/ffmpeg"
+        ), patch(
+            "arl.recorder.service.subprocess.run", side_effect=error
+        ) as mocked_run:
+            RecorderService(settings).run()
+        return mocked_run.call_count
+
+    # ----- emit cases -----
+
+    def test_403_with_douyin_cookie_configured_emits_cookie_expired(self) -> None:
+        settings = self._settings(douyin_cookie="sessionid=abc")
+        self._seed_state(platform="douyin", session_id="s-1", job_id="j-1")
+        error = subprocess.CalledProcessError(
+            1, ["ffmpeg"], stderr="[https] HTTP error 403 Forbidden"
+        )
+        self._run_with_ffmpeg_error(settings, error)
+        events = self._audit_payloads()
+        event_types = [item["event_type"] for item in events]
+        self.assertIn("ffmpeg_record_failed", event_types)
+        self.assertIn("cookie_expired_for_douyin", event_types)
+        cookie_event = next(
+            item for item in events if item["event_type"] == "cookie_expired_for_douyin"
+        )
+        # cookie_expired carries no decision/failure_category — it's informational.
+        self.assertIsNone(cookie_event.get("decision"))
+        self.assertIsNone(cookie_event.get("failure_category"))
+        self.assertEqual(cookie_event["session_id"], "s-1")
+        self.assertEqual(cookie_event["job_id"], "j-1")
+        self.assertIn("403", cookie_event["reason"])
+
+    def test_403_with_douyin_cookie_empty_skips_cookie_expired(self) -> None:
+        # Operator never opted into cookie-based auth → 403 stays a plain
+        # generic 4xx failure, no cookie suspicion signal.
+        settings = self._settings(douyin_cookie="")
+        self._seed_state(platform="douyin", session_id="s-2", job_id="j-2")
+        error = subprocess.CalledProcessError(
+            1, ["ffmpeg"], stderr="Server returned 403 Forbidden"
+        )
+        self._run_with_ffmpeg_error(settings, error)
+        events = self._audit_payloads()
+        event_types = [item["event_type"] for item in events]
+        self.assertIn("ffmpeg_record_failed", event_types)
+        self.assertNotIn("cookie_expired_for_douyin", event_types)
+
+    def test_403_with_bilibili_sessdata_configured_emits_cookie_expired(self) -> None:
+        settings = self._settings(
+            bilibili_sessdata="sessdata-token", include_bilibili=True
+        )
+        self._seed_state(platform="bilibili", session_id="s-3", job_id="j-3")
+        error = subprocess.CalledProcessError(
+            1, ["ffmpeg"], stderr="HTTP 403 Forbidden"
+        )
+        self._run_with_ffmpeg_error(settings, error)
+        events = self._audit_payloads()
+        event_types = [item["event_type"] for item in events]
+        self.assertIn("cookie_expired_for_bilibili", event_types)
+
+    def test_403_with_bilibili_sessdata_empty_skips_cookie_expired(self) -> None:
+        settings = self._settings(bilibili_sessdata="", include_bilibili=True)
+        self._seed_state(platform="bilibili", session_id="s-4", job_id="j-4")
+        error = subprocess.CalledProcessError(
+            1, ["ffmpeg"], stderr="Server returned 403"
+        )
+        self._run_with_ffmpeg_error(settings, error)
+        events = self._audit_payloads()
+        event_types = [item["event_type"] for item in events]
+        self.assertNotIn("cookie_expired_for_bilibili", event_types)
+
+    def test_404_with_douyin_cookie_configured_skips_cookie_expired(self) -> None:
+        # 404 is the "stream really gone" signal, not a cookie suspect — must
+        # NOT trigger cookie_expired even when cookie is configured.
+        settings = self._settings(douyin_cookie="sessionid=abc")
+        self._seed_state(platform="douyin", session_id="s-5", job_id="j-5")
+        error = subprocess.CalledProcessError(
+            1, ["ffmpeg"], stderr="Server returned 404 Not Found"
+        )
+        self._run_with_ffmpeg_error(settings, error)
+        events = self._audit_payloads()
+        event_types = [item["event_type"] for item in events]
+        self.assertIn("ffmpeg_record_failed", event_types)
+        self.assertNotIn("cookie_expired_for_douyin", event_types)
+
+    def test_503_with_douyin_cookie_configured_skips_cookie_expired(self) -> None:
+        # Transient 5xx is unrelated to cookie state.
+        settings = self._settings(douyin_cookie="sessionid=abc")
+        self._seed_state(platform="douyin", session_id="s-6", job_id="j-6")
+        error = subprocess.CalledProcessError(
+            1, ["ffmpeg"], stderr="Server returned 503 Service Unavailable"
+        )
+        self._run_with_ffmpeg_error(settings, error)
+        events = self._audit_payloads()
+        event_types = [item["event_type"] for item in events]
+        self.assertIn("ffmpeg_record_failed", event_types)
+        self.assertNotIn("cookie_expired_for_douyin", event_types)
+
+    def test_browser_capture_403_with_douyin_cookie_emits_cookie_expired(self) -> None:
+        # The browser-capture ffmpeg path goes through a different inner method
+        # but the cookie-gating helper is shared. A configured cookie should
+        # still produce the signal if ffmpeg returns 403 in that path.
+        settings_overrides = self._settings(douyin_cookie="sessionid=abc")
+        # Override source_type to BROWSER_CAPTURE and ensure the recorder picks
+        # the browser-capture branch by providing a configured capture input.
+        new_settings = settings_overrides.model_copy(deep=True)
+        new_settings.recording.browser_capture_format = "gdigrab"
+        new_settings.recording.browser_capture_input = "desktop"
+        self._seed_state(
+            platform="douyin",
+            session_id="s-7",
+            job_id="j-7",
+            source_type=SourceType.BROWSER_CAPTURE,
+        )
+        error = subprocess.CalledProcessError(
+            1, ["ffmpeg"], stderr="HTTP 403 Forbidden"
+        )
+        self._run_with_ffmpeg_error(new_settings, error)
+        events = self._audit_payloads()
+        event_types = [item["event_type"] for item in events]
+        self.assertIn("ffmpeg_record_failed", event_types)
+        self.assertIn("cookie_expired_for_douyin", event_types)
+
+
 if __name__ == "__main__":
     unittest.main()
+
