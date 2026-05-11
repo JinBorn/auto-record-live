@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,6 +27,7 @@ from arl.orchestrator.models import (
     SessionStatus,
 )
 from arl.orchestrator.service import OrchestratorService
+from arl.recorder.models import RecorderStateFile
 from arl.recovery.service import RecoveryService
 from arl.recorder.service import RecorderService
 from arl.shared.contracts import MatchBoundary, RecordingAsset, SourceType, SubtitleAsset
@@ -107,13 +109,15 @@ class FfmpegResilienceTest(unittest.TestCase):
             encoding="utf-8",
         )
 
+        # auto_retry_max_attempts=0 (from setUp) → transient yield short-circuits
+        # straight to fallback_placeholder without scheduling a cross-run retry.
         with patch("arl.recorder.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
             "arl.recorder.service.subprocess.run",
             side_effect=subprocess.CalledProcessError(1, ["ffmpeg"]),
         ) as mocked_run:
             RecorderService(self.settings).run()
 
-        self.assertEqual(mocked_run.call_count, 3)
+        self.assertEqual(mocked_run.call_count, 1)
         assets_path = self.temp_root / "recording-assets.jsonl"
         payload = json.loads(assets_path.read_text(encoding="utf-8").splitlines()[0])
         self.assertTrue(payload["path"].endswith("recording-source.txt"))
@@ -128,14 +132,14 @@ class FfmpegResilienceTest(unittest.TestCase):
             [item["event_type"] for item in audit_payloads],
             [
                 "ffmpeg_record_failed",
-                "ffmpeg_record_failed",
-                "ffmpeg_record_failed",
                 "ffmpeg_fallback_placeholder",
             ],
         )
         self.assertEqual(audit_payloads[0]["attempt"], 1)
-        self.assertEqual(audit_payloads[2]["attempt"], 3)
         self.assertEqual(audit_payloads[0]["max_attempts"], 3)
+        self.assertEqual(
+            audit_payloads[0]["decision"], "attempt_failed_yield_to_next_probe"
+        )
 
     def test_recorder_audit_writes_to_orchestrator_configured_path(self) -> None:
         started_at = datetime(2026, 4, 25, 1, 12, tzinfo=timezone.utc)
@@ -222,15 +226,29 @@ class FfmpegResilienceTest(unittest.TestCase):
         )
         self.settings.recording.auto_retry_max_attempts = 2
 
+        # Yield-on-transient means each run produces one ffmpeg call. To exercise
+        # the cross-run retry-exhaustion path without waiting on the 1/5/15/60s
+        # backoff, pin the schedule to zero so the next run is immediately
+        # eligible.
+        ffmpeg_error = subprocess.CalledProcessError(
+            1,
+            ["ffmpeg"],
+            stderr="exit_status:1",
+        )
         with patch("arl.recorder.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
             "arl.recorder.service.subprocess.run",
-            side_effect=subprocess.CalledProcessError(1, ["ffmpeg"]),
-        ) as mocked_run:
+            side_effect=ffmpeg_error,
+        ) as mocked_run, patch.object(
+            RecorderService,
+            "_next_eligible_after_yield",
+            staticmethod(lambda attempt: timedelta(0)),
+        ):
             RecorderService(self.settings).run()
             RecorderService(self.settings).run()
             RecorderService(self.settings).run()
 
-        self.assertEqual(mocked_run.call_count, 9)
+        # One ffmpeg call per run with new yield-on-transient semantics.
+        self.assertEqual(mocked_run.call_count, 3)
         assets_path = self.temp_root / "recording-assets.jsonl"
         payload = json.loads(assets_path.read_text(encoding="utf-8").splitlines()[0])
         self.assertTrue(payload["path"].endswith("recording-source.txt"))
@@ -375,7 +393,9 @@ class FfmpegResilienceTest(unittest.TestCase):
         ) as mocked_run:
             RecorderService(self.settings).run()
 
-        self.assertEqual(mocked_run.call_count, 3)
+        # Yield-on-transient: a single ffmpeg attempt then schedule a cross-run
+        # retry rather than burning multiple in-run attempts on the same URL.
+        self.assertEqual(mocked_run.call_count, 1)
         self.assertFalse((self.temp_root / "recording-assets.jsonl").exists())
 
         recorder_state_payload = json.loads(
@@ -383,6 +403,7 @@ class FfmpegResilienceTest(unittest.TestCase):
         )
         self.assertEqual(recorder_state_payload["processed_job_ids"], [])
         self.assertEqual(recorder_state_payload["retry_attempts_by_job_id"], {"job-retry-503": 1})
+        self.assertIn("job-retry-503", recorder_state_payload["next_eligible_at_by_job_id"])
 
         audit_payloads = [
             json.loads(line)
@@ -394,10 +415,11 @@ class FfmpegResilienceTest(unittest.TestCase):
             event_types,
             [
                 "ffmpeg_record_failed",
-                "ffmpeg_record_failed",
-                "ffmpeg_record_failed",
                 "recording_retry_scheduled",
             ],
+        )
+        self.assertEqual(
+            audit_payloads[0]["decision"], "attempt_failed_yield_to_next_probe"
         )
         self.assertFalse(any(event_type == "ffmpeg_fallback_placeholder" for event_type in event_types))
 
@@ -1349,6 +1371,487 @@ class FfmpegResilienceTest(unittest.TestCase):
         payload = json.loads(exports_path.read_text(encoding="utf-8").splitlines()[0])
         self.assertTrue(payload["path"].endswith("_match01.txt"))
         self.assertTrue(Path(payload["path"]).exists())
+
+
+class RecorderHardeningTest(unittest.TestCase):
+    """R1-R5 coverage for recorder ffmpeg failure production hardening."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.temp_root = root / "tmp"
+        self.raw_root = root / "raw"
+        self.processed_root = root / "processed"
+        self.export_root = root / "exports"
+        self.orchestrator_state_path = self.temp_root / "orchestrator-state.json"
+
+        self.settings = Settings(
+            douyin=DouyinSettings(event_log_path=self.temp_root / "windows-agent-events.jsonl"),
+            storage=StorageSettings(
+                raw_dir=self.raw_root,
+                processed_dir=self.processed_root,
+                export_dir=self.export_root,
+                temp_dir=self.temp_root,
+            ),
+            orchestrator=OrchestratorSettings(
+                state_file=self.orchestrator_state_path,
+                agent_event_log_path=self.temp_root / "windows-agent-events.jsonl",
+                recorder_event_log_path=self.temp_root / "recorder-events.jsonl",
+                audit_log_path=self.temp_root / "orchestrator-events.jsonl",
+            ),
+            recording=RecordingSettings(
+                enable_ffmpeg=True,
+                ffmpeg_max_retries=2,
+                direct_stream_timeout_seconds=5,
+                auto_retry_max_attempts=2,
+                session_retry_budget=3,
+                stderr_retain_count=4,
+            ),
+            subtitles=SubtitleSettings(enabled=True),
+            export=ExportSettings(enable_ffmpeg=False),
+        )
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    # ----- helpers -----
+
+    def _seed_state(
+        self,
+        *,
+        session_id: str = "session-hd",
+        job_id: str = "job-hd",
+        extra_jobs: list[tuple[str, str, RecordingJobStatus]] | None = None,
+    ) -> OrchestratorStateFile:
+        started_at = datetime(2026, 5, 11, 1, 0, tzinfo=timezone.utc)
+        ended_at = datetime(2026, 5, 11, 1, 10, tzinfo=timezone.utc)
+        sessions = [
+            SessionRecord(
+                session_id=session_id,
+                streamer_name="streamer-a",
+                room_url="https://live.douyin.com/room",
+                source_type=SourceType.DIRECT_STREAM,
+                stream_url="https://example.invalid/live.m3u8",
+                status=SessionStatus.STOPPED,
+                started_at=started_at,
+                ended_at=ended_at,
+            )
+        ]
+        jobs = [
+            RecordingJobRecord(
+                job_id=job_id,
+                session_id=session_id,
+                source_type=SourceType.DIRECT_STREAM,
+                stream_url="https://example.invalid/live.m3u8",
+                status=RecordingJobStatus.STOPPED,
+                created_at=started_at,
+                ended_at=ended_at,
+            )
+        ]
+        for extra_session_id, extra_job_id, extra_status in extra_jobs or []:
+            if extra_session_id not in {item.session_id for item in sessions}:
+                sessions.append(
+                    SessionRecord(
+                        session_id=extra_session_id,
+                        streamer_name="streamer-b",
+                        room_url="https://live.douyin.com/other",
+                        source_type=SourceType.DIRECT_STREAM,
+                        stream_url="https://example.invalid/other.m3u8",
+                        status=SessionStatus.STOPPED,
+                        started_at=started_at,
+                        ended_at=ended_at,
+                    )
+                )
+            jobs.append(
+                RecordingJobRecord(
+                    job_id=extra_job_id,
+                    session_id=extra_session_id,
+                    source_type=SourceType.DIRECT_STREAM,
+                    stream_url="https://example.invalid/other.m3u8",
+                    status=extra_status,
+                    created_at=started_at,
+                    ended_at=ended_at,
+                )
+            )
+        state = OrchestratorStateFile(sessions=sessions, recording_jobs=jobs)
+        self.orchestrator_state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.orchestrator_state_path.write_text(
+            state.model_dump_json(indent=2) + "\n", encoding="utf-8"
+        )
+        return state
+
+    def _audit_payloads(self) -> list[dict]:
+        path = self.temp_root / "recorder-events.jsonl"
+        if not path.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    def _run_with_ffmpeg_error(self, error: BaseException) -> int:
+        with patch("arl.recorder.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+            "arl.recorder.service.subprocess.run",
+            side_effect=error,
+        ) as mocked_run:
+            RecorderService(self.settings).run()
+        return mocked_run.call_count
+
+    # ----- R1: yield-on-transient -----
+
+    def test_r1_yield_on_http_5xx_runs_ffmpeg_once_with_yield_decision(self) -> None:
+        self._seed_state(job_id="job-5xx")
+        error = subprocess.CalledProcessError(
+            1, ["ffmpeg"], stderr="Server returned 503 Service Unavailable"
+        )
+        call_count = self._run_with_ffmpeg_error(error)
+        self.assertEqual(call_count, 1)
+        fail_events = [
+            item for item in self._audit_payloads() if item["event_type"] == "ffmpeg_record_failed"
+        ]
+        self.assertEqual(len(fail_events), 1)
+        self.assertEqual(fail_events[0]["decision"], "attempt_failed_yield_to_next_probe")
+        self.assertEqual(fail_events[0]["failure_category"], "http_5xx_retryable")
+
+    def test_r1_yield_on_network_timeout(self) -> None:
+        self._seed_state(job_id="job-timeout")
+        error = subprocess.TimeoutExpired(cmd=["ffmpeg"], timeout=5)
+        call_count = self._run_with_ffmpeg_error(error)
+        self.assertEqual(call_count, 1)
+        fail_events = [
+            item for item in self._audit_payloads() if item["event_type"] == "ffmpeg_record_failed"
+        ]
+        self.assertEqual(len(fail_events), 1)
+        self.assertEqual(fail_events[0]["decision"], "attempt_failed_yield_to_next_probe")
+        self.assertEqual(fail_events[0]["failure_category"], "network_timeout_retryable")
+
+    def test_r1_yield_on_ffmpeg_process_error(self) -> None:
+        self._seed_state(job_id="job-process")
+        error = subprocess.CalledProcessError(1, ["ffmpeg"])  # no stderr → exit_status:1
+        call_count = self._run_with_ffmpeg_error(error)
+        self.assertEqual(call_count, 1)
+        fail_events = [
+            item for item in self._audit_payloads() if item["event_type"] == "ffmpeg_record_failed"
+        ]
+        self.assertEqual(len(fail_events), 1)
+        self.assertEqual(fail_events[0]["decision"], "attempt_failed_yield_to_next_probe")
+        self.assertEqual(
+            fail_events[0]["failure_category"], "ffmpeg_process_error_retryable"
+        )
+
+    def test_r1_non_retryable_http_4xx_uses_attempt_failed_decision(self) -> None:
+        self._seed_state(job_id="job-4xx")
+        error = subprocess.CalledProcessError(
+            1, ["ffmpeg"], stderr="Server returned 404 Not Found"
+        )
+        call_count = self._run_with_ffmpeg_error(error)
+        self.assertEqual(call_count, 1)
+        fail_events = [
+            item for item in self._audit_payloads() if item["event_type"] == "ffmpeg_record_failed"
+        ]
+        self.assertEqual(len(fail_events), 1)
+        self.assertEqual(fail_events[0]["decision"], "attempt_failed")
+        self.assertEqual(fail_events[0]["failure_category"], "http_4xx_non_retryable")
+
+    # ----- R2 + R3: stderr excerpt + log file -----
+
+    def test_r2_stderr_excerpt_and_log_path_present_on_failure(self) -> None:
+        self._seed_state(job_id="job-stderr")
+        long_stderr = "\n".join(
+            [f"line-{idx:02d} long stderr content " + "x" * 30 for idx in range(40)]
+        )
+        error = subprocess.CalledProcessError(1, ["ffmpeg"], stderr=long_stderr)
+        self._run_with_ffmpeg_error(error)
+        fail_events = [
+            item for item in self._audit_payloads() if item["event_type"] == "ffmpeg_record_failed"
+        ]
+        self.assertEqual(len(fail_events), 1)
+        excerpt = fail_events[0]["stderr_excerpt"]
+        self.assertIsNotNone(excerpt)
+        self.assertLessEqual(len(excerpt), 4096)
+        self.assertIn("line-00", excerpt)
+        self.assertIn("line-39", excerpt)
+        log_path = fail_events[0]["stderr_log_path"]
+        self.assertIsNotNone(log_path)
+        log_file = Path(log_path)
+        self.assertTrue(log_file.exists(), f"expected log at {log_path}")
+        self.assertIn(long_stderr, log_file.read_text(encoding="utf-8"))
+
+    def test_r2_success_audit_has_no_stderr_fields(self) -> None:
+        self._seed_state(job_id="job-success")
+        # Make subprocess.run succeed by patching it to no-op.
+        with patch("arl.recorder.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+            "arl.recorder.service.subprocess.run", return_value=None
+        ):
+            # Pre-create output file so the recorder picks it up as success.
+            output_dir = self.raw_root / "session-hd"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "recording-source.mp4").write_text("ok", encoding="utf-8")
+            RecorderService(self.settings).run()
+        success_events = [
+            item
+            for item in self._audit_payloads()
+            if item["event_type"] == "ffmpeg_record_succeeded"
+        ]
+        self.assertEqual(len(success_events), 1)
+        self.assertIsNone(success_events[0].get("stderr_excerpt"))
+        self.assertIsNone(success_events[0].get("stderr_log_path"))
+
+    def test_r3_stderr_log_rotation_keeps_only_retain_count_newest(self) -> None:
+        stderr_dir = self.temp_root / "recorder-stderr"
+        stderr_dir.mkdir(parents=True, exist_ok=True)
+        retain = self.settings.recording.stderr_retain_count  # 4
+        seeded = retain + 5
+        files = []
+        base = datetime(2026, 5, 11, 0, 0, tzinfo=timezone.utc).timestamp()
+        for idx in range(seeded):
+            entry = stderr_dir / f"old-{idx:02d}.log"
+            entry.write_text(f"file-{idx}", encoding="utf-8")
+            mtime = base + idx
+            os.utime(entry, (mtime, mtime))
+            files.append((entry, mtime))
+
+        self._seed_state(job_id="job-noop")
+        # shutil.which returns None so no ffmpeg invocation; rotation still fires at run() top.
+        with patch("arl.recorder.service.shutil.which", return_value=None):
+            RecorderService(self.settings).run()
+
+        remaining = sorted(stderr_dir.iterdir(), key=lambda p: p.name)
+        self.assertEqual(len(remaining), retain)
+        # The newest `retain` files are old-05 through old-08 (by mtime).
+        remaining_names = {entry.name for entry in remaining}
+        expected_newest = {
+            f"old-{idx:02d}.log" for idx in range(seeded - retain, seeded)
+        }
+        self.assertEqual(remaining_names, expected_newest)
+
+    # ----- R4: backoff schedule -----
+
+    def test_r4_first_yield_sets_next_eligible_at_one_second_out(self) -> None:
+        self._seed_state(job_id="job-backoff")
+        error = subprocess.CalledProcessError(
+            1, ["ffmpeg"], stderr="Server returned 503 Service Unavailable"
+        )
+        before = datetime.now(timezone.utc)
+        self._run_with_ffmpeg_error(error)
+        after = datetime.now(timezone.utc)
+        state_payload = json.loads(
+            (self.temp_root / "recorder-state.json").read_text(encoding="utf-8")
+        )
+        eligible_at_str = state_payload["next_eligible_at_by_job_id"]["job-backoff"]
+        eligible_at = datetime.fromisoformat(eligible_at_str)
+        self.assertGreaterEqual(eligible_at, before + timedelta(milliseconds=900))
+        self.assertLessEqual(eligible_at, after + timedelta(seconds=1, milliseconds=200))
+
+    def test_r4_schedule_progresses_one_five_fifteen_sixty(self) -> None:
+        deltas = [
+            RecorderService._next_eligible_after_yield(attempt) for attempt in (1, 2, 3, 4, 5)
+        ]
+        self.assertEqual(
+            deltas,
+            [
+                timedelta(seconds=1),
+                timedelta(seconds=5),
+                timedelta(seconds=15),
+                timedelta(seconds=60),
+                timedelta(seconds=60),
+            ],
+        )
+
+    def test_r4_deferred_job_skips_ffmpeg_within_window(self) -> None:
+        self._seed_state(job_id="job-defer")
+        error = subprocess.CalledProcessError(
+            1, ["ffmpeg"], stderr="Server returned 503 Service Unavailable"
+        )
+        # First run yields and writes next_eligible_at = now + 1s.
+        first_count = self._run_with_ffmpeg_error(error)
+        self.assertEqual(first_count, 1)
+        # Immediate second run — should defer.
+        second_count = self._run_with_ffmpeg_error(error)
+        self.assertEqual(second_count, 0)
+        # Eligibility entry preserved across the deferred run.
+        state_payload = json.loads(
+            (self.temp_root / "recorder-state.json").read_text(encoding="utf-8")
+        )
+        self.assertIn("job-defer", state_payload["next_eligible_at_by_job_id"])
+
+    # ----- R5: session retry budget -----
+
+    def test_r5_session_retry_counter_increments_on_each_yield(self) -> None:
+        self._seed_state(job_id="job-counter")
+        error = subprocess.CalledProcessError(
+            1, ["ffmpeg"], stderr="Server returned 503 Service Unavailable"
+        )
+        with patch.object(
+            RecorderService,
+            "_next_eligible_after_yield",
+            staticmethod(lambda attempt: timedelta(0)),
+        ):
+            with patch("arl.recorder.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+                "arl.recorder.service.subprocess.run", side_effect=error
+            ):
+                RecorderService(self.settings).run()
+                state_after_one = json.loads(
+                    (self.temp_root / "recorder-state.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(state_after_one["retries_by_session_id"], {"session-hd": 1})
+                RecorderService(self.settings).run()
+                state_after_two = json.loads(
+                    (self.temp_root / "recorder-state.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(state_after_two["retries_by_session_id"], {"session-hd": 2})
+
+    def test_r5_budget_boundary_emits_budget_exceeded_event_and_resets(self) -> None:
+        # session_retry_budget=3 from setUp; need 3 yields to trip.
+        self._seed_state(job_id="job-budget")
+        error = subprocess.CalledProcessError(
+            1, ["ffmpeg"], stderr="Server returned 503 Service Unavailable"
+        )
+        # Configure auto_retry_max_attempts high enough that we hit the
+        # session budget before the per-job retry budget gives up.
+        self.settings.recording.auto_retry_max_attempts = 20
+        with patch.object(
+            RecorderService,
+            "_next_eligible_after_yield",
+            staticmethod(lambda attempt: timedelta(0)),
+        ):
+            with patch("arl.recorder.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+                "arl.recorder.service.subprocess.run", side_effect=error
+            ):
+                RecorderService(self.settings).run()
+                RecorderService(self.settings).run()
+                RecorderService(self.settings).run()
+        budget_events = [
+            item
+            for item in self._audit_payloads()
+            if item["event_type"] == "recording_session_retry_budget_exceeded"
+        ]
+        self.assertEqual(len(budget_events), 1)
+        self.assertEqual(budget_events[0]["decision"], "manual_required")
+        self.assertEqual(
+            budget_events[0]["failure_category"], "unknown_unclassified_non_retryable"
+        )
+        self.assertEqual(
+            budget_events[0]["reason_detail"], "session_retry_budget_exceeded:3"
+        )
+        state_after = json.loads(
+            (self.temp_root / "recorder-state.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(state_after["retries_by_session_id"], {"session-hd": 0})
+
+    def test_r5_cross_session_isolation(self) -> None:
+        # Two sessions; only one accumulates yields.
+        self._seed_state(
+            session_id="session-a",
+            job_id="job-a",
+            extra_jobs=[("session-b", "job-b", RecordingJobStatus.STOPPED)],
+        )
+        error = subprocess.CalledProcessError(
+            1, ["ffmpeg"], stderr="Server returned 503 Service Unavailable"
+        )
+        with patch.object(
+            RecorderService,
+            "_next_eligible_after_yield",
+            staticmethod(lambda attempt: timedelta(0)),
+        ):
+            with patch("arl.recorder.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+                "arl.recorder.service.subprocess.run", side_effect=error
+            ):
+                RecorderService(self.settings).run()
+
+        state_after = json.loads(
+            (self.temp_root / "recorder-state.json").read_text(encoding="utf-8")
+        )
+        # Both sessions yielded once.
+        self.assertEqual(
+            state_after["retries_by_session_id"],
+            {"session-a": 1, "session-b": 1},
+        )
+
+    # ----- backwards compat + orchestrator routing -----
+
+    def test_recorder_state_loads_when_new_dict_fields_absent(self) -> None:
+        legacy_state = {
+            "processed_job_ids": ["job-x"],
+            "retry_attempts_by_job_id": {"job-x": 1},
+            "manual_required_job_ids": [],
+        }
+        state_path = self.temp_root / "recorder-state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(legacy_state), encoding="utf-8")
+        loaded = RecorderStateFile.model_validate_json(
+            state_path.read_text(encoding="utf-8")
+        )
+        self.assertEqual(loaded.next_eligible_at_by_job_id, {})
+        self.assertEqual(loaded.retries_by_session_id, {})
+
+    def test_orchestrator_routes_recording_session_retry_budget_exceeded(self) -> None:
+        started_at = datetime(2026, 5, 11, 2, 0, tzinfo=timezone.utc)
+        state = OrchestratorStateFile(
+            sessions=[
+                SessionRecord(
+                    session_id="session-budget",
+                    streamer_name="streamer-z",
+                    room_url="https://live.douyin.com/z",
+                    source_type=SourceType.DIRECT_STREAM,
+                    stream_url="https://example.invalid/z.m3u8",
+                    status=SessionStatus.STOPPED,
+                    started_at=started_at,
+                )
+            ],
+            recording_jobs=[
+                RecordingJobRecord(
+                    job_id="job-budget",
+                    session_id="session-budget",
+                    source_type=SourceType.DIRECT_STREAM,
+                    stream_url="https://example.invalid/z.m3u8",
+                    status=RecordingJobStatus.RETRYING,
+                    created_at=started_at,
+                )
+            ],
+            active_recording_job_id_by_platform={"douyin": "job-budget"},
+        )
+        self.orchestrator_state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.orchestrator_state_path.write_text(
+            state.model_dump_json(indent=2) + "\n", encoding="utf-8"
+        )
+
+        recorder_audit_path = self.temp_root / "recorder-events.jsonl"
+        recorder_audit_path.parent.mkdir(parents=True, exist_ok=True)
+        budget_event = {
+            "event_type": "recording_session_retry_budget_exceeded",
+            "session_id": "session-budget",
+            "job_id": "job-budget",
+            "source_type": "direct_stream",
+            "decision": "manual_required",
+            "failure_category": "unknown_unclassified_non_retryable",
+            "is_retryable": False,
+            "reason_code": "unknown_unclassified",
+            "reason_detail": "session_retry_budget_exceeded:3",
+            "reason": "session_retry_budget_exceeded:3",
+            "created_at": started_at.isoformat(),
+        }
+        recorder_audit_path.write_text(json.dumps(budget_event) + "\n", encoding="utf-8")
+
+        OrchestratorService(self.settings).run_once()
+
+        result_state = json.loads(self.orchestrator_state_path.read_text(encoding="utf-8"))
+        job = result_state["recording_jobs"][0]
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("session_retry_budget_exceeded", job["stop_reason"])
+        self.assertEqual(
+            job["failure_category"], "unknown_unclassified_non_retryable"
+        )
+        orch_audits = [
+            json.loads(line)
+            for line in (self.temp_root / "orchestrator-events.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip()
+        ]
+        orch_event_types = [item["event_type"] for item in orch_audits]
+        self.assertIn("recording_job_failed", orch_event_types)
 
 
 if __name__ == "__main__":

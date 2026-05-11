@@ -433,6 +433,7 @@ class OrchestratorService:
         known_event_types = {
             "recording_retry_scheduled",
             "recording_retry_exhausted",
+            "recording_session_retry_budget_exceeded",
             "ffmpeg_fallback_placeholder",
             "ffmpeg_skipped",
             "ffmpeg_record_succeeded",
@@ -481,6 +482,30 @@ class OrchestratorService:
         if event.event_type == "recording_retry_exhausted":
             job.status = RecordingJobStatus.FAILED
             job.stop_reason = self._event_reason_detail(event) or "retry_exhausted"
+            if job.ended_at is None:
+                job.ended_at = event.created_at
+            if state.active_recording_job_id_by_platform.get(job.platform) == job.job_id:
+                state.active_recording_job_id_by_platform.pop(job.platform, None)
+            self._apply_failure_metadata(state, job, event)
+            self.state_store.append_audit(
+                "recording_job_failed",
+                session_id=job.session_id,
+                job_id=job.job_id,
+                message=f"reason={job.stop_reason}",
+            )
+            self._append_recovery_audit(
+                job,
+                mode="manual",
+                origin_event=event.event_type,
+            )
+            self._mark_recorder_event_applied(state, event)
+            return
+
+        if event.event_type == "recording_session_retry_budget_exceeded":
+            job.status = RecordingJobStatus.FAILED
+            job.stop_reason = (
+                self._event_reason_detail(event) or "session_retry_budget_exceeded"
+            )
             if job.ended_at is None:
                 job.ended_at = event.created_at
             if state.active_recording_job_id_by_platform.get(job.platform) == job.job_id:

@@ -51,6 +51,8 @@ class RecorderAuditEventPayload(BaseModel):
     reason: str | None = None
     attempt: int | None = None
     max_attempts: int | None = None
+    stderr_excerpt: str | None = None
+    stderr_log_path: str | None = None
     created_at: datetime
 
     @model_validator(mode="after")

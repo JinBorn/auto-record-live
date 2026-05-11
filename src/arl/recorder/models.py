@@ -12,6 +12,8 @@ class RecorderStateFile(BaseModel):
     processed_job_ids: list[str] = Field(default_factory=list)
     retry_attempts_by_job_id: dict[str, int] = Field(default_factory=dict)
     manual_required_job_ids: list[str] = Field(default_factory=list)
+    next_eligible_at_by_job_id: dict[str, datetime] = Field(default_factory=dict)
+    retries_by_session_id: dict[str, int] = Field(default_factory=dict)
 
 
 class RecorderAuditEvent(BaseModel):
@@ -27,6 +29,8 @@ class RecorderAuditEvent(BaseModel):
     reason: str | None = None
     attempt: int | None = None
     max_attempts: int | None = None
+    stderr_excerpt: str | None = None
+    stderr_log_path: str | None = None
     created_at: datetime
 
     @model_validator(mode="after")

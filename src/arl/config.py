@@ -113,6 +113,8 @@ class RecordingSettings(BaseModel):
     browser_capture_resolution: str = "1920x1080"
     browser_capture_fps: int = 30
     browser_capture_timeout_seconds: int = 20
+    session_retry_budget: int = 8
+    stderr_retain_count: int = 200
 
 
 class OrchestratorSettings(BaseModel):
@@ -348,6 +350,12 @@ def load_settings() -> Settings:
             ),
             browser_capture_timeout_seconds=max(
                 1, int(os.getenv("ARL_BROWSER_CAPTURE_TIMEOUT_SECONDS", "20"))
+            ),
+            session_retry_budget=max(
+                1, int(os.getenv("ARL_RECORDER_SESSION_RETRY_BUDGET", "8"))
+            ),
+            stderr_retain_count=max(
+                0, int(os.getenv("ARL_RECORDER_STDERR_RETAIN_COUNT", "200"))
             ),
         ),
         export=ExportSettings(

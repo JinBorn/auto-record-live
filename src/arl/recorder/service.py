@@ -5,7 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from arl.config import Settings
@@ -23,6 +23,8 @@ from arl.recorder.models import (
 from arl.shared.contracts import RecordingAsset, SourceType
 from arl.shared.failure_contracts import (
     FAILURE_CATEGORY_FFMPEG_PROCESS_ERROR_RETRYABLE,
+    FAILURE_CATEGORY_UNKNOWN_UNCLASSIFIED_NON_RETRYABLE,
+    REASON_CODE_UNKNOWN_UNCLASSIFIED,
     CANONICAL_FAILURE_CATEGORIES,
     classify_failure_reason,
 )
@@ -51,6 +53,7 @@ class RecorderService:
         log("recorder", "starting")
         log("recorder", f"preferred_resolution={self.settings.recording.preferred_resolution}")
         log("recorder", f"ffmpeg_enabled={self.settings.recording.enable_ffmpeg}")
+        self._rotate_stderr_logs(self.settings.recording.stderr_retain_count)
 
         orchestrator_state = self._load_orchestrator_state()
         recorder_state = self._load_state()
@@ -71,6 +74,7 @@ class RecorderService:
             stream_headers = job.stream_headers or session.stream_headers
             if job.status == RecordingJobStatus.FAILED:
                 recorder_state.retry_attempts_by_job_id.pop(job.job_id, None)
+                recorder_state.next_eligible_at_by_job_id.pop(job.job_id, None)
                 if job.job_id not in recorder_state.manual_required_job_ids:
                     recorder_state.manual_required_job_ids.append(job.job_id)
                     manual_recovery_marked += 1
@@ -123,6 +127,18 @@ class RecorderService:
                     for manual_job_id in recorder_state.manual_required_job_ids
                     if manual_job_id != job.job_id
                 ]
+
+            now = datetime.now(timezone.utc)
+            eligible_at = recorder_state.next_eligible_at_by_job_id.get(job.job_id)
+            if eligible_at is not None and eligible_at > now:
+                log(
+                    "recorder",
+                    "job deferred "
+                    f"session_id={session.session_id} job_id={job.job_id} "
+                    f"eligible_at={eligible_at.isoformat()}",
+                )
+                continue
+
             retry_attempt_count = recorder_state.retry_attempts_by_job_id.get(job.job_id, 0)
             outcome = self._build_recording(
                 session_id=session.session_id,
@@ -136,6 +152,24 @@ class RecorderService:
                 retry_decision = classify_failure_reason(outcome.retryable_failure_reason)
                 next_retry_attempt = retry_attempt_count + 1
                 recorder_state.retry_attempts_by_job_id[job.job_id] = next_retry_attempt
+
+                session_retries = (
+                    recorder_state.retries_by_session_id.get(session.session_id, 0) + 1
+                )
+                recorder_state.retries_by_session_id[session.session_id] = session_retries
+                budget = self.settings.recording.session_retry_budget
+                if session_retries >= budget:
+                    self._emit_session_budget_exceeded(
+                        recorder_state=recorder_state,
+                        orchestrator_state=orchestrator_state,
+                        session_id=session.session_id,
+                        budget=budget,
+                    )
+                    recorder_state.retries_by_session_id[session.session_id] = 0
+                    continue
+
+                eligible_at_next = now + self._next_eligible_after_yield(next_retry_attempt)
+                recorder_state.next_eligible_at_by_job_id[job.job_id] = eligible_at_next
                 retries_scheduled += 1
                 self._append_audit(
                     "recording_retry_scheduled",
@@ -155,7 +189,8 @@ class RecorderService:
                     "recorder",
                     "recording retry scheduled "
                     f"session_id={session.session_id} job_id={job.job_id} "
-                    f"attempt={next_retry_attempt}/{self.settings.recording.auto_retry_max_attempts}",
+                    f"attempt={next_retry_attempt}/{self.settings.recording.auto_retry_max_attempts} "
+                    f"eligible_at={eligible_at_next.isoformat()}",
                 )
                 continue
 
@@ -173,6 +208,8 @@ class RecorderService:
             if job.job_id not in recorder_state.processed_job_ids:
                 recorder_state.processed_job_ids.append(job.job_id)
             recorder_state.retry_attempts_by_job_id.pop(job.job_id, None)
+            recorder_state.next_eligible_at_by_job_id.pop(job.job_id, None)
+            recorder_state.retries_by_session_id.pop(session.session_id, None)
             processed += 1
             log("recorder", f"recording asset written session_id={session.session_id}")
 
@@ -434,12 +471,21 @@ class RecorderService:
                 )
                 return output_path, None
             except (subprocess.SubprocessError, OSError) as error:
-                failure_reason = self._format_ffmpeg_failure_reason(error)
+                failure_reason, stderr_excerpt, stderr_log_path = (
+                    self._capture_ffmpeg_failure(error, job_id=job_id, attempt=attempt)
+                )
                 failure_decision = classify_failure_reason(failure_reason)
                 last_failure_reason = failure_reason
+                yield_on_transient = failure_decision.is_retryable
+                decision = (
+                    "attempt_failed_yield_to_next_probe"
+                    if yield_on_transient
+                    else "attempt_failed"
+                )
                 log(
                     "recorder",
-                    f"ffmpeg record failed session_id={session_id} attempt={attempt}/{attempts} reason={failure_reason}",
+                    f"ffmpeg record failed session_id={session_id} attempt={attempt}/{attempts} "
+                    f"decision={decision} reason={failure_reason}",
                 )
                 self._append_audit(
                     "ffmpeg_record_failed",
@@ -447,23 +493,21 @@ class RecorderService:
                     job_id=job_id,
                     source_type=SourceType.DIRECT_STREAM,
                     reason=failure_reason,
-                    decision="attempt_failed",
+                    decision=decision,
                     failure_category=failure_decision.failure_category,
                     is_retryable=failure_decision.is_retryable,
                     reason_code=failure_decision.reason_code,
                     reason_detail=failure_reason,
                     attempt=attempt,
                     max_attempts=attempts,
+                    stderr_excerpt=stderr_excerpt,
+                    stderr_log_path=stderr_log_path,
                 )
-                if not failure_decision.is_retryable:
-                    log(
-                        "recorder",
-                        (
-                            "ffmpeg record failure is non-retryable; stop in-run retries "
-                            f"session_id={session_id} reason={failure_reason}"
-                        ),
-                    )
-                    break
+                # Both transient and non-retryable yield after a single ffmpeg
+                # invocation: transient yields to the next probe (orchestrator
+                # can refresh a stale stream URL); non-retryable stops in-run
+                # so cross-run retry budget isn't burned on a doomed URL.
+                break
 
         return None, last_failure_reason
 
@@ -539,12 +583,21 @@ class RecorderService:
                 )
                 return output_path, None
             except (subprocess.SubprocessError, OSError) as error:
-                failure_reason = self._format_ffmpeg_failure_reason(error)
+                failure_reason, stderr_excerpt, stderr_log_path = (
+                    self._capture_ffmpeg_failure(error, job_id=job_id, attempt=attempt)
+                )
                 failure_decision = classify_failure_reason(failure_reason)
                 last_failure_reason = failure_reason
+                yield_on_transient = failure_decision.is_retryable
+                decision = (
+                    "attempt_failed_yield_to_next_probe"
+                    if yield_on_transient
+                    else "attempt_failed"
+                )
                 log(
                     "recorder",
-                    f"ffmpeg browser-capture failed session_id={session_id} attempt={attempt}/{attempts} reason={failure_reason}",
+                    f"ffmpeg browser-capture failed session_id={session_id} "
+                    f"attempt={attempt}/{attempts} decision={decision} reason={failure_reason}",
                 )
                 self._append_audit(
                     "ffmpeg_record_failed",
@@ -552,23 +605,17 @@ class RecorderService:
                     job_id=job_id,
                     source_type=SourceType.BROWSER_CAPTURE,
                     reason=failure_reason,
-                    decision="attempt_failed",
+                    decision=decision,
                     failure_category=failure_decision.failure_category,
                     is_retryable=failure_decision.is_retryable,
                     reason_code=failure_decision.reason_code,
                     reason_detail=failure_reason,
                     attempt=attempt,
                     max_attempts=attempts,
+                    stderr_excerpt=stderr_excerpt,
+                    stderr_log_path=stderr_log_path,
                 )
-                if not failure_decision.is_retryable:
-                    log(
-                        "recorder",
-                        (
-                            "ffmpeg browser-capture failure is non-retryable; stop in-run retries "
-                            f"session_id={session_id} reason={failure_reason}"
-                        ),
-                    )
-                    break
+                break
 
         return None, last_failure_reason
 
@@ -587,6 +634,113 @@ class RecorderService:
         if isinstance(error, OSError):
             return f"os_error:{error.__class__.__name__}"
         return f"subprocess_error:{error.__class__.__name__}"
+
+    @staticmethod
+    def _next_eligible_after_yield(attempt: int) -> timedelta:
+        if attempt <= 1:
+            return timedelta(seconds=1)
+        if attempt == 2:
+            return timedelta(seconds=5)
+        if attempt == 3:
+            return timedelta(seconds=15)
+        return timedelta(seconds=60)
+
+    @property
+    def _recorder_stderr_dir(self) -> Path:
+        return self.settings.storage.temp_dir / "recorder-stderr"
+
+    def _capture_ffmpeg_failure(
+        self,
+        error: Exception,
+        *,
+        job_id: str,
+        attempt: int,
+    ) -> tuple[str, str | None, str | None]:
+        reason = self._format_ffmpeg_failure_reason(error)
+        stderr_text = self._extract_full_stderr(error)
+        if not stderr_text:
+            return reason, None, None
+
+        excerpt = self._build_stderr_excerpt(stderr_text)
+        log_path = self._write_stderr_log(stderr_text, job_id=job_id, attempt=attempt)
+        return reason, excerpt, log_path
+
+    @staticmethod
+    def _extract_full_stderr(error: Exception) -> str:
+        raw: object = None
+        if isinstance(error, subprocess.CalledProcessError):
+            raw = error.stderr
+        elif isinstance(error, subprocess.TimeoutExpired):
+            raw = getattr(error, "stderr", None)
+        if isinstance(raw, bytes):
+            return raw.decode("utf-8", errors="replace").strip()
+        if isinstance(raw, str):
+            return raw.strip()
+        return ""
+
+    @staticmethod
+    def _build_stderr_excerpt(stderr_text: str) -> str:
+        max_line_chars = 240
+        head_lines = 5
+        tail_lines = 15
+        total_budget = 4096
+        lines = stderr_text.splitlines()
+        if not lines:
+            return ""
+        if len(lines) <= head_lines + tail_lines:
+            picked = lines
+        else:
+            picked = lines[:head_lines] + ["..."] + lines[-tail_lines:]
+        truncated = [line[:max_line_chars] for line in picked]
+        excerpt = "\n".join(truncated)
+        if len(excerpt) > total_budget:
+            excerpt = excerpt[:total_budget]
+        return excerpt
+
+    def _write_stderr_log(
+        self,
+        stderr_text: str,
+        *,
+        job_id: str,
+        attempt: int,
+    ) -> str | None:
+        try:
+            stderr_dir = self._recorder_stderr_dir
+            stderr_dir.mkdir(parents=True, exist_ok=True)
+            safe_job_id = job_id.replace(os.sep, "_").replace("/", "_")
+            log_path = stderr_dir / f"{safe_job_id}-{attempt}.log"
+            tmp_path = log_path.with_suffix(log_path.suffix + ".tmp")
+            tmp_path.write_text(stderr_text, encoding="utf-8")
+            tmp_path.replace(log_path)
+        except OSError as error:
+            log(
+                "recorder",
+                f"stderr log write failed job_id={job_id} attempt={attempt} reason={error}",
+            )
+            return None
+        return log_path.as_posix()
+
+    def _rotate_stderr_logs(self, retain_count: int) -> None:
+        stderr_dir = self._recorder_stderr_dir
+        if not stderr_dir.exists():
+            return
+        try:
+            files = [entry for entry in stderr_dir.iterdir() if entry.is_file()]
+        except OSError:
+            return
+        if retain_count <= 0:
+            for entry in files:
+                try:
+                    entry.unlink()
+                except OSError:
+                    continue
+            return
+        files.sort(key=lambda entry: entry.stat().st_mtime, reverse=True)
+        for entry in files[retain_count:]:
+            try:
+                entry.unlink()
+            except OSError:
+                continue
 
     def _manual_recovery_reason(
         self,
@@ -771,6 +925,46 @@ class RecorderService:
             last_reason = probe_reason
         return (candidate_inputs[0] if candidate_inputs else initial_input), False, last_reason
 
+    def _emit_session_budget_exceeded(
+        self,
+        *,
+        recorder_state: RecorderStateFile,
+        orchestrator_state: OrchestratorStateFile,
+        session_id: str,
+        budget: int,
+    ) -> None:
+        reason_detail = f"session_retry_budget_exceeded:{budget}"
+        emitted_any = False
+        for job in orchestrator_state.recording_jobs:
+            if job.session_id != session_id:
+                continue
+            # Escalate every job still in the pipeline for this session. In
+            # production the orchestrator transitions STOPPED → RETRYING after a
+            # scheduled retry; in single-process recorder runs jobs may remain
+            # STOPPED. Both should be escalated when the session budget trips —
+            # only FAILED jobs (already terminal) are left alone.
+            if job.status == RecordingJobStatus.FAILED:
+                continue
+            emitted_any = True
+            recorder_state.next_eligible_at_by_job_id.pop(job.job_id, None)
+            self._append_audit(
+                "recording_session_retry_budget_exceeded",
+                session_id=session_id,
+                job_id=job.job_id,
+                source_type=job.source_type or SourceType.BROWSER_CAPTURE,
+                reason=reason_detail,
+                decision="manual_required",
+                failure_category=FAILURE_CATEGORY_UNKNOWN_UNCLASSIFIED_NON_RETRYABLE,
+                is_retryable=False,
+                reason_code=REASON_CODE_UNKNOWN_UNCLASSIFIED,
+                reason_detail=reason_detail,
+            )
+        log(
+            "recorder",
+            "session retry budget exceeded "
+            f"session_id={session_id} budget={budget} escalated={emitted_any}",
+        )
+
     def _append_audit(
         self,
         event_type: str,
@@ -786,6 +980,8 @@ class RecorderService:
         reason_detail: str | None = None,
         attempt: int | None = None,
         max_attempts: int | None = None,
+        stderr_excerpt: str | None = None,
+        stderr_log_path: str | None = None,
     ) -> None:
         append_model(
             self.audit_path,
@@ -802,6 +998,8 @@ class RecorderService:
                 reason=reason,
                 attempt=attempt,
                 max_attempts=max_attempts,
+                stderr_excerpt=stderr_excerpt,
+                stderr_log_path=stderr_log_path,
                 created_at=datetime.now(timezone.utc),
             ),
         )
