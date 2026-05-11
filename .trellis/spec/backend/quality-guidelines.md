@@ -177,6 +177,26 @@ The current MVP backend is a local pipeline with file-backed contracts and typed
 
 **Prevention**: Add tests asserting non-recoverable reasons (for example HTTP 4xx) stop in-run attempts early while still producing deterministic fallback artifacts.
 
+### Common Mistake: Burning the in-run retry budget on transient stream-URL failures
+
+**Symptom**: Recorder runs ffmpeg back-to-back against the same stale (token-expired) `stream_url`, producing duplicate 5xx/timeout/process_error failures before the orchestrator can refresh the URL. Audit log balloons with redundant `ffmpeg_record_failed` rows and recovery is delayed by `ffmpeg_max_retries * timeout` per run.
+
+**Cause**: Treating "retryable" as "retry immediately in-run" rather than "yield to next probe cycle so upstream can replace the URL".
+
+**Fix**: On a transient failure, emit one `ffmpeg_record_failed` audit with `decision="attempt_failed_yield_to_next_probe"` and break the in-run loop after a single attempt. Per-job backoff (`next_eligible_at_by_job_id` with a 1s/5s/15s/60s schedule) and per-session cap (`retries_by_session_id` with `ARL_RECORDER_SESSION_RETRY_BUDGET`, default 8) then govern when ffmpeg is invoked again. Non-retryable failures keep the existing `decision="attempt_failed"` immediate-break path.
+
+**Prevention**: Regression tests per transient bucket (5xx / network_timeout / ffmpeg_process_error) asserting `subprocess.run` is invoked exactly once and the audit decision is the yield variant. See `tests/pipeline/test_ffmpeg_resilience.py::RecorderHardeningTest`.
+
+### Common Mistake: One-line stderr truncation is insufficient for ffmpeg debugging
+
+**Symptom**: Operators see a single-line failure reason in `recorder-events.jsonl` (e.g., `exit_status:1` or the last 240 chars of stderr) and cannot tell which ffmpeg stage failed (input open, demux, decode, muxing) without re-running with verbose logging.
+
+**Cause**: Audit row only captures the last stderr line truncated to 240 chars. The first lines (banner, HTTP status digits) and the muxing tail are both informative but absent.
+
+**Fix**: Dual-track on every ffmpeg failure: (a) inline `stderr_excerpt` field in the audit row carrying the first 5 + last 15 lines (each line truncated to 240 chars, total ≤ 4 KB), and (b) full stderr written atomically to `data/tmp/recorder-stderr/<job_id>-<attempt>.log` with the path also recorded on the audit row as `stderr_log_path`. Recorder rotates that directory at startup, keeping only the newest `ARL_RECORDER_STDERR_RETAIN_COUNT` files (default 200).
+
+**Prevention**: Tests asserting (1) failure audits carry both `stderr_excerpt` and `stderr_log_path`, (2) success audits carry neither, (3) rotation honors the retain count. Pattern applies to any future stage that wraps a noisy external process (exporter ffmpeg, whisper) — reuse the same excerpt/log-path schema rather than inventing a new one.
+
 ### Common Mistake: Missing failure category leads to generic inspect-only action
 
 **Symptom**: Recorder emits `inspect_failure_logs` for many failed jobs even when error text clearly indicates a more actionable fix (prerequisite/config/network).

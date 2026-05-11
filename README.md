@@ -214,6 +214,15 @@ Cookie 失效时不再静默降级到低画质，而是输出可查询信号：
 .\.venv\Scripts\python.exe -m arl.cli recovery --summary
 ```
 
+#### ffmpeg 失败排查（recorder）
+
+录制器对 ffmpeg 失败的处理已经走"分类 + 短路 + 退避 + session 预算"四层防御。排查时按以下顺序查：
+
+1. **审计行**：`data/tmp/recorder-events.jsonl` 中的 `ffmpeg_record_failed` 行包含 `decision`（`attempt_failed` 表示非可重试、立即收手；`attempt_failed_yield_to_next_probe` 表示瞬时失败、单次尝试后让出给下一轮 probe）+ `failure_category` + `reason_code` + `reason_detail`，以及内嵌的 `stderr_excerpt`（首 5 + 末 15 行截断到 240 字符/行，总长 ≤ 4 KB）。
+2. **完整 stderr**：审计行的 `stderr_log_path` 字段指向 `data/tmp/recorder-stderr/<job_id>-<attempt>.log` 完整 ffmpeg stderr 转储；recorder 启动时按 mtime 滚动只保留最近 N 个文件，N 由 `ARL_RECORDER_STDERR_RETAIN_COUNT`（默认 200）控制。
+3. **退避状态**：`data/tmp/recorder-state.json` 中的 `next_eligible_at_by_job_id[job_id]` 记录每次瞬时失败后的下次可调度时间（1s → 5s → 15s → 60s 封顶），未到期的 job 会在主循环里日志 `job deferred ...` 并跳过 ffmpeg。
+4. **session 预算**：同一 session 累计瞬时失败次数由 `retries_by_session_id[session_id]` 跟踪；上限由 `ARL_RECORDER_SESSION_RETRY_BUDGET`（默认 8）控制，达到上限后所有非 FAILED job 会被升级为 `recording_session_retry_budget_exceeded` 审计 + 进入 manual recovery 路径。
+
 ## 浏览器采集配置说明（ffmpeg）
 
 - `ARL_BROWSER_CAPTURE_FORMAT=auto` 时按平台自动选择：

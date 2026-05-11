@@ -155,7 +155,7 @@ class RecordingJobRecord(BaseModel):
   - `live_stopped` closes the active session and active recording job if they exist
   - recorder audit events may transition recording job status:
     - `recording_retry_scheduled` -> `retrying` and re-open `active_recording_job_id_by_platform[job.platform]` to that job
-    - `recording_retry_exhausted`, `ffmpeg_skipped`, `ffmpeg_fallback_placeholder` -> `failed`
+    - `recording_retry_exhausted`, `ffmpeg_skipped`, `ffmpeg_fallback_placeholder`, `recording_session_retry_budget_exceeded` -> `failed`
     - `ffmpeg_record_failed` -> `retrying` when failure is recoverable; otherwise `failed`
     - `ffmpeg_record_succeeded` after retry/failure -> `stopped`
   - when a recorder failure event is applied, orchestrator must persist:
@@ -400,6 +400,8 @@ class ExportAsset(BaseModel):
   - `ARL_DIRECT_STREAM_TIMEOUT_SECONDS` (int seconds, default `20`)
   - `ARL_RECORDING_FFMPEG_MAX_RETRIES` (int >= 0, default `1`)
   - `ARL_RECORDING_AUTO_RETRY_MAX_ATTEMPTS` (int >= 0, default `2`)
+  - `ARL_RECORDER_SESSION_RETRY_BUDGET` (int >= 1, default `8`) — per-session cap on transient ffmpeg yields; once hit, all non-FAILED jobs in the session are escalated to manual via `recording_session_retry_budget_exceeded`
+  - `ARL_RECORDER_STDERR_RETAIN_COUNT` (int >= 0, default `200`) — number of `data/tmp/recorder-stderr/<job_id>-<attempt>.log` files retained at recorder start; older files are rotated away
   - `ARL_BROWSER_CAPTURE_INPUT` (string, default empty)
 - `ARL_BROWSER_CAPTURE_FORMAT` (string, default `auto`; resolves to `gdigrab` on Windows, `avfoundation` on macOS, `x11grab` on Linux/other)
   - `ARL_BROWSER_CAPTURE_RESOLUTION` (string, default `1920x1080`)
@@ -505,11 +507,15 @@ class ExportAsset(BaseModel):
   - `ARL_EXPORT_ENABLE_FFMPEG=1`
   - when disabled or prerequisites are missing, stages must degrade to deterministic placeholder artifacts instead of crashing.
 - Recorder and exporter ffmpeg commands retry per configured max retries, then must degrade to deterministic placeholder artifacts.
-- Recorder should append structured audit rows for ffmpeg control flow (`ffmpeg_skipped`, `ffmpeg_record_failed`, `ffmpeg_record_succeeded`, `ffmpeg_fallback_placeholder`) so retry decisions are observable.
+- Transient ffmpeg failures (HTTP 5xx, network timeout, ffmpeg process error) must yield to the next probe after a single in-run attempt rather than burning the in-run retry budget against the same (likely stale) stream URL. The corresponding `ffmpeg_record_failed` audit row carries `decision="attempt_failed_yield_to_next_probe"` to distinguish a transient yield from a non-retryable `decision="attempt_failed"` short-circuit.
+- Recorder should append structured audit rows for ffmpeg control flow (`ffmpeg_skipped`, `ffmpeg_record_failed`, `ffmpeg_record_succeeded`, `ffmpeg_fallback_placeholder`, `recording_session_retry_budget_exceeded`) so retry decisions are observable.
+- ffmpeg failure audit rows must include the canonical `decision` / `failure_category` / `is_retryable` / `reason_code` / `reason_detail` tuple and, when stderr is available, also `stderr_excerpt` (first 5 + last 15 lines, each <=240 chars, total <=4 KB) and `stderr_log_path` (relative path of the full stderr dump at `data/tmp/recorder-stderr/<job_id>-<attempt>.log`).
 - When ffmpeg fails with retryable reasons, recorder may defer placeholder emission and schedule cross-run retries:
   - scheduled event: `recording_retry_scheduled`
   - exhausted event: `recording_retry_exhausted`
   - max schedules controlled by `ARL_RECORDING_AUTO_RETRY_MAX_ATTEMPTS`
+  - per-job backoff: after each transient yield, recorder persists `next_eligible_at_by_job_id[job_id]` using a 1s/5s/15s/60s schedule (capped at 60s for attempt >= 4) and skips the job until eligibility lapses
+  - per-session cap: recorder persists `retries_by_session_id[session_id]` (incremented on every transient yield); when count reaches `ARL_RECORDER_SESSION_RETRY_BUDGET`, recorder emits one `recording_session_retry_budget_exceeded` audit per non-FAILED job in the session (with `decision="manual_required"`, `failure_category="unknown_unclassified_non_retryable"`, `reason_code="unknown_unclassified"`, `reason_detail="session_retry_budget_exceeded:<budget>"`), resets the counter, and orchestrator transitions those jobs to `failed`
 - Recorder must treat orchestrator `RecordingJobStatus.FAILED` as manual-recovery flow:
   - do not attempt ffmpeg or placeholder rebuild for failed jobs
   - clear stale retry counters for that job from `retry_attempts_by_job_id`
@@ -616,10 +622,15 @@ class ExportAsset(BaseModel):
 | A stage receives an unknown asset format or status | Reject or audit explicitly; do not guess |
 | `ARL_RECORDING_ENABLE_FFMPEG=1` but `stream_url` missing | Recorder logs skip reason and writes placeholder recording artifact |
 | `ARL_RECORDING_ENABLE_FFMPEG=1`, source is `browser_capture`, and resolved capture input is empty/unavailable | Recorder logs skip reason and writes placeholder recording artifact |
-| ffmpeg fails with retryable reason and retry budget remains | Recorder emits `recording_retry_scheduled` and defers placeholder/asset emission until a later run |
+| ffmpeg fails with retryable reason and retry budget remains | Recorder emits one `ffmpeg_record_failed` (decision `attempt_failed_yield_to_next_probe`) plus `recording_retry_scheduled`, writes `next_eligible_at_by_job_id[job]` per backoff schedule, and defers placeholder/asset emission until eligibility lapses |
 | ffmpeg retry budget exhausted | Recorder emits `recording_retry_exhausted`, writes placeholder artifact, and emits recording asset |
-| ffmpeg fails with clear HTTP 4xx input-side errors (`401/403/404/410`, `server returned 4xx`) | Treat as non-recoverable input/configuration failure; do not schedule cross-run retry; emit placeholder/manual path |
+| ffmpeg fails with clear HTTP 4xx input-side errors (`401/403/404/410`, `server returned 4xx`) | Treat as non-recoverable input/configuration failure (decision `attempt_failed`); do not schedule cross-run retry; emit placeholder/manual path |
 | ffmpeg fails with clear non-recoverable reason in the same run | Recorder should stop further in-run ffmpeg attempts immediately and proceed with fallback/manual path |
+| Job is within its backoff window after a transient yield (`next_eligible_at_by_job_id[job] > now`) | Recorder logs `job deferred ...` once and skips the job without invoking ffmpeg; eligibility entry is preserved |
+| Per-session transient yields reach `ARL_RECORDER_SESSION_RETRY_BUDGET` | Recorder emits one `recording_session_retry_budget_exceeded` audit per non-FAILED job in the session, resets `retries_by_session_id[session]` to 0, clears `next_eligible_at_by_job_id` entries for those jobs, and orchestrator transitions them to `failed` |
+| ffmpeg attempt produces non-empty stderr | Recorder must populate audit `stderr_excerpt` (head 5 + tail 15 lines, total <=4 KB) and `stderr_log_path` pointing at the full stderr dump on disk |
+| Recorder starts with more than `ARL_RECORDER_STDERR_RETAIN_COUNT` files in `data/tmp/recorder-stderr/` | Recorder rotates files at startup, keeping only the newest N by mtime |
+| `recorder-state.json` written by an older recorder release lacks `next_eligible_at_by_job_id` / `retries_by_session_id` | Recorder loads it and supplies empty dicts (no migration required, no error) |
 | Failed job has missing `failure_category` but recognizable `stop_reason` markers | Recorder should infer actionable category (for example `prerequisite` on HTTP 404) and avoid defaulting to generic inspect-only action |
 | Orchestrator job status is `failed` | Recorder skips recording attempts, clears stale retry counters, emits `recording_manual_recovery_required` once, and appends one recovery action row even when job id already exists in `processed_job_ids` |
 | Orchestrator re-opens the same job id as `retrying` after manual recovery | Recorder clears stale `processed_job_ids` and `manual_required_job_ids` entries for that job, then re-runs recording |
