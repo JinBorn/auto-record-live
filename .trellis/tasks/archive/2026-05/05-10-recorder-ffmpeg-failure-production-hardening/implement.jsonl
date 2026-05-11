@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "Recorder audit event types, state file schema, failure_category/reason_code registry — must update when adding new audit values, new state fields, and the new recording_session_retry_budget_exceeded event."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Existing transient/permanent classification conventions and CANONICAL_FAILURE_CATEGORIES; PR1 yield-on-transient must align with these."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Repo coding standards and forbidden patterns; recorder service edits must comply."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Structured log format for the new 'job deferred', 'session budget exceeded', and stderr log path lines."}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Confirms placement for data/tmp/recorder-stderr/ side artifact and new dict fields in RecorderStateFile."}

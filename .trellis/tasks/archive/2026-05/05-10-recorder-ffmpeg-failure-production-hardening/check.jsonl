@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "Single source of truth for audit event registry, failure_category, and state schema — check must verify the new event/fields are codified here."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Confirm new yield decision and session-budget escalation match the documented retryable/non-retryable contract."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Spec compliance + forbidden patterns sweep on the changed recorder code."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Verify new log lines (job deferred, session budget exceeded) follow the structured log conventions."}
