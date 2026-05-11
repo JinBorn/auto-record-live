@@ -1073,3 +1073,37 @@ Resumed cookie-expiration task at Phase 2.1 and shipped the prd.md three-PR plan
 ### Next Steps
 
 - None - task complete
+
+
+## Session 27: recorder ffmpeg failure production hardening
+
+**Date**: 2026-05-12
+**Task**: recorder ffmpeg failure production hardening
+**Branch**: `main`
+
+### Summary
+
+Resumed task at Phase 2.1 and shipped the prd.md 5-PR plan inline (per memory note that trellis-implement / trellis-check sub-agents 500). PR1 yield-on-transient: ffmpeg in-run loop breaks after one attempt on retryable failures with audit decision attempt_failed_yield_to_next_probe; non-retryable keeps existing attempt_failed semantics. PR2 stderr capture: every failure writes full stderr atomically to data/tmp/recorder-stderr/<job_id>-<attempt>.log and embeds a head-5 + tail-15 excerpt (<=4 KB) plus stderr_log_path on the audit; recorder rotates the directory on startup via ARL_RECORDER_STDERR_RETAIN_COUNT (default 200). PR3 per-job backoff: next_eligible_at_by_job_id state dict schedules 1s/5s/15s/60s (capped) after each transient yield and the main loop logs job deferred for entries still in the window. PR4 per-session retry budget: retries_by_session_id accumulates transient yields; on hitting ARL_RECORDER_SESSION_RETRY_BUDGET (default 8) recorder emits one recording_session_retry_budget_exceeded audit per non-FAILED job in the session, orchestrator transitions them to failed with the same shape as recording_retry_exhausted. PR5 contracts + README: orchestration-contracts.md picked up registry/state/env/audit-field updates and a six-row validation matrix extension; quality-guidelines.md got two new Common Mistake entries (burning budget on transient URLs; one-line stderr insufficient); README added a recorder ffmpeg troubleshooting paragraph. Tests +15 in new RecorderHardeningTest class plus 3 legacy tests updated to the new contract; pytest 247 -> 262 green; no lint/typecheck configured in repo.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7564a9e` | (see git log) |
+| `cda81d1` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
