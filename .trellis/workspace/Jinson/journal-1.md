@@ -1107,3 +1107,37 @@ Resumed task at Phase 2.1 and shipped the prd.md 5-PR plan inline (per memory no
 ### Next Steps
 
 - None - task complete
+
+
+## Session 28: recorder 403 cookie expiration audit link
+
+**Date**: 2026-05-12
+**Task**: recorder 403 cookie expiration audit link
+**Branch**: `main`
+
+### Summary
+
+Split http_403_forbidden out of generic http_4xx in classify_failure_reason (same non-retryable category, distinct reason_code). Recorder now emits cookie_expired_for_<platform> alongside ffmpeg_record_failed when reason_code is http_403_forbidden AND platform cookie env is configured (DouyinSettings.cookie or BilibiliSettings.sessdata non-empty). Orchestrator routes recorder-side cookie_expired_for_* to audit-only without advancing per-job watermark so the paired ffmpeg_record_failed still applies. Contracts/logging-guidelines/quality-guidelines/README all synced (dual-source semantics + Bilibili token false-positive caveat). Tests: +19 (10 classifier, 7 recorder gating, 2 orchestrator routing); pytest 262 -> 281 green, zero regression. Per memory note about sub-agent 500-panics, implementation was done inline.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9c24bb5` | (see git log) |
+| `9bf01c3` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
