@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "Authoritative registry for event_type, failure_category, reason_code, and recorder audit shape — must extend with cookie_expired_for_<platform> recorder-side source, REASON_CODE_HTTP_403_FORBIDDEN, and routing rule in _handle_recorder_event."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Existing transient/permanent 4xx classification conventions; new http_403 sub-code must remain non-retryable inside http_4xx_non_retryable category."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Repo coding standards (no premature abstractions, forbidden patterns); recorder gating helper + classifier change must comply."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Structured log line style; any new log emitted by recorder cookie-expired path must follow conventions."}
