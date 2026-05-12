@@ -2086,6 +2086,232 @@ class RecorderCookieExpiredEmitTest(unittest.TestCase):
         self.assertIn("cookie_expired_for_douyin", event_types)
 
 
+class ExporterFfmpegAuditTest(unittest.TestCase):
+    """Coverage for exporter ffmpeg failure observability parity with recorder.
+
+    Recorder already emits canonical decision fields + stderr_excerpt +
+    stderr_log_path on every ffmpeg failure. PR2 of the shared-ffmpeg-helper
+    task extends the same shape to exporter via exporter-events.jsonl +
+    exporter-stderr/<session>_match<idx>-<attempt>.log.
+    """
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.temp_root = root / "tmp"
+        self.raw_root = root / "raw"
+        self.processed_root = root / "processed"
+        self.export_root = root / "exports"
+        self.settings = Settings(
+            douyin=DouyinSettings(event_log_path=self.temp_root / "windows-agent-events.jsonl"),
+            storage=StorageSettings(
+                raw_dir=self.raw_root,
+                processed_dir=self.processed_root,
+                export_dir=self.export_root,
+                temp_dir=self.temp_root,
+            ),
+            recording=RecordingSettings(enable_ffmpeg=False),
+            subtitles=SubtitleSettings(enabled=True),
+            export=ExportSettings(
+                enable_ffmpeg=True,
+                ffmpeg_max_retries=1,
+                ffmpeg_timeout_seconds=10,
+                stderr_retain_count=4,
+            ),
+        )
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    # ----- helpers -----
+
+    def _seed_export_inputs(
+        self,
+        *,
+        session_id: str = "session-e",
+        match_index: int = 1,
+    ) -> None:
+        boundary = MatchBoundary(
+            session_id=session_id,
+            match_index=match_index,
+            started_at_seconds=0.0,
+            ended_at_seconds=60.0,
+            confidence=0.9,
+        )
+        subtitle_file = self.processed_root / session_id / f"match-{match_index:02d}.srt"
+        subtitle_file.parent.mkdir(parents=True, exist_ok=True)
+        subtitle_file.write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nhello\n",
+            encoding="utf-8",
+        )
+        subtitle = SubtitleAsset(
+            session_id=session_id,
+            match_index=match_index,
+            path=str(subtitle_file),
+            format="srt",
+        )
+        recording_file = self.raw_root / session_id / "recording-source.mp4"
+        recording_file.parent.mkdir(parents=True, exist_ok=True)
+        recording_file.write_text("not-a-real-video", encoding="utf-8")
+        recording = RecordingAsset(
+            session_id=session_id,
+            source_type=SourceType.DIRECT_STREAM,
+            path=str(recording_file),
+            started_at=datetime(2026, 5, 12, 1, 0, tzinfo=timezone.utc),
+            ended_at=datetime(2026, 5, 12, 1, 10, tzinfo=timezone.utc),
+        )
+        append_model(self.temp_root / "match-boundaries.jsonl", boundary)
+        append_model(self.temp_root / "subtitle-assets.jsonl", subtitle)
+        append_model(self.temp_root / "recording-assets.jsonl", recording)
+
+    def _audit_payloads(self) -> list[dict]:
+        path = self.temp_root / "exporter-events.jsonl"
+        if not path.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    # ----- tests -----
+
+    def test_failure_emits_canonical_audit_with_stderr_excerpt_and_log_path(self) -> None:
+        self._seed_export_inputs()
+        # Helper extracts the LAST stderr line as the failure reason, so the
+        # 4xx marker must land on the last line for classification to fire.
+        long_stderr = (
+            "\n".join([f"trace-line-{idx:02d}" for idx in range(30)])
+            + "\nServer returned 404 Not Found"
+        )
+        error = subprocess.CalledProcessError(1, ["ffmpeg"], stderr=long_stderr)
+        with patch("arl.exporter.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=error,
+        ):
+            ExporterService(self.settings).run()
+
+        payloads = self._audit_payloads()
+        failed_rows = [item for item in payloads if item["event_type"] == "ffmpeg_export_failed"]
+        # ffmpeg_max_retries=1 → attempts=2 → two failed rows.
+        self.assertEqual(len(failed_rows), 2)
+        for idx, row in enumerate(failed_rows, start=1):
+            self.assertEqual(row["session_id"], "session-e")
+            self.assertEqual(row["match_index"], 1)
+            self.assertEqual(row["attempt"], idx)
+            self.assertEqual(row["max_attempts"], 2)
+            self.assertEqual(row["decision"], "attempt_failed")
+            self.assertEqual(row["failure_category"], "http_4xx_non_retryable")
+            self.assertFalse(row["is_retryable"])
+            self.assertEqual(row["reason_code"], "http_4xx")
+            self.assertIn("404", row["reason_detail"])
+            self.assertIsNotNone(row["stderr_excerpt"])
+            self.assertIn("404", row["stderr_excerpt"])
+            self.assertIsNotNone(row["stderr_log_path"])
+            self.assertTrue(Path(row["stderr_log_path"]).exists())
+            self.assertTrue(row["stderr_log_path"].endswith(f"session-e_match01-{idx}.log"))
+
+        placeholder_rows = [
+            item
+            for item in payloads
+            if item["event_type"] == "ffmpeg_export_fallback_placeholder"
+        ]
+        self.assertEqual(len(placeholder_rows), 1)
+        self.assertEqual(placeholder_rows[0]["decision"], "fallback_placeholder")
+        # placeholder row inherits the last failure's classification so operators
+        # can see what root-caused the exhaustion.
+        self.assertEqual(placeholder_rows[0]["failure_category"], "http_4xx_non_retryable")
+        self.assertEqual(placeholder_rows[0]["reason_code"], "http_4xx")
+
+        # ExportAsset still gets written as the placeholder .txt fallback.
+        exports_path = self.temp_root / "export-assets.jsonl"
+        payload = json.loads(exports_path.read_text(encoding="utf-8").splitlines()[0])
+        self.assertTrue(payload["path"].endswith("_match01.txt"))
+
+    def test_success_emits_succeeded_audit_without_stderr_fields(self) -> None:
+        self._seed_export_inputs()
+        # subprocess.run returns None → success path. The placeholder .mp4 path
+        # is returned by the exporter without actually muxing anything.
+        with patch("arl.exporter.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+            "arl.exporter.service.subprocess.run", return_value=None
+        ):
+            ExporterService(self.settings).run()
+
+        payloads = self._audit_payloads()
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0]["event_type"], "ffmpeg_export_succeeded")
+        self.assertEqual(payloads[0]["session_id"], "session-e")
+        self.assertEqual(payloads[0]["match_index"], 1)
+        self.assertIsNone(payloads[0]["stderr_excerpt"])
+        self.assertIsNone(payloads[0]["stderr_log_path"])
+        # Success row carries no canonical decision fields (mirrors ffmpeg_record_succeeded).
+        self.assertIsNone(payloads[0]["decision"])
+        self.assertIsNone(payloads[0]["failure_category"])
+
+    def test_oserror_failure_audit_handles_missing_stderr_gracefully(self) -> None:
+        self._seed_export_inputs()
+        with patch("arl.exporter.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=OSError("missing binary"),
+        ):
+            ExporterService(self.settings).run()
+
+        payloads = self._audit_payloads()
+        failed_rows = [item for item in payloads if item["event_type"] == "ffmpeg_export_failed"]
+        self.assertTrue(failed_rows)
+        for row in failed_rows:
+            self.assertIsNone(row["stderr_excerpt"])
+            self.assertIsNone(row["stderr_log_path"])
+            self.assertEqual(row["reason_code"], "unknown_unclassified")
+
+    def test_rotation_keeps_only_retain_count_newest_in_exporter_stderr(self) -> None:
+        import os as _os
+
+        stderr_dir = self.temp_root / "exporter-stderr"
+        stderr_dir.mkdir(parents=True, exist_ok=True)
+        retain = self.settings.export.stderr_retain_count  # 4
+        seeded = retain + 5
+        base = datetime(2026, 5, 11, 0, 0, tzinfo=timezone.utc).timestamp()
+        for idx in range(seeded):
+            entry = stderr_dir / f"old-{idx:02d}.log"
+            entry.write_text(f"file-{idx}", encoding="utf-8")
+            mtime = base + idx
+            _os.utime(entry, (mtime, mtime))
+
+        # shutil.which returns None → no ffmpeg invocation, but rotation still
+        # fires at run() top.
+        with patch("arl.exporter.service.shutil.which", return_value=None):
+            ExporterService(self.settings).run()
+
+        remaining = sorted(stderr_dir.iterdir(), key=lambda p: p.name)
+        self.assertEqual(len(remaining), retain)
+        expected_newest = {f"old-{idx:02d}.log" for idx in range(seeded - retain, seeded)}
+        self.assertEqual({entry.name for entry in remaining}, expected_newest)
+
+    def test_attempt_count_one_when_max_retries_zero(self) -> None:
+        # ffmpeg_max_retries=0 → attempts=1 → exactly one failed row, then
+        # fallback. Guards against off-by-one in the attempts calculation.
+        new_settings = self.settings.model_copy(deep=True)
+        new_settings.export.ffmpeg_max_retries = 0
+        self._seed_export_inputs(match_index=2)
+        error = subprocess.CalledProcessError(1, ["ffmpeg"], stderr="Server returned 503")
+        with patch("arl.exporter.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=error,
+        ):
+            ExporterService(new_settings).run()
+
+        payloads = self._audit_payloads()
+        failed_rows = [item for item in payloads if item["event_type"] == "ffmpeg_export_failed"]
+        self.assertEqual(len(failed_rows), 1)
+        self.assertEqual(failed_rows[0]["attempt"], 1)
+        self.assertEqual(failed_rows[0]["max_attempts"], 1)
+        # 5xx is_retryable=True survives in the audit even though exporter's
+        # retry policy doesn't act on it (PRD D4: out of scope).
+        self.assertTrue(failed_rows[0]["is_retryable"])
+        self.assertEqual(failed_rows[0]["reason_code"], "http_5xx")
+
+
 if __name__ == "__main__":
     unittest.main()
 

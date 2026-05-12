@@ -42,6 +42,8 @@ CORE_DECISION_EVENT_TYPES = {
     "manual_recovery_action_resolved",
     "manual_recovery_action_failed",
     "recording_session_retry_budget_exceeded",
+    "ffmpeg_export_failed",
+    "ffmpeg_export_fallback_placeholder",
 }
 
 

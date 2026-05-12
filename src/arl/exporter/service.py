@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
+import subprocess  # noqa: F401 — re-exported as patch shim so existing tests can mock arl.exporter.service.subprocess.run after the ffmpeg_runner refactor
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from arl.config import Settings
-from arl.exporter.models import ExporterStateFile
+from arl.exporter.models import ExporterAuditEvent, ExporterStateFile
 from arl.shared.contracts import ExportAsset, MatchBoundary, RecordingAsset, SubtitleAsset
+from arl.shared.ffmpeg_runner import rotate_stderr_logs, run_ffmpeg_attempt
 from arl.shared.jsonl_store import append_model, load_models
 from arl.shared.logging import log
 
@@ -19,10 +21,13 @@ class ExporterService:
         self.subtitles_path = settings.storage.temp_dir / "subtitle-assets.jsonl"
         self.exports_path = settings.storage.temp_dir / "export-assets.jsonl"
         self.state_path = settings.storage.temp_dir / "exporter-state.json"
+        self.audit_path = settings.storage.temp_dir / "exporter-events.jsonl"
+        self.stderr_dir = settings.storage.temp_dir / "exporter-stderr"
 
     def run(self) -> None:
         log("exporter", "starting")
         log("exporter", f"ffmpeg_enabled={self.settings.export.enable_ffmpeg}")
+        rotate_stderr_logs(self.stderr_dir, self.settings.export.stderr_retain_count)
         boundaries = load_models(self.boundaries_path, MatchBoundary)
         subtitles = load_models(self.subtitles_path, SubtitleAsset)
         recording_assets = load_models(
@@ -154,27 +159,76 @@ class ExporterService:
             str(output_path),
         ]
         attempts = self.settings.export.ffmpeg_max_retries + 1
+        basename = f"{boundary.session_id}_match{boundary.match_index:02d}"
+        last_outcome = None
         for attempt in range(1, attempts + 1):
-            try:
-                subprocess.run(
-                    command,
-                    check=True,
-                    timeout=self.settings.export.ffmpeg_timeout_seconds,
+            outcome = run_ffmpeg_attempt(
+                command,
+                timeout=self.settings.export.ffmpeg_timeout_seconds,
+                stderr_log_dir=self.stderr_dir,
+                stderr_log_basename=basename,
+                attempt=attempt,
+            )
+            if outcome.success:
+                self._append_audit(
+                    "ffmpeg_export_succeeded",
+                    session_id=boundary.session_id,
+                    match_index=boundary.match_index,
+                    attempt=attempt,
+                    max_attempts=attempts,
                 )
                 return output_path
-            except (subprocess.SubprocessError, OSError) as error:
-                log(
-                    "exporter",
-                    "ffmpeg export failed "
-                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
-                    f"attempt={attempt}/{attempts} reason={error}",
-                )
+            last_outcome = outcome
+            fd = outcome.classification
+            log(
+                "exporter",
+                "ffmpeg export failed "
+                f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                f"attempt={attempt}/{attempts} reason={outcome.reason}",
+            )
+            self._append_audit(
+                "ffmpeg_export_failed",
+                session_id=boundary.session_id,
+                match_index=boundary.match_index,
+                reason=outcome.reason,
+                decision="attempt_failed",
+                failure_category=fd.failure_category,
+                is_retryable=fd.is_retryable,
+                reason_code=fd.reason_code,
+                reason_detail=outcome.reason,
+                attempt=attempt,
+                max_attempts=attempts,
+                stderr_excerpt=outcome.stderr_excerpt,
+                stderr_log_path=outcome.stderr_log_path,
+            )
 
+        fd = last_outcome.classification
         log(
             "exporter",
             f"ffmpeg fallback placeholder session_id={boundary.session_id} match_index={boundary.match_index}",
         )
+        self._append_audit(
+            "ffmpeg_export_fallback_placeholder",
+            session_id=boundary.session_id,
+            match_index=boundary.match_index,
+            reason=last_outcome.reason,
+            decision="fallback_placeholder",
+            failure_category=fd.failure_category,
+            is_retryable=fd.is_retryable,
+            reason_code=fd.reason_code,
+            reason_detail=last_outcome.reason,
+            attempt=attempts,
+            max_attempts=attempts,
+        )
         return self._write_placeholder_export(boundary, subtitle)
+
+    def _append_audit(self, event_type: str, **fields: Any) -> None:
+        event = ExporterAuditEvent(
+            event_type=event_type,
+            created_at=datetime.now(timezone.utc),
+            **fields,
+        )
+        append_model(self.audit_path, event)
 
     def _looks_like_video(self, path: str) -> bool:
         suffix = Path(path).suffix.lower()

@@ -143,6 +143,7 @@ class ExportSettings(BaseModel):
     ffmpeg_crf: int = 23
     ffmpeg_timeout_seconds: int = 120
     ffmpeg_max_retries: int = 1
+    stderr_retain_count: int = 200
 
 
 class Settings(BaseModel):
@@ -367,6 +368,9 @@ def load_settings() -> Settings:
             ),
             ffmpeg_max_retries=max(
                 0, int(os.getenv("ARL_EXPORT_FFMPEG_MAX_RETRIES", "1"))
+            ),
+            stderr_retain_count=max(
+                0, int(os.getenv("ARL_EXPORTER_STDERR_RETAIN_COUNT", "200"))
             ),
         ),
     )
