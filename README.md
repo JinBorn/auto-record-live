@@ -227,6 +227,16 @@ Cookie 失效时不再静默降级到低画质，而是输出可查询信号：
 3. **退避状态**：`data/tmp/recorder-state.json` 中的 `next_eligible_at_by_job_id[job_id]` 记录每次瞬时失败后的下次可调度时间（1s → 5s → 15s → 60s 封顶），未到期的 job 会在主循环里日志 `job deferred ...` 并跳过 ffmpeg。
 4. **session 预算**：同一 session 累计瞬时失败次数由 `retries_by_session_id[session_id]` 跟踪；上限由 `ARL_RECORDER_SESSION_RETRY_BUDGET`（默认 8）控制，达到上限后所有非 FAILED job 会被升级为 `recording_session_retry_budget_exceeded` 审计 + 进入 manual recovery 路径。
 
+#### ffmpeg 失败排查（exporter）
+
+导出器与录制器共用 `src/arl/shared/ffmpeg_runner.py` 失败处理骨架，所以排查路径基本对称。导出器自身的重试逻辑更朴素（朴素 in-run retry，不做 yield-on-transient，也没有跨 run 退避），但失败可观测性已与录制器对齐：
+
+1. **审计行**：`data/tmp/exporter-events.jsonl` 中的 `ffmpeg_export_failed` 行包含 `decision="attempt_failed"` + `failure_category` + `reason_code` + `reason_detail` + `attempt`/`max_attempts` + 内嵌的 `stderr_excerpt`（与 recorder 同一规格）。所有 attempt 耗尽后会追加一行 `ffmpeg_export_fallback_placeholder`（`decision="fallback_placeholder"`，沿用最后一次失败的 `failure_category` / `reason_code`，方便一行 grep 定位耗尽原因），紧接着导出器写出 placeholder `.txt` 资产以保证流水线不阻塞。
+2. **完整 stderr**：审计行的 `stderr_log_path` 字段指向 `data/tmp/exporter-stderr/<session_id>_match<idx>-<attempt>.log` 完整 ffmpeg stderr 转储；exporter 启动时按 mtime 滚动只保留最近 N 个文件，N 由 `ARL_EXPORTER_STDERR_RETAIN_COUNT`（默认 200）控制。
+3. **成功审计**：`ffmpeg_export_succeeded` 行作为正向证据写在同一 JSONL，便于 grep 时确认"哪些 match 走了 ffmpeg vs placeholder"。该行不带 canonical decision 字段（与 recorder 的 `ffmpeg_record_succeeded` 同处理）。
+4. **orchestrator 不消费**：导出器审计只供 grep / 后续 recovery 工具读取，orchestrator 不依赖也不消费它，所以失败导出不会驱动状态机回退或重排。
+
+
 ## 浏览器采集配置说明（ffmpeg）
 
 - `ARL_BROWSER_CAPTURE_FORMAT=auto` 时按平台自动选择：
