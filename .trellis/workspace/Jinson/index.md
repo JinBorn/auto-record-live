@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 28
-- **Last Active**: 2026-05-12
+- **Total Sessions**: 29
+- **Last Active**: 2026-05-13
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1143 | Active |
+| `journal-1.md` | ~1178 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 29 | 2026-05-13 | Shared ffmpeg_runner helper + exporter audit parity | `8cb4881`, `1373346`, `523e1ba` | `main` |
 | 28 | 2026-05-12 | recorder 403 cookie expiration audit link | `9c24bb5`, `9bf01c3` | `main` |
 | 27 | 2026-05-12 | recorder ffmpeg failure production hardening | `7564a9e`, `cda81d1` | `main` |
 | 26 | 2026-05-10 | cookie-expiration audit event + cookie-health CLI | `230b5fc`, `f4bc0a1`, `faf81f6` | `main` |

@@ -1141,3 +1141,38 @@ Split http_403_forbidden out of generic http_4xx in classify_failure_reason (sam
 ### Next Steps
 
 - None - task complete
+
+
+## Session 29: Shared ffmpeg_runner helper + exporter audit parity
+
+**Date**: 2026-05-13
+**Task**: Shared ffmpeg_runner helper + exporter audit parity
+**Branch**: `main`
+
+### Summary
+
+Extracted recorder ffmpeg failure handling (subprocess + classify + stderr excerpt + atomic log dump + rotation) into src/arl/shared/ffmpeg_runner.py. Recorder switched to consume the helper byte-identically — all RecorderHardeningTest + RecorderCookieExpiredEmitTest cases pass with zero test edits. Exporter then switched to the same helper and gained full failure observability parity: ExporterAuditEvent pydantic model + data/tmp/exporter-events.jsonl + data/tmp/exporter-stderr/ + startup rotation + ARL_EXPORTER_STDERR_RETAIN_COUNT env var. CORE_DECISION_EVENT_TYPES extended with ffmpeg_export_failed + ffmpeg_export_fallback_placeholder (success event excluded, mirroring ffmpeg_record_succeeded — user-confirmed PRD deviation). Spec updates: orchestration-contracts.md (exporter audit JSONL contract + env vars), logging-guidelines.md (CORE_DECISION_EVENT_TYPES extension), quality-guidelines.md (new Common Mistake on the patch-target shim pattern — keeping import subprocess as a noqa shim so existing patches like patch('arl.exporter.service.subprocess.run') survive the extraction). README.md gained #### ffmpeg 失败排查（exporter）section. Test totals: 281 baseline -> 300 passing (+14 helper unit tests, +5 ExporterFfmpegAuditTest). Memory feedback validated: trellis-implement 500-panicked on dispatch; fell back inline successfully.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8cb4881` | (see git log) |
+| `1373346` | (see git log) |
+| `523e1ba` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
