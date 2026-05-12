@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "Verify new exporter audit path + three new event_types are codified; canonical decision-field contract holds on both recorder (byte-identical) and exporter rows."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Verify CORE_DECISION_EVENT_TYPES extension covers the three new export events and that recorder log lines remain unchanged after refactor."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Spec compliance + forbidden patterns sweep: new ffmpeg_runner.py module has domain-specific name (not utils/helpers); audit JSONL uses encoding=utf-8 + typed pydantic; no recorder business semantics changed."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Confirm helper failure paths and exporter audit emission preserve resilience-first conventions (no crash on stderr write failure, etc)."}
