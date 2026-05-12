@@ -29,6 +29,11 @@ from arl.shared.failure_contracts import (
     CANONICAL_FAILURE_CATEGORIES,
     classify_failure_reason,
 )
+from arl.shared.ffmpeg_runner import (
+    format_ffmpeg_failure_reason,
+    rotate_stderr_logs,
+    run_ffmpeg_attempt,
+)
 from arl.shared.jsonl_store import append_model
 from arl.shared.logging import log
 
@@ -64,7 +69,10 @@ class RecorderService:
         log("recorder", "starting")
         log("recorder", f"preferred_resolution={self.settings.recording.preferred_resolution}")
         log("recorder", f"ffmpeg_enabled={self.settings.recording.enable_ffmpeg}")
-        self._rotate_stderr_logs(self.settings.recording.stderr_retain_count)
+        rotate_stderr_logs(
+            self._recorder_stderr_dir,
+            self.settings.recording.stderr_retain_count,
+        )
 
         orchestrator_state = self._load_orchestrator_state()
         recorder_state = self._load_state()
@@ -471,14 +479,14 @@ class RecorderService:
         attempts = self.settings.recording.ffmpeg_max_retries + 1
         last_failure_reason = None
         for attempt in range(1, attempts + 1):
-            try:
-                subprocess.run(
-                    command,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=self.settings.recording.direct_stream_timeout_seconds + 10,
-                )
+            outcome = run_ffmpeg_attempt(
+                command,
+                timeout=self.settings.recording.direct_stream_timeout_seconds + 10,
+                stderr_log_dir=self._recorder_stderr_dir,
+                stderr_log_basename=job_id,
+                attempt=attempt,
+            )
+            if outcome.success:
                 self._append_audit(
                     "ffmpeg_record_succeeded",
                     session_id=session_id,
@@ -486,52 +494,49 @@ class RecorderService:
                     source_type=SourceType.DIRECT_STREAM,
                 )
                 return output_path, None
-            except (subprocess.SubprocessError, OSError) as error:
-                failure_reason, stderr_excerpt, stderr_log_path = (
-                    self._capture_ffmpeg_failure(error, job_id=job_id, attempt=attempt)
-                )
-                failure_decision = classify_failure_reason(failure_reason)
-                last_failure_reason = failure_reason
-                yield_on_transient = failure_decision.is_retryable
-                decision = (
-                    "attempt_failed_yield_to_next_probe"
-                    if yield_on_transient
-                    else "attempt_failed"
-                )
-                log(
-                    "recorder",
-                    f"ffmpeg record failed session_id={session_id} attempt={attempt}/{attempts} "
-                    f"decision={decision} reason={failure_reason}",
-                )
-                self._append_audit(
-                    "ffmpeg_record_failed",
-                    session_id=session_id,
-                    job_id=job_id,
-                    source_type=SourceType.DIRECT_STREAM,
-                    reason=failure_reason,
-                    decision=decision,
-                    failure_category=failure_decision.failure_category,
-                    is_retryable=failure_decision.is_retryable,
-                    reason_code=failure_decision.reason_code,
-                    reason_detail=failure_reason,
-                    attempt=attempt,
-                    max_attempts=attempts,
-                    stderr_excerpt=stderr_excerpt,
-                    stderr_log_path=stderr_log_path,
-                )
-                self._maybe_emit_cookie_expired(
-                    platform=platform,
-                    session_id=session_id,
-                    job_id=job_id,
-                    source_type=SourceType.DIRECT_STREAM,
-                    reason=failure_reason,
-                    reason_code=failure_decision.reason_code,
-                )
-                # Both transient and non-retryable yield after a single ffmpeg
-                # invocation: transient yields to the next probe (orchestrator
-                # can refresh a stale stream URL); non-retryable stops in-run
-                # so cross-run retry budget isn't burned on a doomed URL.
-                break
+            failure_reason = outcome.reason
+            failure_decision = outcome.classification
+            last_failure_reason = failure_reason
+            yield_on_transient = failure_decision.is_retryable
+            decision = (
+                "attempt_failed_yield_to_next_probe"
+                if yield_on_transient
+                else "attempt_failed"
+            )
+            log(
+                "recorder",
+                f"ffmpeg record failed session_id={session_id} attempt={attempt}/{attempts} "
+                f"decision={decision} reason={failure_reason}",
+            )
+            self._append_audit(
+                "ffmpeg_record_failed",
+                session_id=session_id,
+                job_id=job_id,
+                source_type=SourceType.DIRECT_STREAM,
+                reason=failure_reason,
+                decision=decision,
+                failure_category=failure_decision.failure_category,
+                is_retryable=failure_decision.is_retryable,
+                reason_code=failure_decision.reason_code,
+                reason_detail=failure_reason,
+                attempt=attempt,
+                max_attempts=attempts,
+                stderr_excerpt=outcome.stderr_excerpt,
+                stderr_log_path=outcome.stderr_log_path,
+            )
+            self._maybe_emit_cookie_expired(
+                platform=platform,
+                session_id=session_id,
+                job_id=job_id,
+                source_type=SourceType.DIRECT_STREAM,
+                reason=failure_reason,
+                reason_code=failure_decision.reason_code,
+            )
+            # Both transient and non-retryable yield after a single ffmpeg
+            # invocation: transient yields to the next probe (orchestrator
+            # can refresh a stale stream URL); non-retryable stops in-run
+            # so cross-run retry budget isn't burned on a doomed URL.
+            break
 
         return None, last_failure_reason
 
@@ -592,14 +597,14 @@ class RecorderService:
         attempts = self.settings.recording.ffmpeg_max_retries + 1
         last_failure_reason = None
         for attempt in range(1, attempts + 1):
-            try:
-                subprocess.run(
-                    command,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=self.settings.recording.browser_capture_timeout_seconds + 10,
-                )
+            outcome = run_ffmpeg_attempt(
+                command,
+                timeout=self.settings.recording.browser_capture_timeout_seconds + 10,
+                stderr_log_dir=self._recorder_stderr_dir,
+                stderr_log_basename=job_id,
+                attempt=attempt,
+            )
+            if outcome.success:
                 self._append_audit(
                     "ffmpeg_record_succeeded",
                     session_id=session_id,
@@ -607,66 +612,47 @@ class RecorderService:
                     source_type=SourceType.BROWSER_CAPTURE,
                 )
                 return output_path, None
-            except (subprocess.SubprocessError, OSError) as error:
-                failure_reason, stderr_excerpt, stderr_log_path = (
-                    self._capture_ffmpeg_failure(error, job_id=job_id, attempt=attempt)
-                )
-                failure_decision = classify_failure_reason(failure_reason)
-                last_failure_reason = failure_reason
-                yield_on_transient = failure_decision.is_retryable
-                decision = (
-                    "attempt_failed_yield_to_next_probe"
-                    if yield_on_transient
-                    else "attempt_failed"
-                )
-                log(
-                    "recorder",
-                    f"ffmpeg browser-capture failed session_id={session_id} "
-                    f"attempt={attempt}/{attempts} decision={decision} reason={failure_reason}",
-                )
-                self._append_audit(
-                    "ffmpeg_record_failed",
-                    session_id=session_id,
-                    job_id=job_id,
-                    source_type=SourceType.BROWSER_CAPTURE,
-                    reason=failure_reason,
-                    decision=decision,
-                    failure_category=failure_decision.failure_category,
-                    is_retryable=failure_decision.is_retryable,
-                    reason_code=failure_decision.reason_code,
-                    reason_detail=failure_reason,
-                    attempt=attempt,
-                    max_attempts=attempts,
-                    stderr_excerpt=stderr_excerpt,
-                    stderr_log_path=stderr_log_path,
-                )
-                self._maybe_emit_cookie_expired(
-                    platform=platform,
-                    session_id=session_id,
-                    job_id=job_id,
-                    source_type=SourceType.BROWSER_CAPTURE,
-                    reason=failure_reason,
-                    reason_code=failure_decision.reason_code,
-                )
-                break
+            failure_reason = outcome.reason
+            failure_decision = outcome.classification
+            last_failure_reason = failure_reason
+            yield_on_transient = failure_decision.is_retryable
+            decision = (
+                "attempt_failed_yield_to_next_probe"
+                if yield_on_transient
+                else "attempt_failed"
+            )
+            log(
+                "recorder",
+                f"ffmpeg browser-capture failed session_id={session_id} "
+                f"attempt={attempt}/{attempts} decision={decision} reason={failure_reason}",
+            )
+            self._append_audit(
+                "ffmpeg_record_failed",
+                session_id=session_id,
+                job_id=job_id,
+                source_type=SourceType.BROWSER_CAPTURE,
+                reason=failure_reason,
+                decision=decision,
+                failure_category=failure_decision.failure_category,
+                is_retryable=failure_decision.is_retryable,
+                reason_code=failure_decision.reason_code,
+                reason_detail=failure_reason,
+                attempt=attempt,
+                max_attempts=attempts,
+                stderr_excerpt=outcome.stderr_excerpt,
+                stderr_log_path=outcome.stderr_log_path,
+            )
+            self._maybe_emit_cookie_expired(
+                platform=platform,
+                session_id=session_id,
+                job_id=job_id,
+                source_type=SourceType.BROWSER_CAPTURE,
+                reason=failure_reason,
+                reason_code=failure_decision.reason_code,
+            )
+            break
 
         return None, last_failure_reason
-
-    def _format_ffmpeg_failure_reason(self, error: Exception) -> str:
-        if isinstance(error, subprocess.TimeoutExpired):
-            return f"timed out after {error.timeout}s"
-        if isinstance(error, subprocess.CalledProcessError):
-            stderr = ""
-            if isinstance(error.stderr, str):
-                stderr = error.stderr.strip()
-            elif isinstance(error.stderr, bytes):
-                stderr = error.stderr.decode("utf-8", errors="replace").strip()
-            if stderr:
-                return stderr.splitlines()[-1][:240]
-            return f"exit_status:{error.returncode}"
-        if isinstance(error, OSError):
-            return f"os_error:{error.__class__.__name__}"
-        return f"subprocess_error:{error.__class__.__name__}"
 
     @staticmethod
     def _next_eligible_after_yield(attempt: int) -> timedelta:
@@ -681,99 +667,6 @@ class RecorderService:
     @property
     def _recorder_stderr_dir(self) -> Path:
         return self.settings.storage.temp_dir / "recorder-stderr"
-
-    def _capture_ffmpeg_failure(
-        self,
-        error: Exception,
-        *,
-        job_id: str,
-        attempt: int,
-    ) -> tuple[str, str | None, str | None]:
-        reason = self._format_ffmpeg_failure_reason(error)
-        stderr_text = self._extract_full_stderr(error)
-        if not stderr_text:
-            return reason, None, None
-
-        excerpt = self._build_stderr_excerpt(stderr_text)
-        log_path = self._write_stderr_log(stderr_text, job_id=job_id, attempt=attempt)
-        return reason, excerpt, log_path
-
-    @staticmethod
-    def _extract_full_stderr(error: Exception) -> str:
-        raw: object = None
-        if isinstance(error, subprocess.CalledProcessError):
-            raw = error.stderr
-        elif isinstance(error, subprocess.TimeoutExpired):
-            raw = getattr(error, "stderr", None)
-        if isinstance(raw, bytes):
-            return raw.decode("utf-8", errors="replace").strip()
-        if isinstance(raw, str):
-            return raw.strip()
-        return ""
-
-    @staticmethod
-    def _build_stderr_excerpt(stderr_text: str) -> str:
-        max_line_chars = 240
-        head_lines = 5
-        tail_lines = 15
-        total_budget = 4096
-        lines = stderr_text.splitlines()
-        if not lines:
-            return ""
-        if len(lines) <= head_lines + tail_lines:
-            picked = lines
-        else:
-            picked = lines[:head_lines] + ["..."] + lines[-tail_lines:]
-        truncated = [line[:max_line_chars] for line in picked]
-        excerpt = "\n".join(truncated)
-        if len(excerpt) > total_budget:
-            excerpt = excerpt[:total_budget]
-        return excerpt
-
-    def _write_stderr_log(
-        self,
-        stderr_text: str,
-        *,
-        job_id: str,
-        attempt: int,
-    ) -> str | None:
-        try:
-            stderr_dir = self._recorder_stderr_dir
-            stderr_dir.mkdir(parents=True, exist_ok=True)
-            safe_job_id = job_id.replace(os.sep, "_").replace("/", "_")
-            log_path = stderr_dir / f"{safe_job_id}-{attempt}.log"
-            tmp_path = log_path.with_suffix(log_path.suffix + ".tmp")
-            tmp_path.write_text(stderr_text, encoding="utf-8")
-            tmp_path.replace(log_path)
-        except OSError as error:
-            log(
-                "recorder",
-                f"stderr log write failed job_id={job_id} attempt={attempt} reason={error}",
-            )
-            return None
-        return log_path.as_posix()
-
-    def _rotate_stderr_logs(self, retain_count: int) -> None:
-        stderr_dir = self._recorder_stderr_dir
-        if not stderr_dir.exists():
-            return
-        try:
-            files = [entry for entry in stderr_dir.iterdir() if entry.is_file()]
-        except OSError:
-            return
-        if retain_count <= 0:
-            for entry in files:
-                try:
-                    entry.unlink()
-                except OSError:
-                    continue
-            return
-        files.sort(key=lambda entry: entry.stat().st_mtime, reverse=True)
-        for entry in files[retain_count:]:
-            try:
-                entry.unlink()
-            except OSError:
-                continue
 
     def _manual_recovery_reason(
         self,
@@ -940,7 +833,7 @@ class RecorderService:
             )
             outcome = (True, "ok")
         except (subprocess.SubprocessError, OSError) as error:
-            outcome = (False, self._format_ffmpeg_failure_reason(error))
+            outcome = (False, format_ffmpeg_failure_reason(error))
         self._x11_probe_cache[capture_input] = outcome
         return outcome
 
