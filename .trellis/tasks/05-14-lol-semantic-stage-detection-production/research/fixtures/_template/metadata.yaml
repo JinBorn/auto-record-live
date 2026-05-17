@@ -1,0 +1,17 @@
+# Fixture metadata template.
+#
+# Copy this file to ../<session_id>/metadata.yaml and fill in real values.
+# The .mp4 referenced by recording_path is NOT committed (research/.gitignore
+# blocks video binaries); future contributors reproduce the fixture by
+# re-recording the same stream or borrowing the .mp4 out-of-band.
+
+recording_path: D:/code/auto-record-live/data/raw/<session_id>/recording-source.mp4
+duration_seconds: 0.0
+match_count: 0
+resolution: "1920x1080"
+source_type: direct_stream     # direct_stream | screen_capture | replay
+platform: bilibili             # bilibili | douyin | other
+notes: |
+  Replace with: why this recording was picked, any quality caveats, the
+  approximate timestamps of mid-stream disconnects (if any), and whether the
+  SESSDATA / cookie was fresh during capture.

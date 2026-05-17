@@ -1,0 +1,18 @@
+# Ground-truth hint template. Copy to ../<session_id>/ground-truth-hints.jsonl,
+# delete every comment line below, and replace with one MatchStageHint row per
+# stage transition observed by the human annotator. Each match contributes 4 rows
+# (champion_select / loading / in_game / post_game).
+#
+# Row schema (mirrors arl.segmenter.models.MatchStageHint):
+#   {"session_id": "<session>", "stage": "<stage>", "at_seconds": <float>}
+#
+# Valid stage values: champion_select | loading | in_game | post_game
+#
+# Example:
+#   {"session_id": "session-20260507171213-44250901", "stage": "champion_select", "at_seconds": 0.0}
+#   {"session_id": "session-20260507171213-44250901", "stage": "loading",         "at_seconds": 48.5}
+#   {"session_id": "session-20260507171213-44250901", "stage": "in_game",         "at_seconds": 81.3}
+#   {"session_id": "session-20260507171213-44250901", "stage": "post_game",       "at_seconds": 1875.2}
+#
+# eval.py skips blank lines and lines starting with `#`, so this file is safe to
+# load even before any real rows are appended.

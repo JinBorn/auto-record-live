@@ -1,0 +1,8 @@
+# Block video binaries — fixtures must be reproducible from metadata.yaml, not bundled.
+*.mp4
+*.mkv
+*.mov
+*.webm
+*.avi
+*.ts
+*.flv
