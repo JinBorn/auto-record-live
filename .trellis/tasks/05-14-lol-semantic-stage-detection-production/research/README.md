@@ -7,13 +7,18 @@ Spike workspace for task `05-14-lol-semantic-stage-detection-production`. Everyt
 ```
 research/
 ├── .gitignore                       # blocks *.mp4 / *.mkv / etc — fixtures stay out of git
-├── eval.py                          # standalone evaluator (this session)
+├── eval.py                          # standalone evaluator
 ├── fixtures/
 │   └── _template/                   # placeholder schema for new fixtures
 │       ├── metadata.yaml
 │       └── ground-truth-hints.jsonl
-├── prototype_template_matching.py   # Phase 2 — added in a follow-up session
-├── prototype_ocr.py                 # Phase 2 — added in a follow-up session
+├── prototype_template_matching.py   # Phase 2 — cv2.matchTemplate per stage
+├── prototype_ocr.py                 # Phase 2 — PaddleOCR + vendored classify_stage_from_text
+├── templates/
+│   ├── champion_select/             # operator-supplied UI crops (PNG)
+│   ├── loading/
+│   ├── in_game/
+│   └── post_game/
 └── report.md                        # Phase 3 — added once both prototypes have run
 ```
 
@@ -79,15 +84,67 @@ python .\eval.py `
   --predictions  .\fixtures\<sid>\ground-truth-hints.jsonl
 ```
 
+### 5. Run the prototypes
+
+Install the research-only deps once (not added to `pyproject.toml`):
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install opencv-python paddleocr
+```
+
+Self-tests (no fixture / no deps for the classifier path — `cv2` and `paddleocr` are imported lazily, only on real runs):
+
+```powershell
+python .\prototype_template_matching.py --self-test
+python .\prototype_ocr.py --self-test
+# expect: "self-test passed" twice
+```
+
+Template-matching prototype (needs `templates/<stage>/*.png` cropped from the fixture):
+
+```powershell
+python .\prototype_template_matching.py `
+  --recording <path-to-fixture-mp4> `
+  --templates .\templates `
+  --output    .\fixtures\<sid>\predicted-template.jsonl `
+  --sample-fps 1.0 --threshold 0.7
+python .\eval.py `
+  --ground-truth .\fixtures\<sid>\ground-truth-hints.jsonl `
+  --predictions  .\fixtures\<sid>\predicted-template.jsonl
+```
+
+OCR prototype (PaddleOCR; lang=ch by default to match the Chinese-heavy keyword corpus):
+
+```powershell
+python .\prototype_ocr.py `
+  --recording <path-to-fixture-mp4> `
+  --output    .\fixtures\<sid>\predicted-ocr.jsonl `
+  --sample-fps 0.5 `
+  --roi 0,0,1920,300        # optional; e.g. top banner area
+python .\eval.py `
+  --ground-truth .\fixtures\<sid>\ground-truth-hints.jsonl `
+  --predictions  .\fixtures\<sid>\predicted-ocr.jsonl
+```
+
+Both prototypes write a `<prototype> summary:` line to stderr (sampled frame count, ms/frame, wall clock, per-stage hits) — this is the data Phase 3's `report.md` will quote.
+
+To extract candidate template images from the fixture for the `templates/<stage>/` dirs:
+
+```powershell
+ffmpeg -ss <seconds> -i <fixture-mp4> -frames:v 1 frame.png
+# then crop in any image editor and save as templates/<stage>/<descriptive-name>.png
+```
+
 ## Phase status
 
 | Phase | Deliverable | Status |
 | --- | --- | --- |
-| 1 | `eval.py` + fixture template | shipped this session |
+| 1 | `eval.py` + fixture template | shipped |
 | 1 | Real labeled fixture under `fixtures/<sid>/` | operator, out-of-band |
-| 2 | `prototype_template_matching.py` | next session (needs `opencv-python`) |
-| 2 | `prototype_ocr.py` | next session (needs `pytesseract` or `paddleocr`) |
-| 3 | `report.md` with metrics + recommendation | follow-up session |
+| 2 | `prototype_template_matching.py` | shipped (needs `opencv-python` for `--recording` runs) |
+| 2 | `prototype_ocr.py` | shipped (needs `opencv-python` + `paddleocr` for `--recording` runs) |
+| 2 | `templates/<stage>/` UI crops | operator, out-of-band (use ffmpeg to extract frames, then crop) |
+| 3 | `report.md` with metrics + recommendation | follow-up session, after fixture + templates exist |
 
 Phase 2 deps are research-only and **not** added to `pyproject.toml`; install ad-hoc in your venv.
 
@@ -98,3 +155,5 @@ Phase 2 deps are research-only and **not** added to `pyproject.toml`; install ad
 - Schema source: `src/arl/segmenter/models.py` (`MatchStageHint`)
 - Stage enum: `src/arl/shared/contracts.py` (`MatchStage`)
 - Existing keyword classifier (reused by OCR prototype): `src/arl/segmenter/stage_text.py` (`classify_stage_from_text`)
+
+> `prototype_ocr.py` **vendors** `classify_stage_from_text` + the keyword map from `src/arl/segmenter/stage_text.py` to stay `arl.*`-import-free. If the production keyword map changes, mirror the change inside `prototype_ocr.py`'s `_VENDORED_KEYWORDS` block.
