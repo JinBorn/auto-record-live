@@ -1,0 +1,32 @@
+# Fixture metadata. The .mp4 referenced by recording_path is NOT committed
+# (research/.gitignore blocks video binaries); regenerate by recording the same
+# Bilibili stream then trimming with `ffmpeg -t 620 -c copy`.
+
+recording_path: D:/code/auto-record-live/.trellis/tasks/05-14-lol-semantic-stage-detection-production/research/fixtures/session-20260525161758-6f19726e/lol-segment.mp4
+source_recording_path: D:/code/auto-record-live/data/raw/session-20260525161758-6f19726e/recording-source.mp4
+duration_seconds: 620.08
+match_count: 1   # partial — captured the end of a single LoL ARAM match only
+resolution: "1920x1080"
+fps: 60
+codec: "h264 + aac"
+bitrate_kbps: 4176
+source_type: direct_stream
+platform: bilibili
+room_url: https://live.bilibili.com/12629424
+streamer_name: 橘子怪丶
+session_id: session-20260525161758-6f19726e
+notes: |
+  Recorded 2026-05-25 from Bilibili room 12629424 (橘子怪丶). The streamer
+  was playing LoL ARAM on Howling Abyss when recording started, finished
+  that match around second 600-620, then switched to a different game
+  (Delta Force / FPS) for the remainder of the source mp4. Only the first
+  620 seconds are LoL; the rest is unrelated. This fixture file
+  (lol-segment.mp4) is the trimmed-to-LoL portion.
+
+  Stage coverage limitation: the LoL window captured only the IN_GAME
+  phase of one ARAM match plus a brief desktop transition. The four
+  stages we want the productionization to detect (champion_select /
+  loading / in_game / post_game) are NOT all represented — only in_game
+  has substantial coverage. A future fixture must capture a complete
+  champion_select -> loading -> in_game -> post_game cycle (or multiple
+  cycles) to fairly evaluate all four classifiers.

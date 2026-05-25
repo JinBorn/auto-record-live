@@ -1,0 +1,22 @@
+# Ground-truth MatchStageHint rows for fixture session-20260525161758-6f19726e
+# (LoL ARAM on Howling Abyss, ~620s, all in_game).
+#
+# Operator-validated by sampling frames at the timestamps below in VLC and
+# confirming each shows in-game LoL UI (champion HUD + minimap + scoreboard).
+# Sampling cadence: every 30 s across the LoL window. The match was already
+# in progress when recording started and ended around 600-620s; no
+# champion_select / loading / post_game frames were captured for this run.
+{"session_id": "session-20260525161758-6f19726e", "stage": "in_game", "at_seconds": 0.0}
+{"session_id": "session-20260525161758-6f19726e", "stage": "in_game", "at_seconds": 30.0}
+{"session_id": "session-20260525161758-6f19726e", "stage": "in_game", "at_seconds": 60.0}
+{"session_id": "session-20260525161758-6f19726e", "stage": "in_game", "at_seconds": 90.0}
+{"session_id": "session-20260525161758-6f19726e", "stage": "in_game", "at_seconds": 120.0}
+{"session_id": "session-20260525161758-6f19726e", "stage": "in_game", "at_seconds": 150.0}
+{"session_id": "session-20260525161758-6f19726e", "stage": "in_game", "at_seconds": 180.0}
+{"session_id": "session-20260525161758-6f19726e", "stage": "in_game", "at_seconds": 240.0}
+{"session_id": "session-20260525161758-6f19726e", "stage": "in_game", "at_seconds": 300.0}
+{"session_id": "session-20260525161758-6f19726e", "stage": "in_game", "at_seconds": 360.0}
+{"session_id": "session-20260525161758-6f19726e", "stage": "in_game", "at_seconds": 420.0}
+{"session_id": "session-20260525161758-6f19726e", "stage": "in_game", "at_seconds": 480.0}
+{"session_id": "session-20260525161758-6f19726e", "stage": "in_game", "at_seconds": 540.0}
+{"session_id": "session-20260525161758-6f19726e", "stage": "in_game", "at_seconds": 600.0}

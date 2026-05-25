@@ -1,9 +1,14 @@
-"""OCR prototype: emit MatchStageHint jsonl by running PaddleOCR over recording frames.
+"""OCR prototype: emit MatchStageHint jsonl by running OCR over recording frames.
 
 Research-only; no arl.* imports. Vendors classify_stage_from_text + keyword map
 from src/arl/segmenter/stage_text.py (keep in sync). Output mirrors
 arl.segmenter.models.MatchStageHint: {session_id, stage, at_seconds}. Consumable
 by eval.py.
+
+Two OCR engines are supported via --ocr-engine:
+  - paddle (default): PaddleOCR; requires paddlepaddle backend (no wheels for Python 3.14 yet).
+  - tesseract: pytesseract; requires tesseract.exe + chi_sim.traineddata on disk.
+PRD R4 explicitly allows either engine.
 """
 from __future__ import annotations
 
@@ -120,9 +125,51 @@ def _extract_text_fragments(ocr_results: object) -> list[str]:
     return fragments
 
 
+def _make_ocr_callable(args: argparse.Namespace):
+    """Return a function `crop_bgr_ndarray -> joined_text_str` for the chosen engine."""
+    engine = args.ocr_engine
+    if engine == "paddle":
+        from paddleocr import PaddleOCR  # type: ignore[import-not-found]
+
+        ocr = PaddleOCR(lang=args.ocr_lang, show_log=False)
+
+        def call(crop):
+            ocr_results = ocr.ocr(crop, cls=False)
+            return " ".join(_extract_text_fragments(ocr_results))
+
+        return call
+
+    if engine == "tesseract":
+        import cv2  # type: ignore[import-not-found]
+        import pytesseract  # type: ignore[import-not-found]
+        from PIL import Image  # type: ignore[import-not-found]
+
+        if args.tesseract_cmd:
+            pytesseract.pytesseract.tesseract_cmd = args.tesseract_cmd
+        # Tesseract is fussy about path quoting on Windows; resolve --tessdata-dir
+        # to an absolute path and export it via TESSDATA_PREFIX (the documented
+        # env-var route) instead of injecting --tessdata-dir into the config
+        # string, which fails when the path contains backslashes.
+        import os
+        if args.tessdata_dir:
+            os.environ["TESSDATA_PREFIX"] = str(Path(args.tessdata_dir).resolve())
+        config = ""
+        # paddle uses "ch"; tesseract uses "chi_sim". Remap the common case so a
+        # single --ocr-lang argument works across engines.
+        lang = "chi_sim" if args.ocr_lang in ("ch", "zh") else args.ocr_lang
+
+        def call(crop):
+            rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            pil = Image.fromarray(rgb)
+            return pytesseract.image_to_string(pil, lang=lang, config=config)
+
+        return call
+
+    raise SystemExit(f"unknown --ocr-engine: {engine!r} (expected paddle|tesseract)")
+
+
 def _run(args: argparse.Namespace) -> int:
     import cv2  # type: ignore[import-not-found]
-    from paddleocr import PaddleOCR  # type: ignore[import-not-found]
 
     recording = Path(args.recording)
     output = Path(args.output)
@@ -133,7 +180,7 @@ def _run(args: argparse.Namespace) -> int:
     roi = _parse_roi(args.roi)
     session_id = args.session_id or recording.parent.name
 
-    ocr = PaddleOCR(lang=args.ocr_lang, show_log=False)
+    ocr_call = _make_ocr_callable(args)
 
     cap = cv2.VideoCapture(str(recording))
     if not cap.isOpened():
@@ -160,8 +207,7 @@ def _run(args: argparse.Namespace) -> int:
                 crop = frame[y:y + h, x:x + w]
             else:
                 crop = frame
-            ocr_results = ocr.ocr(crop, cls=False)
-            joined = " ".join(_extract_text_fragments(ocr_results))
+            joined = ocr_call(crop)
             stage = _classify_stage_from_text(joined)
             sample_ms_total += (time.perf_counter() - t0) * 1000.0
             sampled += 1
@@ -253,7 +299,26 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="ROI as x,y,w,h (pixels) of the frame to OCR; default whole frame",
     )
     parser.add_argument(
-        "--ocr-lang", default="ch", help="PaddleOCR lang code (default ch)"
+        "--ocr-engine",
+        choices=("paddle", "tesseract"),
+        default="paddle",
+        help="OCR backend (default paddle). Use tesseract on Python versions without paddlepaddle wheels.",
+    )
+    parser.add_argument(
+        "--ocr-lang",
+        default="ch",
+        help='OCR lang code. PaddleOCR uses "ch"; tesseract uses "chi_sim". '
+        'The shortcut "ch" or "zh" is auto-remapped to "chi_sim" for tesseract.',
+    )
+    parser.add_argument(
+        "--tesseract-cmd",
+        default=None,
+        help='Override path to tesseract.exe (e.g. "C:/Program Files/Tesseract-OCR/tesseract.exe").',
+    )
+    parser.add_argument(
+        "--tessdata-dir",
+        default=None,
+        help='Path to a tessdata directory containing <lang>.traineddata.',
     )
     parser.add_argument(
         "--dedup-window-seconds", type=float, default=DEFAULT_DEDUP_WINDOW
