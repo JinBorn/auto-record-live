@@ -1176,3 +1176,42 @@ Extracted recorder ffmpeg failure handling (subprocess + classify + stderr excer
 ### Next Steps
 
 - None - task complete
+
+
+## Session 30: LoL semantic stage detection productionization (research Phase 3 — report)
+
+**Date**: 2026-05-26
+**Task**: lol-semantic-stage-detection-production
+**Branch**: `main`
+
+### Summary
+
+Resumed task at Phase 3 of implement.md (research report + recommendation). User authorized self-recording against live Bilibili room 12629424 (橘子怪丶) with a hard "≥ 1080p / ≥ 4500 kbps" rule. Captured 2515 s of Bilibili bluray (qn=10000, 4176 kbps, 1080p60 h264+aac); first 620 s was LoL ARAM end-of-match, then the streamer switched to Delta Force (FPS) for the remainder. Trimmed fixture to `lol-segment.mp4` (10 min, 425 MB). Drove the full research pipeline against this LoL-only clip. Found and worked around three infrastructure issues along the way: (1) Bilibili signed URLs expire ~60 min after probe so probe-to-ffmpeg latency must be seconds (initial 23-min lag → 403; orchestrator state demotion to browser_capture; full state-file reset required); (2) `paddlepaddle` has no Python 3.14 wheels — added a `--ocr-engine {paddle,tesseract}` switch to prototype_ocr.py and ran tesseract `chi_sim_fast` instead, with TESSDATA_PREFIX env-var routing because Program Files needs admin to drop language packs; (3) `ARL_DIRECT_STREAM_TIMEOUT_SECONDS` defaults to 20 s and the recorder uses `-y` + same path, so ffmpeg captures 20 s then overwrites each iteration — raised to 7200 for the long single-shot. Fixture limitation: only `in_game` represented; `champion_select / loading / post_game` not captured. Built 14-row sparse ground truth, ran both prototypes through eval.py, wrote `research/report.md` with real metrics + a hybrid recommendation gated by a follow-up multi-match corpus task. Recorder/orchestrator/agent + faster-whisper (CPU) + 3 self-tests all verified clean.
+
+### Main Changes
+
+- Added a tesseract OCR backend to `research/prototype_ocr.py` (PaddleOCR path preserved byte-identically; new `--ocr-engine`, `--tesseract-cmd`, `--tessdata-dir` flags; `ocr-lang ch|zh` auto-remapped to `chi_sim`).
+- Wrote `research/report.md` (real metrics, no placeholders, 4 sections per implement.md Phase 3 + follow-up PRD seed for `05-XX-lol-semantic-stage-detection-fixture-corpus`).
+- Committed fixture artifacts: `fixtures/session-20260525161758-6f19726e/{metadata.yaml, ground-truth-hints.jsonl, predicted-template.jsonl, predicted-ocr.jsonl, eval-template.txt, eval-ocr.txt}` and 3 `templates/in_game/*.png` UI crops.
+- `.mp4` files (source + lol-segment) stay local — research/.gitignore blocks them.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f81a0a1` | research(semantic-stage): report + productionization recommendation |
+| `(auto)` | chore(task): archive 05-14-lol-semantic-stage-detection-production |
+
+### Testing
+
+- [OK] eval.py / prototype_template_matching.py / prototype_ocr.py self-tests all pass post-modification.
+- [OK] eval sanity (ground_truth vs ground_truth): in_game 1.000/1.000/1.000.
+- [OK] Real run: template-matching in_game precision=0.140 recall=1.000 f1=0.246 (recall=1.000 is the meaningful number — sparse-GT design inflates FP); OCR in_game precision=0.556 recall=0.357 f1=0.435 with 4 post_game + 1 cs cross-stage FPs.
+
+### Status
+
+[OK] **Completed** (research-incomplete by design — report explicitly recommends NOT productionizing yet and seeds the follow-up fixture-corpus task).
+
+### Next Steps
+
+- Operator opens `05-XX-lol-semantic-stage-detection-fixture-corpus` per the report's follow-up seed before any productionization task.
