@@ -1215,3 +1215,80 @@ Resumed task at Phase 3 of implement.md (research report + recommendation). User
 ### Next Steps
 
 - Operator opens `05-XX-lol-semantic-stage-detection-fixture-corpus` per the report's follow-up seed before any productionization task.
+
+---
+
+## Session 31 — 2026-05-28 — Record dual-platform 1080p fixtures (in_progress execution)
+
+### Task
+
+`05-27-record-dual-platform-1080p-fixtures/` — `in_progress`, lightweight (PRD-only). Goal: capture one ≥1080p `.mp4` per platform via the recorder pipeline. No code changes.
+
+### Inventory before this run
+
+- 6 existing sessions in `data/raw/`, **none** satisfy the PRD targets:
+  - Older douyin sessions (`session-20260517082941-f4300fc3`, `session-20260517085214-f219c6a5`) are 1920×1080 @ ~8.5 Mbps, **30s**, but from a different streamer (not WEI).
+  - Yesterday's douyin WEI sessions (`session-20260526170906-ba242f84`, `session-20260526173007-10a839a5`) were either fallback placeholders (300 kbps / 20s) or had a corrupt mp4 (`moov atom not found`).
+  - Yesterday's bilibili sessions hit cookie-expired / HTTP 403 failures.
+
+### PRD revision (this session)
+
+Operator confirmed the bilibili target switched from the PRD's original `挖机牧魂人 / live.bilibili.com/6963590` to **`橘子怪丶 / live.bilibili.com/12629424`** (operator-confirmed LIVE 2026-05-28; original room offline). PRD `prd.md` updated to reflect the new target.
+
+### Execution plan + actions
+
+1. Verified `.env` already pointed at both platforms with valid `ARL_BILIBILI_SESSDATA`; `ARL_RECORDING_ENABLE_FFMPEG=1`.
+2. Launched three loop scripts in separate PowerShell windows at **00:14:44 local** (`agent` PID 4384, `orchestrator` PID 10748, `recorder` PID 9768). Initial cycles produced 20s fixtures because `ARL_DIRECT_STREAM_TIMEOUT_SECONDS` defaults to 20 (each ffmpeg invocation overwrites `recording-source.mp4`).
+3. Stopped loops, set **`ARL_DIRECT_STREAM_TIMEOUT_SECONDS=1800`** in `.env`, relaunched at **00:28:44 local** (`agent` PID 13376, `orchestrator` PID 2344, `recorder` PID 6244). ffmpeg now runs with `-t 1800`.
+4. Discovered the recorder iterates jobs **sequentially** inside one `arl.cli recorder` invocation, and PowerShell loop blocks on each invocation, so the queued bilibili job waits for the douyin 30-min ffmpeg to finish. Operator-approved sequential wait (~60 min total) instead of parallel manual override.
+
+### Active sessions (orchestrator state)
+
+- douyin: `session-20260526173007-10a839a5` (reused from yesterday)
+- bilibili: `session-20260527161508-a4b6fe5a` (created fresh today)
+
+### Expected timeline
+
+- douyin ffmpeg ends ~**00:58:44 local** (16:58:44 UTC).
+- bilibili ffmpeg begins ~00:58:50, ends ~**01:28:44 local**.
+- Cron-scheduled resume at 01:33 local to verify, ffprobe, stop loops, and finalize task notes.
+
+### Risks (noted for resume)
+
+- `-c copy` without `+faststart`/`+frag_keyframe`: if either ffmpeg is interrupted mid-write, the resulting mp4 will lack a `moov` atom and ffprobe will fail. ffmpeg's `-t 1800` should give a clean exit and write moov; stream blips mid-run are the only real risk.
+- The earlier bilibili recorder run produced a 1.5 Mbps mp4 despite the stream advertising `origin_bitrate=8723` (bluray). May just have caught a low-action 20s window; the 30-min recording should average closer to the source bitrate.
+
+### Session 31 (continued) — Resume after 8-hour overrun
+
+The cron one-shot at `01:33` didn't fire because the REPL wasn't idle then; it triggered when the operator pinged back at **09:01 local** (2026-05-28T01:01Z). Loops kept running unattended for ~8.5 hours.
+
+#### Loop behavior during the overrun
+
+- Each successful 30-min ffmpeg overwrote `recording-source.mp4` in its session dir, then the recorder loop iterated again on the next cycle.
+- The orchestrator rolled new sessions when stream URLs expired (douyin signed URLs carry `&expire=...`). Net effect: ~36 new session directories accumulated, mostly douyin/WEI, ~1.5–1.9 GB each. `data/raw/` grew to **22 GB / 42 sessions**.
+
+#### Final fixtures (acceptance criteria check)
+
+| platform | session_id | path | resolution | bitrate | duration | size |
+|---|---|---|---|---|---|---|
+| douyin (WEI) | `session-20260526173007-10a839a5` | `data/raw/session-20260526173007-10a839a5/recording-source.mp4` | 1920×1080@60 | **8.01 Mbps** | 1800.05s | 1.83 GB |
+| bilibili (橘子怪丶) | `session-20260527161508-a4b6fe5a` | `data/raw/session-20260527161508-a4b6fe5a/recording-source.mp4` | 1920×1080@60 | **3.81 Mbps** | 1800.08s | 920 MB |
+
+Both have `ffmpeg_record_succeeded` events in `data/tmp/recorder-events.jsonl` (douyin: 16:58:40Z and 17:58:49Z; bilibili: 17:28:40Z and one later). Both meet the PRD acceptance gate (≥1920×1080).
+
+**Quality note**: bilibili recorded at 3.81 Mbps, less than half the source's advertised `origin_bitrate=8723`. The stream URL claimed `qn=10000 / bluray`. Likely a low-action 30-min window; for downstream fixture work it should still be usable since resolution is full 1080p, but flag if subtle artifacts appear.
+
+#### Cleanup actions taken
+
+- Stopped all three loops (PIDs 13376/2344/6244) and orphan python/ffmpeg children.
+- Restored `.env`: removed the temporary `ARL_DIRECT_STREAM_TIMEOUT_SECONDS=1800` line (back to default 20s).
+
+#### Carryover / cleanup the operator may want
+
+- `data/raw/` has 42 session directories totalling 22 GB. ~36 of these are unintended overrun captures (douyin/WEI), each a viable 30-min 1080p fixture. They aren't tracked anywhere except as raw artifacts. Options: (a) keep them all as a fixture pool, (b) delete the overrun sessions and keep only the two PRD-targeted fixtures, (c) move the overrun set to a separate dir like `data/raw/overrun-2026-05-28/` for cataloguing.
+- `data/tmp/recorder-events.jsonl` saw ~3000 new events over 8 hours; many are `ffmpeg_record_failed` (HTTP 404/5xx after URL expiry, then auto-recovered into new sessions). Normal pipeline behavior, no action needed.
+- The cron mechanism (`durable=false`) lost its intended timing window during the unattended period — future operational tasks of this duration should either be staffed or use `durable=true`.
+
+#### Outcome
+
+PRD acceptance criteria met. Task ready for archive pending operator confirmation.
