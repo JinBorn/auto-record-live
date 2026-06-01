@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from arl.config import BilibiliSettings, DouyinSettings, Settings, load_settings
@@ -149,6 +150,16 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(settings.export.backoff_initial_seconds, 1.5)
         self.assertEqual(settings.export.backoff_max_seconds, 6.0)
         self.assertEqual(settings.export.batch_fallback_budget, 2)
+
+    def test_subtitle_model_cache_env_loads(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_WHISPER_MODEL_CACHE_DIR"] = "data/tmp/custom-whisper-cache"
+            settings = load_settings()
+
+        self.assertEqual(
+            settings.subtitles.model_cache_dir,
+            Path("data/tmp/custom-whisper-cache"),
+        )
 
 
 class SettingsValidatorTests(unittest.TestCase):

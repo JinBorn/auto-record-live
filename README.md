@@ -79,6 +79,12 @@ py -3 -m venv .venv
 npm install
 ```
 
+如需启用真实 faster-whisper 字幕能力，安装 subtitles extra：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[subtitles]"
+```
+
 如需从仓库根目录自动加载主播配置，可先基于 `.env.example` 创建 `.env`。
 
 查看命令：

@@ -61,11 +61,13 @@ if (-not $pipOk) {
 # launcher-conventions.md — a failed install MUST NOT leave a sentinel.
 $installMode = if ($env:ARL_WIN_INSTALL_MODE) { $env:ARL_WIN_INSTALL_MODE } else { "if-missing" }
 $depsReady = Join-Path $ProjectPath ".venv\.deps-ready"
+$installSpec = "pip install -e .[subtitles]"
+$depsReadySpec = if (Test-Path $depsReady) { (Get-Content $depsReady -Raw -Encoding UTF8).Trim() } else { "" }
 
-if ($installMode -eq "always" -or -not (Test-Path $depsReady)) {
-  & $venvPython -m pip install -e .
-  if ($LASTEXITCODE -ne 0) { throw "pip install -e . failed (exit $LASTEXITCODE)" }
-  New-Item -ItemType File -Path $depsReady -Force | Out-Null
+if ($installMode -eq "always" -or $depsReadySpec -ne $installSpec) {
+  & $venvPython -m pip install -e ".[subtitles]"
+  if ($LASTEXITCODE -ne 0) { throw "$installSpec failed (exit $LASTEXITCODE)" }
+  Set-Content -Path $depsReady -Value $installSpec -Encoding UTF8
 }
 
 # === Pin CLI-default ARL_RECORDING_ENABLE_FFMPEG before sourcing .env ===

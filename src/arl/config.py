@@ -134,6 +134,7 @@ class SubtitleSettings(BaseModel):
     provider: str = "faster-whisper"
     model_size: str = "small"
     language: str = "zh"
+    model_cache_dir: Path = Path("data/tmp/whisper-models")
 
 
 class SegmenterSettings(BaseModel):
@@ -328,6 +329,12 @@ def load_settings() -> Settings:
             provider=os.getenv("ARL_SUBTITLE_PROVIDER", "faster-whisper"),
             model_size=os.getenv("ARL_WHISPER_MODEL_SIZE", "small"),
             language=os.getenv("ARL_SUBTITLE_LANGUAGE", "zh"),
+            model_cache_dir=Path(
+                os.getenv(
+                    "ARL_WHISPER_MODEL_CACHE_DIR",
+                    "data/tmp/whisper-models",
+                )
+            ),
         ),
         segmenter=SegmenterSettings(stage_keywords_path=stage_keywords_path),
         recording=RecordingSettings(

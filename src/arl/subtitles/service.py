@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -233,6 +234,10 @@ class SubtitleService:
         if self._whisper_model_initialized:
             return self._whisper_model
         self._whisper_model_initialized = True
+
+        cache_dir = self.settings.subtitles.model_cache_dir.resolve()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("HF_HOME", str(cache_dir))
 
         try:
             from faster_whisper import WhisperModel  # type: ignore[import-not-found]
