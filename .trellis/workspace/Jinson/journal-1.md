@@ -1325,3 +1325,38 @@ Implemented recorder-side actual resolution validation for direct-stream recordi
 ### Next Steps
 
 - None - task complete
+
+
+## Session 31: Exporter ffmpeg failure alignment
+
+**Date**: 2026-06-01
+**Task**: Exporter ffmpeg failure alignment
+**Branch**: `main`
+
+### Summary
+
+Aligned exporter ffmpeg handling with recorder-style failure contracts: non-retryable short-circuit, retryable backoff, consecutive fallback batch abort, env/docs/spec/test updates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8674864` | (see git log) |
+| `41c333c` | (see git log) |
+| `8f96841` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

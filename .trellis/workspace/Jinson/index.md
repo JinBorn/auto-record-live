@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 30
+- **Total Sessions**: 31
 - **Last Active**: 2026-06-01
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1327 | Active |
+| `journal-1.md` | ~1362 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 31 | 2026-06-01 | Exporter ffmpeg failure alignment | `8674864`, `41c333c`, `8f96841` | `main` |
 | 30 | 2026-06-01 | Actual 1080p recorder quality gate | `d7ac797` | `main` |
 | 29 | 2026-05-13 | Shared ffmpeg_runner helper + exporter audit parity | `8cb4881`, `1373346`, `523e1ba` | `main` |
 | 28 | 2026-05-12 | recorder 403 cookie expiration audit link | `9c24bb5`, `9bf01c3` | `main` |
