@@ -1360,3 +1360,36 @@ Aligned exporter ffmpeg handling with recorder-style failure contracts: non-retr
 ### Next Steps
 
 - None - task complete
+
+
+## Session 32: Cookie health launcher gate
+
+**Date**: 2026-06-01
+**Task**: Cookie health launcher gate
+**Branch**: `main`
+
+### Summary
+
+Added a startup cookie-health gate to windows-agent-loop with warning/fatal/skip modes, documented ARL_COOKIE_HEALTH_GATE in README, env example, and launcher conventions.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c1739bb` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
