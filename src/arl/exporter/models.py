@@ -17,7 +17,8 @@ class ExporterAuditEvent(BaseModel):
     `match_index` replaces recorder's `job_id` as the per-row work identifier.
     Canonical decision fields are enforced via `validate_core_decision_fields`
     when `event_type` is in `CORE_DECISION_EVENT_TYPES` (i.e.
-    `ffmpeg_export_failed` and `ffmpeg_export_fallback_placeholder`).
+    `ffmpeg_export_failed`, `ffmpeg_export_fallback_placeholder`, and
+    `ffmpeg_export_batch_aborted`).
     `ffmpeg_export_succeeded` rows skip validation, mirroring
     `ffmpeg_record_succeeded`.
     """
@@ -35,6 +36,8 @@ class ExporterAuditEvent(BaseModel):
     max_attempts: int | None = None
     stderr_excerpt: str | None = None
     stderr_log_path: str | None = None
+    consecutive_fallbacks: int | None = None
+    remaining_matches: int | None = None
     created_at: datetime
 
     @model_validator(mode="after")

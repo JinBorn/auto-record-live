@@ -2581,6 +2581,205 @@ class ExporterAttemptBackoffTest(unittest.TestCase):
         self.assertEqual(sleep_calls, [1.0, 2.0])
 
 
+class ExporterBatchBudgetTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.temp_root = root / "tmp"
+        self.raw_root = root / "raw"
+        self.processed_root = root / "processed"
+        self.export_root = root / "exports"
+        self.settings = Settings(
+            douyin=DouyinSettings(event_log_path=self.temp_root / "windows-agent-events.jsonl"),
+            storage=StorageSettings(
+                raw_dir=self.raw_root,
+                processed_dir=self.processed_root,
+                export_dir=self.export_root,
+                temp_dir=self.temp_root,
+            ),
+            recording=RecordingSettings(enable_ffmpeg=False),
+            subtitles=SubtitleSettings(enabled=True),
+            export=ExportSettings(
+                enable_ffmpeg=True,
+                ffmpeg_timeout_seconds=10,
+                ffmpeg_max_retries=0,
+                batch_fallback_budget=3,
+            ),
+        )
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _seed_export_inputs(self, count: int) -> None:
+        session_id = "session-batch"
+        recording_file = self.raw_root / session_id / "recording-source.mp4"
+        recording_file.parent.mkdir(parents=True, exist_ok=True)
+        recording_file.write_text("not-a-real-video", encoding="utf-8")
+        append_model(
+            self.temp_root / "recording-assets.jsonl",
+            RecordingAsset(
+                session_id=session_id,
+                source_type=SourceType.DIRECT_STREAM,
+                path=str(recording_file),
+                started_at=datetime(2026, 5, 12, 1, 0, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 5, 12, 1, 10, tzinfo=timezone.utc),
+            ),
+        )
+        for match_index in range(1, count + 1):
+            boundary = MatchBoundary(
+                session_id=session_id,
+                match_index=match_index,
+                started_at_seconds=float((match_index - 1) * 60),
+                ended_at_seconds=float(match_index * 60),
+                confidence=0.9,
+            )
+            subtitle_file = self.processed_root / session_id / f"match-{match_index:02d}.srt"
+            subtitle_file.parent.mkdir(parents=True, exist_ok=True)
+            subtitle_file.write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\nhello\n",
+                encoding="utf-8",
+            )
+            append_model(self.temp_root / "match-boundaries.jsonl", boundary)
+            append_model(
+                self.temp_root / "subtitle-assets.jsonl",
+                SubtitleAsset(
+                    session_id=session_id,
+                    match_index=match_index,
+                    path=str(subtitle_file),
+                    format="srt",
+                ),
+            )
+
+    def _audit_payloads(self) -> list[dict]:
+        path = self.temp_root / "exporter-events.jsonl"
+        if not path.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    def _processed_keys(self) -> list[str]:
+        path = self.temp_root / "exporter-state.json"
+        if not path.exists():
+            return []
+        return json.loads(path.read_text(encoding="utf-8"))["processed_match_keys"]
+
+    def _run_with_failure_pattern(
+        self,
+        *,
+        count: int,
+        failing_matches: set[int],
+        settings: Settings | None = None,
+    ) -> None:
+        self._seed_export_inputs(count)
+
+        def _fake_run(command, **kwargs):
+            output_name = Path(command[-1]).name
+            match_index = int(output_name.split("_match", 1)[1].split(".", 1)[0])
+            if match_index in failing_matches:
+                raise subprocess.CalledProcessError(
+                    1,
+                    ["ffmpeg"],
+                    stderr="exit_status:1",
+                )
+            return subprocess.CompletedProcess(args=command, returncode=0)
+
+        with patch("arl.exporter.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=_fake_run,
+        ), patch("arl.exporter.service.time.sleep", return_value=None):
+            ExporterService(settings or self.settings).run()
+
+    def test_isolated_fallback_does_not_trip_budget(self) -> None:
+        self._run_with_failure_pattern(count=5, failing_matches={3})
+        events = self._audit_payloads()
+        self.assertFalse(
+            any(item["event_type"] == "ffmpeg_export_batch_aborted" for item in events)
+        )
+        self.assertEqual(
+            len(
+                [
+                    item
+                    for item in events
+                    if item["event_type"] == "ffmpeg_export_fallback_placeholder"
+                ]
+            ),
+            1,
+        )
+        self.assertEqual(len(self._processed_keys()), 5)
+
+    def test_three_consecutive_fallbacks_trip_default_budget(self) -> None:
+        self._run_with_failure_pattern(count=10, failing_matches=set(range(1, 11)))
+        events = self._audit_payloads()
+        fallback_rows = [
+            item for item in events if item["event_type"] == "ffmpeg_export_fallback_placeholder"
+        ]
+        abort_rows = [
+            item for item in events if item["event_type"] == "ffmpeg_export_batch_aborted"
+        ]
+        self.assertEqual(len(fallback_rows), 3)
+        self.assertEqual(len(abort_rows), 1)
+        self.assertEqual(abort_rows[0]["consecutive_fallbacks"], 3)
+        self.assertEqual(abort_rows[0]["remaining_matches"], 7)
+        self.assertEqual(self._processed_keys(), ["session-batch:1", "session-batch:2", "session-batch:3"])
+
+    def test_success_between_fallbacks_resets_counter(self) -> None:
+        self._run_with_failure_pattern(count=6, failing_matches={1, 2, 4, 5, 6})
+        events = self._audit_payloads()
+        abort_rows = [
+            item for item in events if item["event_type"] == "ffmpeg_export_batch_aborted"
+        ]
+        self.assertEqual(len(abort_rows), 1)
+        self.assertEqual(abort_rows[0]["match_index"], 6)
+        self.assertEqual(abort_rows[0]["remaining_matches"], 0)
+
+    def test_batch_aborted_inherits_last_failure_classification(self) -> None:
+        self._run_with_failure_pattern(count=10, failing_matches=set(range(1, 11)))
+        abort_row = [
+            item
+            for item in self._audit_payloads()
+            if item["event_type"] == "ffmpeg_export_batch_aborted"
+        ][0]
+        self.assertEqual(abort_row["decision"], "batch_aborted")
+        self.assertEqual(abort_row["failure_category"], "ffmpeg_process_error_retryable")
+        self.assertTrue(abort_row["is_retryable"])
+        self.assertEqual(abort_row["reason_code"], "ffmpeg_process_error")
+        self.assertEqual(abort_row["consecutive_fallbacks"], 3)
+        self.assertEqual(abort_row["remaining_matches"], 7)
+
+    def test_config_overrides_budget_threshold(self) -> None:
+        settings = self.settings.model_copy(deep=True)
+        settings.export.batch_fallback_budget = 2
+        self._run_with_failure_pattern(
+            count=5,
+            failing_matches=set(range(1, 6)),
+            settings=settings,
+        )
+        events = self._audit_payloads()
+        fallback_rows = [
+            item for item in events if item["event_type"] == "ffmpeg_export_fallback_placeholder"
+        ]
+        abort_row = [
+            item for item in events if item["event_type"] == "ffmpeg_export_batch_aborted"
+        ][0]
+        self.assertEqual(len(fallback_rows), 2)
+        self.assertEqual(abort_row["consecutive_fallbacks"], 2)
+        self.assertEqual(abort_row["remaining_matches"], 3)
+
+    def test_intentional_placeholder_does_not_count(self) -> None:
+        settings = self.settings.model_copy(deep=True)
+        settings.export.enable_ffmpeg = False
+        self._seed_export_inputs(10)
+        ExporterService(settings).run()
+        events = self._audit_payloads()
+        self.assertFalse(
+            any(item["event_type"] == "ffmpeg_export_batch_aborted" for item in events)
+        )
+        self.assertEqual(len(self._processed_keys()), 10)
+
+
 if __name__ == "__main__":
     unittest.main()
 

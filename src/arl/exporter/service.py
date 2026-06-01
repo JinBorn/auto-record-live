@@ -10,6 +10,7 @@ from typing import Any
 from arl.config import Settings
 from arl.exporter.models import ExporterAuditEvent, ExporterStateFile
 from arl.shared.contracts import ExportAsset, MatchBoundary, RecordingAsset, SubtitleAsset
+from arl.shared.failure_contracts import FailureDecision
 from arl.shared.ffmpeg_runner import rotate_stderr_logs, run_ffmpeg_attempt
 from arl.shared.jsonl_store import append_model, load_models
 from arl.shared.logging import log
@@ -38,9 +39,13 @@ class ExporterService:
         subtitle_map = {(item.session_id, item.match_index): item for item in subtitles}
         recording_by_session = {item.session_id: item for item in recording_assets}
         state = self._load_state()
+        consecutive_fallbacks = 0
+        fallback_budget = self.settings.export.batch_fallback_budget
+        self._last_failure_classification: FailureDecision | None = None
+        self._last_failure_reason: str | None = None
 
         processed = 0
-        for boundary in boundaries:
+        for index, boundary in enumerate(boundaries):
             key = self._key(boundary.session_id, boundary.match_index)
             if key in state.processed_match_keys:
                 continue
@@ -54,7 +59,11 @@ class ExporterService:
                 continue
 
             recording_asset = recording_by_session.get(boundary.session_id)
-            output_path = self._write_export(boundary, subtitle, recording_asset)
+            output_path, was_ffmpeg_fallback = self._write_export(
+                boundary,
+                subtitle,
+                recording_asset,
+            )
             export_asset = ExportAsset(
                 session_id=boundary.session_id,
                 match_index=boundary.match_index,
@@ -69,6 +78,25 @@ class ExporterService:
                 "exporter",
                 f"export asset written session_id={boundary.session_id} match_index={boundary.match_index}",
             )
+            if was_ffmpeg_fallback:
+                consecutive_fallbacks += 1
+                if consecutive_fallbacks >= fallback_budget:
+                    remaining_matches = len(boundaries) - index - 1
+                    self._append_batch_aborted_audit(
+                        boundary=boundary,
+                        consecutive_fallbacks=consecutive_fallbacks,
+                        remaining_matches=remaining_matches,
+                    )
+                    log(
+                        "exporter",
+                        "batch aborted "
+                        f"budget={fallback_budget} "
+                        f"consecutive_fallbacks={consecutive_fallbacks} "
+                        f"remaining_matches={remaining_matches}",
+                    )
+                    break
+            else:
+                consecutive_fallbacks = 0
 
         self._save_state(state)
         log("exporter", f"processed_exports={processed}")
@@ -78,7 +106,7 @@ class ExporterService:
         boundary: MatchBoundary,
         subtitle: SubtitleAsset,
         recording_asset: RecordingAsset | None,
-    ):
+    ) -> tuple[Path, bool]:
         ffmpeg_path = shutil.which("ffmpeg")
         if (
             self.settings.export.enable_ffmpeg
@@ -105,7 +133,7 @@ class ExporterService:
                 f"ffmpeg skipped session_id={boundary.session_id} match_index={boundary.match_index} reason={reason}",
             )
 
-        return self._write_placeholder_export(boundary, subtitle)
+        return self._write_placeholder_export(boundary, subtitle), False
 
     def _write_placeholder_export(
         self,
@@ -131,7 +159,7 @@ class ExporterService:
         boundary: MatchBoundary,
         subtitle: SubtitleAsset,
         recording_asset: RecordingAsset,
-    ) -> Path:
+    ) -> tuple[Path, bool]:
         output_dir = self.settings.storage.export_dir
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{boundary.session_id}_match{boundary.match_index:02d}.mp4"
@@ -178,9 +206,11 @@ class ExporterService:
                     attempt=attempt,
                     max_attempts=attempts,
                 )
-                return output_path
+                return output_path, False
             last_outcome = outcome
             fd = outcome.classification
+            self._last_failure_classification = fd
+            self._last_failure_reason = outcome.reason
             log(
                 "exporter",
                 "ffmpeg export failed "
@@ -225,7 +255,31 @@ class ExporterService:
             attempt=attempts,
             max_attempts=attempts,
         )
-        return self._write_placeholder_export(boundary, subtitle)
+        return self._write_placeholder_export(boundary, subtitle), True
+
+    def _append_batch_aborted_audit(
+        self,
+        *,
+        boundary: MatchBoundary,
+        consecutive_fallbacks: int,
+        remaining_matches: int,
+    ) -> None:
+        fd = self._last_failure_classification
+        if fd is None:
+            return
+        self._append_audit(
+            "ffmpeg_export_batch_aborted",
+            session_id=boundary.session_id,
+            match_index=boundary.match_index,
+            reason=self._last_failure_reason,
+            decision="batch_aborted",
+            failure_category=fd.failure_category,
+            is_retryable=fd.is_retryable,
+            reason_code=fd.reason_code,
+            reason_detail=self._last_failure_reason or "unknown",
+            consecutive_fallbacks=consecutive_fallbacks,
+            remaining_matches=remaining_matches,
+        )
 
     def _append_audit(self, event_type: str, **fields: Any) -> None:
         event = ExporterAuditEvent(

@@ -68,6 +68,7 @@ For these events only:
 - `manual_recovery_action_failed`
 - `ffmpeg_export_failed`
 - `ffmpeg_export_fallback_placeholder`
+- `ffmpeg_export_batch_aborted`
 
 `recorder-events.jsonl` / `recovery-events.jsonl` / `exporter-events.jsonl` payloads must include all fields below:
 
@@ -118,7 +119,7 @@ Unknown-classification rule:
 ### 2. Signatures
 - Recorder audit payload (`recorder-events.jsonl`): core event rows MUST include canonical decision fields.
 - Recovery dispatch payload (`recovery-events.jsonl`): `manual_recovery_action_*` rows MUST include canonical decision fields.
-- Exporter audit payload (`exporter-events.jsonl`): `ffmpeg_export_failed` + `ffmpeg_export_fallback_placeholder` rows MUST include canonical decision fields. `ffmpeg_export_succeeded` rows omit them (mirrors `ffmpeg_record_succeeded`).
+- Exporter audit payload (`exporter-events.jsonl`): `ffmpeg_export_failed` + `ffmpeg_export_fallback_placeholder` + `ffmpeg_export_batch_aborted` rows MUST include canonical decision fields. `ffmpeg_export_succeeded` rows omit them (mirrors `ffmpeg_record_succeeded`). `ffmpeg_export_batch_aborted` also carries `consecutive_fallbacks` and `remaining_matches` for batch diagnostics.
 - Orchestrator recorder-event parser: core event rows without canonical fields are invalid input rows. Exporter audit is grep-only and not consumed by the orchestrator.
 
 ### 3. Contracts

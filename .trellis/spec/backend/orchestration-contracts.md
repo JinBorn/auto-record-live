@@ -415,7 +415,10 @@ class ExportAsset(BaseModel):
   - `ARL_RECORDER_SESSION_RETRY_BUDGET` (int >= 1, default `8`) — per-session cap on transient ffmpeg yields; once hit, all non-FAILED jobs in the session are escalated to manual via `recording_session_retry_budget_exceeded`
   - `ARL_RECORDER_STDERR_RETAIN_COUNT` (int >= 0, default `200`) — number of `data/tmp/recorder-stderr/<job_id>-<attempt>.log` files retained at recorder start; older files are rotated away
   - `ARL_EXPORTER_STDERR_RETAIN_COUNT` (int >= 0, default `200`) — number of `data/tmp/exporter-stderr/<session_id>_match<idx>-<attempt>.log` files retained at exporter start; older files are rotated away
-  - `ARL_EXPORT_FFMPEG_MAX_RETRIES` (int >= 0, default `1`) — in-run retry count for exporter ffmpeg; exporter does NOT yield-on-transient (recorder-only behavior), so this is a straight retry loop
+  - `ARL_EXPORT_FFMPEG_MAX_RETRIES` (int >= 0, default `1`) — in-run retry count for exporter ffmpeg. Exporter does NOT yield-on-transient (recorder-only behavior: exporter's input is a local file, no probe to wait for), but the in-run loop short-circuits on non-retryable failures and sleeps between retryable attempts via `ARL_EXPORTER_BACKOFF_INITIAL_SECONDS` / `ARL_EXPORTER_BACKOFF_MAX_SECONDS`.
+  - `ARL_EXPORTER_BACKOFF_INITIAL_SECONDS` (float >= 0, default `2.0`) — first inter-attempt sleep for retryable exporter ffmpeg failures
+  - `ARL_EXPORTER_BACKOFF_MAX_SECONDS` (float >= 0, default `8.0`) — cap for exporter ffmpeg retry backoff
+  - `ARL_EXPORTER_BATCH_FALLBACK_BUDGET` (int >= 1, default `3`) — consecutive match-level ffmpeg fallbacks before exporter emits `ffmpeg_export_batch_aborted` and stops the current boundaries loop
   - `ARL_EXPORT_FFMPEG_TIMEOUT_SECONDS` (int >= 10, default `120`) — per-attempt timeout for exporter ffmpeg muxing
   - `ARL_BROWSER_CAPTURE_INPUT` (string, default empty)
 - `ARL_BROWSER_CAPTURE_FORMAT` (string, default `auto`; resolves to `gdigrab` on Windows, `avfoundation` on macOS, `x11grab` on Linux/other)
@@ -427,6 +430,9 @@ class ExportAsset(BaseModel):
   - `ARL_EXPORT_FFMPEG_CRF` (int, default `23`)
   - `ARL_EXPORT_FFMPEG_TIMEOUT_SECONDS` (int seconds, default `120`)
   - `ARL_EXPORT_FFMPEG_MAX_RETRIES` (int >= 0, default `1`)
+  - `ARL_EXPORTER_BACKOFF_INITIAL_SECONDS` (float >= 0, default `2.0`)
+  - `ARL_EXPORTER_BACKOFF_MAX_SECONDS` (float >= 0, default `8.0`)
+  - `ARL_EXPORTER_BATCH_FALLBACK_BUDGET` (int >= 1, default `3`)
   - `ARL_SUBTITLES_ENABLED` (`0`/`1`, default `1`)
   - `ARL_SUBTITLE_PROVIDER` (string, default `faster-whisper`)
   - `ARL_WHISPER_MODEL_SIZE` (string, default `small`)
@@ -524,7 +530,7 @@ class ExportAsset(BaseModel):
 - Recorder and exporter ffmpeg commands retry per configured max retries, then must degrade to deterministic placeholder artifacts.
 - Transient ffmpeg failures (HTTP 5xx, network timeout, ffmpeg process error) must yield to the next probe after a single in-run attempt rather than burning the in-run retry budget against the same (likely stale) stream URL. The corresponding `ffmpeg_record_failed` audit row carries `decision="attempt_failed_yield_to_next_probe"` to distinguish a transient yield from a non-retryable `decision="attempt_failed"` short-circuit.
 - Recorder should append structured audit rows for ffmpeg control flow (`ffmpeg_skipped`, `ffmpeg_record_failed`, `ffmpeg_record_succeeded`, `ffmpeg_fallback_placeholder`, `recording_session_retry_budget_exceeded`) and actual quality rejection (`quality_below_actual_resolution`) so retry and quality decisions are observable.
-- Exporter mirrors the same observability discipline through `data/tmp/exporter-events.jsonl` (writer = `ExporterService`; **reader = grep / future recovery tooling only — orchestrator does NOT consume this file**, no state machine transitions depend on it). Registered event types: `ffmpeg_export_failed`, `ffmpeg_export_succeeded`, `ffmpeg_export_fallback_placeholder`. Per-row identity uses `session_id` + `match_index` (no `job_id` because exporter is not job-scoped). `ffmpeg_export_failed` and `ffmpeg_export_fallback_placeholder` rows must carry the same canonical decision tuple (`decision` / `failure_category` / `is_retryable` / `reason_code` / `reason_detail`) as recorder; `ffmpeg_export_succeeded` rows omit those fields (mirrors `ffmpeg_record_succeeded`). Exporter does NOT do yield-on-transient — `decision` on a failed exporter row is always `attempt_failed` (placeholder row uses `decision="fallback_placeholder"`). The placeholder row inherits the last-attempt classification so operators can grep one row to learn what root-caused exhaustion.
+- Exporter mirrors the same observability discipline through `data/tmp/exporter-events.jsonl` (writer = `ExporterService`; **reader = grep / future recovery tooling only — orchestrator does NOT consume this file**, no state machine transitions depend on it). Registered event types: `ffmpeg_export_failed`, `ffmpeg_export_succeeded`, `ffmpeg_export_fallback_placeholder`, `ffmpeg_export_batch_aborted`. Per-row identity uses `session_id` + `match_index` (no `job_id` because exporter is not job-scoped). `ffmpeg_export_failed`, `ffmpeg_export_fallback_placeholder`, and `ffmpeg_export_batch_aborted` rows must carry the same canonical decision tuple (`decision` / `failure_category` / `is_retryable` / `reason_code` / `reason_detail`) as recorder; `ffmpeg_export_succeeded` rows omit those fields (mirrors `ffmpeg_record_succeeded`). Exporter does NOT do yield-on-transient — `decision` on a failed exporter row is always `attempt_failed` (placeholder row uses `decision="fallback_placeholder"`). The placeholder row inherits the last-attempt classification so operators can grep one row to learn what root-caused exhaustion. `ffmpeg_export_batch_aborted` uses `decision="batch_aborted"`, inherits the last fallback classification, and adds `consecutive_fallbacks` plus `remaining_matches`.
 - ffmpeg failure audit rows must include the canonical `decision` / `failure_category` / `is_retryable` / `reason_code` / `reason_detail` tuple and, when stderr is available, also `stderr_excerpt` (first 5 + last 15 lines, each <=240 chars, total <=4 KB) and `stderr_log_path` (relative path of the full stderr dump at `data/tmp/recorder-stderr/<job_id>-<attempt>.log` for recorder rows, `data/tmp/exporter-stderr/<session_id>_match<idx>-<attempt>.log` for exporter rows).
 - `quality_below_actual_resolution` rows must include canonical decision fields with `decision="quality_rejected"`, `failure_category="quality_unusable_non_retryable"`, `reason_code="quality_below_actual_resolution"`, `is_retryable=false`, plus observed width/height, optional bitrate, and the configured minimum height.
 - When ffmpeg fails with retryable reasons, recorder may defer placeholder emission and schedule cross-run retries:
@@ -665,6 +671,8 @@ class ExportAsset(BaseModel):
 | Recovery maintenance runs after all actions become terminal | Terminal actions/events are archived/compacted; active files keep only non-terminal or empty state |
 | `ARL_EXPORT_ENABLE_FFMPEG=1` but recording input is not a video file | Exporter writes placeholder export artifact and keeps pipeline progress |
 | `ffmpeg` command exits non-zero | Stage logs failure reason and falls back to deterministic placeholder artifact |
+| Exporter sees a non-retryable ffmpeg failure | Emit exactly one `ffmpeg_export_failed` row plus `ffmpeg_export_fallback_placeholder`; do not run further attempts; increment the match-level fallback counter by 1 |
+| Exporter reaches `ARL_EXPORTER_BATCH_FALLBACK_BUDGET` consecutive match-level fallbacks | Emit one `ffmpeg_export_batch_aborted` row with `consecutive_fallbacks` and `remaining_matches`; leave the remaining boundaries unprocessed and absent from `processed_match_keys` |
 
 ### 5. Good / Base / Bad Cases
 

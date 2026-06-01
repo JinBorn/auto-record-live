@@ -187,6 +187,16 @@ The current MVP backend is a local pipeline with file-backed contracts and typed
 
 **Prevention**: Keep exporter regression tests with high `ffmpeg_max_retries` asserting one failed row plus one placeholder for non-retryable failures.
 
+### Common Mistake: Counting attempts instead of match-level fallbacks in exporter batch budget
+
+**Symptom**: A single match with multiple retryable failed attempts can consume the whole exporter batch budget even if that match eventually succeeds, causing unrelated later matches to be skipped.
+
+**Cause**: Batch-abort logic counts `ffmpeg_export_failed` attempt rows instead of counting completed match-level `ffmpeg_export_fallback_placeholder` outcomes.
+
+**Fix**: Increment the batch budget counter only after an actual ffmpeg fallback placeholder is emitted for a match. Reset the counter after any successful ffmpeg export or intentional non-ffmpeg placeholder path.
+
+**Prevention**: Keep regression tests for isolated fallback, success-between-fallbacks reset, and intentional-placeholder paths so only consecutive match-level ffmpeg fallbacks trip `ffmpeg_export_batch_aborted`.
+
 ### Common Mistake: Burning the in-run retry budget on transient stream-URL failures
 
 **Symptom**: Recorder runs ffmpeg back-to-back against the same stale (token-expired) `stream_url`, producing duplicate 5xx/timeout/process_error failures before the orchestrator can refresh the URL. Audit log balloons with redundant `ffmpeg_record_failed` rows and recovery is delayed by `ffmpeg_max_retries * timeout` per run.

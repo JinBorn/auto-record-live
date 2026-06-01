@@ -234,8 +234,9 @@ Cookie 失效时不再静默降级到低画质，而是输出可查询信号：
 1. **审计行**：`data/tmp/exporter-events.jsonl` 中的 `ffmpeg_export_failed` 行包含 `decision="attempt_failed"` + `failure_category` + `reason_code` + `reason_detail` + `attempt`/`max_attempts` + 内嵌的 `stderr_excerpt`（与 recorder 同一规格）。所有 attempt 耗尽后会追加一行 `ffmpeg_export_fallback_placeholder`（`decision="fallback_placeholder"`，沿用最后一次失败的 `failure_category` / `reason_code`，方便一行 grep 定位耗尽原因），紧接着导出器写出 placeholder `.txt` 资产以保证流水线不阻塞。
 2. **完整 stderr**：审计行的 `stderr_log_path` 字段指向 `data/tmp/exporter-stderr/<session_id>_match<idx>-<attempt>.log` 完整 ffmpeg stderr 转储；exporter 启动时按 mtime 滚动只保留最近 N 个文件，N 由 `ARL_EXPORTER_STDERR_RETAIN_COUNT`（默认 200）控制。
 3. **attempt 退避**：只有可重试失败（HTTP 5xx / network timeout / ffmpeg process error）会在下一次 attempt 前 sleep；初始值由 `ARL_EXPORTER_BACKOFF_INITIAL_SECONDS`（默认 2 秒）控制，上限由 `ARL_EXPORTER_BACKOFF_MAX_SECONDS`（默认 8 秒）控制。HTTP 4xx 等不可重试失败会立即短路到 placeholder。
-4. **成功审计**：`ffmpeg_export_succeeded` 行作为正向证据写在同一 JSONL，便于 grep 时确认"哪些 match 走了 ffmpeg vs placeholder"。该行不带 canonical decision 字段（与 recorder 的 `ffmpeg_record_succeeded` 同处理）。
-5. **orchestrator 不消费**：导出器审计只供 grep / 后续 recovery 工具读取，orchestrator 不依赖也不消费它，所以失败导出不会驱动状态机回退或重排。
+4. **batch 早停**：连续 N 个 match 都落到 ffmpeg fallback placeholder（默认 N=3，由 `ARL_EXPORTER_BATCH_FALLBACK_BUDGET` 控制）时，导出器会追加一行 `ffmpeg_export_batch_aborted`，带 `consecutive_fallbacks` 和 `remaining_matches`，然后停止本次 exporter run。剩余 match 不写 placeholder、不进 `processed_match_keys`，留给下次 `arl exporter` 重试。排查时可直接 grep：`Select-String ffmpeg_export_batch_aborted data/tmp/exporter-events.jsonl`。
+5. **成功审计**：`ffmpeg_export_succeeded` 行作为正向证据写在同一 JSONL，便于 grep 时确认"哪些 match 走了 ffmpeg vs placeholder"。该行不带 canonical decision 字段（与 recorder 的 `ffmpeg_record_succeeded` 同处理）。
+6. **orchestrator 不消费**：导出器审计只供 grep / 后续 recovery 工具读取，orchestrator 不依赖也不消费它，所以失败导出不会驱动状态机回退或重排。
 
 
 ## 浏览器采集配置说明（ffmpeg）

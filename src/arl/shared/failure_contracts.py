@@ -49,6 +49,7 @@ CORE_DECISION_EVENT_TYPES = {
     "quality_below_actual_resolution",
     "ffmpeg_export_failed",
     "ffmpeg_export_fallback_placeholder",
+    "ffmpeg_export_batch_aborted",
 }
 
 

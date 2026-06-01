@@ -143,10 +143,12 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             os.environ["ARL_EXPORTER_BACKOFF_INITIAL_SECONDS"] = "1.5"
             os.environ["ARL_EXPORTER_BACKOFF_MAX_SECONDS"] = "6"
+            os.environ["ARL_EXPORTER_BATCH_FALLBACK_BUDGET"] = "2"
             settings = load_settings()
 
         self.assertEqual(settings.export.backoff_initial_seconds, 1.5)
         self.assertEqual(settings.export.backoff_max_seconds, 6.0)
+        self.assertEqual(settings.export.batch_fallback_budget, 2)
 
 
 class SettingsValidatorTests(unittest.TestCase):

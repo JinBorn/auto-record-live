@@ -149,6 +149,7 @@ class ExportSettings(BaseModel):
     stderr_retain_count: int = 200
     backoff_initial_seconds: float = 2.0
     backoff_max_seconds: float = 8.0
+    batch_fallback_budget: int = 3
 
 
 class Settings(BaseModel):
@@ -396,6 +397,10 @@ def load_settings() -> Settings:
             backoff_max_seconds=max(
                 0.0,
                 float(os.getenv("ARL_EXPORTER_BACKOFF_MAX_SECONDS", "8")),
+            ),
+            batch_fallback_budget=max(
+                1,
+                int(os.getenv("ARL_EXPORTER_BATCH_FALLBACK_BUDGET", "3")),
             ),
         ),
     )
