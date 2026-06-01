@@ -52,7 +52,7 @@ src/arl/
 
 - 抖音直链采集在页面变动/风控下的稳健性
 - LoL 语义阶段识别生产化
-- `faster-whisper` 离线 ASR 的工程化加固
+- `faster-whisper` GPU fallback / 长视频分块等更高阶能力
 - `ffmpeg` 失败场景已具备基础重试/恢复能力，但仍需生产级强化
 
 ## Windows 环境准备
@@ -206,7 +206,7 @@ orchestrator/recorder launcher 不重复跑这个启动门；recorder 路径的 
 .\scripts\windows-recorder-loop.ps1
 ```
 
-> 说明：三个 launcher 共享同一 `.venv`，自带 venv 自举 + `ensurepip` 兜底 + `.deps-ready` sentinel 跳过重装。第一次启动会自动 `pip install -e .`；之后启动秒级返回。
+> 说明：三个 launcher 共享同一 `.venv`，自带 venv 自举 + `ensurepip` 兜底 + `.deps-ready` sentinel 跳过重装。第一次启动会自动 `pip install -e ".[subtitles]"`；之后启动秒级返回。
 > 说明：每个 launcher 默认用脚本所在仓库目录；也可显式传入 `-ProjectPath`（例如 `-ProjectPath "C:\auto-record-live"`）。
 > 说明：`ARL_WIN_INSTALL_MODE` 默认 `if-missing`，仅首次安装依赖；如需每次启动都强制重装，设置 `$env:ARL_WIN_INSTALL_MODE = "always"`。
 > 说明：`windows-agent-loop.ps1` 默认会在启动轮询前跑一次 cookie 健康检查；可用 `$env:ARL_COOKIE_HEALTH_GATE = "fatal"` 改成失败即退出，或设为 `"skip"` 跳过。
@@ -220,7 +220,7 @@ orchestrator/recorder launcher 不重复跑这个启动门；recorder 路径的 
 .\.venv\Scripts\python.exe -m arl.cli stage-hints-semantic
 .\.venv\Scripts\python.exe -m arl.cli stage-signals-from-subtitles
 
-# 2. 字幕（首次需 pip install faster-whisper）
+# 2. 字幕（launcher 会安装 subtitles extra；手动环境可先 pip install -e ".[subtitles]"）
 .\.venv\Scripts\python.exe -m arl.cli subtitles
 
 # 3. 导出
@@ -243,6 +243,28 @@ orchestrator/recorder launcher 不重复跑这个启动门；recorder 路径的 
 2. **完整 stderr**：审计行的 `stderr_log_path` 字段指向 `data/tmp/recorder-stderr/<job_id>-<attempt>.log` 完整 ffmpeg stderr 转储；recorder 启动时按 mtime 滚动只保留最近 N 个文件，N 由 `ARL_RECORDER_STDERR_RETAIN_COUNT`（默认 200）控制。
 3. **退避状态**：`data/tmp/recorder-state.json` 中的 `next_eligible_at_by_job_id[job_id]` 记录每次瞬时失败后的下次可调度时间（1s → 5s → 15s → 60s 封顶），未到期的 job 会在主循环里日志 `job deferred ...` 并跳过 ffmpeg。
 4. **session 预算**：同一 session 累计瞬时失败次数由 `retries_by_session_id[session_id]` 跟踪；上限由 `ARL_RECORDER_SESSION_RETRY_BUDGET`（默认 8）控制，达到上限后所有非 FAILED job 会被升级为 `recording_session_retry_budget_exceeded` 审计 + 进入 manual recovery 路径。
+
+#### 字幕生成与排查（subtitles）
+
+真实 ASR 字幕需要安装 subtitles extra：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[subtitles]"
+```
+
+三个 Windows launcher 会自动使用这个 install spec。模型缓存默认放在 `data/tmp/whisper-models/`，可用 `ARL_WHISPER_MODEL_CACHE_DIR` 覆盖，避免下载到 OneDrive 或系统用户目录。`ARL_WHISPER_MIN_LANGUAGE_PROBABILITY`（默认 `0.5`）控制语言识别置信度门；低于阈值时输出占位 SRT，避免错误语言幻觉进入后续流程。
+
+字幕阶段会写 `data/tmp/subtitles-events.jsonl`：
+
+1. **成功**：`subtitle_transcribe_succeeded`，带 `language` 和 `language_probability`。
+2. **回退**：`subtitle_fallback_placeholder`，带 `reason` / `reason_detail`。常见 `reason`：`model_unavailable`、`missing_recording`、`unsupported_suffix`、`transcribe_failed`、`low_language_confidence`。
+
+排查命令：
+
+```powershell
+Select-String subtitle_fallback_placeholder data/tmp/subtitles-events.jsonl
+Select-String low_language_confidence data/tmp/subtitles-events.jsonl
+```
 
 #### ffmpeg 失败排查（exporter）
 

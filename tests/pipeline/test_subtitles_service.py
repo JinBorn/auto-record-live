@@ -273,6 +273,117 @@ class SubtitleServiceTest(unittest.TestCase):
 
         self.assertEqual(settings.subtitles.min_language_probability, 0.7)
 
+    def test_success_emits_succeeded_audit_with_language_fields(self) -> None:
+        self._seed_single_media_boundary(session_id="session-subtitle-audit-success")
+        service = SubtitleService(self.settings)
+        service._load_whisper_model = lambda: _WhisperModelStub(
+            language_probability=0.95,
+            language="zh",
+        )
+
+        service.run()
+
+        audit_rows = _read_jsonl(self.temp_root / "subtitles-events.jsonl")
+        self.assertEqual(len(audit_rows), 1)
+        self.assertEqual(audit_rows[0]["event_type"], "subtitle_transcribe_succeeded")
+        self.assertEqual(audit_rows[0]["language"], "zh")
+        self.assertEqual(audit_rows[0]["language_probability"], 0.95)
+        self.assertIsNone(audit_rows[0].get("reason"))
+
+    def test_missing_recording_emits_fallback_reason_missing_recording(self) -> None:
+        append_model(
+            self.boundaries_path,
+            MatchBoundary(
+                session_id="session-subtitle-audit-missing",
+                match_index=1,
+                started_at_seconds=0.0,
+                ended_at_seconds=30.0,
+                confidence=0.9,
+            ),
+        )
+
+        SubtitleService(self.settings).run()
+
+        audit_rows = _read_jsonl(self.temp_root / "subtitles-events.jsonl")
+        self.assertEqual(audit_rows[0]["event_type"], "subtitle_fallback_placeholder")
+        self.assertEqual(audit_rows[0]["reason"], "missing_recording")
+        self.assertIn("session-subtitle-audit-missing", audit_rows[0]["reason_detail"])
+
+    def test_unsupported_suffix_emits_fallback_reason_unsupported_suffix(self) -> None:
+        session_id = "session-subtitle-audit-suffix"
+        append_model(
+            self.boundaries_path,
+            MatchBoundary(
+                session_id=session_id,
+                match_index=1,
+                started_at_seconds=0.0,
+                ended_at_seconds=30.0,
+                confidence=0.9,
+            ),
+        )
+        recording_path = self.raw_root / session_id / "recording.txt"
+        recording_path.parent.mkdir(parents=True, exist_ok=True)
+        recording_path.write_text("placeholder", encoding="utf-8")
+        append_model(
+            self.recording_assets_path,
+            RecordingAsset(
+                session_id=session_id,
+                source_type=SourceType.BROWSER_CAPTURE,
+                path=str(recording_path),
+                started_at=datetime(2026, 4, 26, 9, 0, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 4, 26, 9, 30, tzinfo=timezone.utc),
+            ),
+        )
+
+        SubtitleService(self.settings).run()
+
+        audit_rows = _read_jsonl(self.temp_root / "subtitles-events.jsonl")
+        self.assertEqual(audit_rows[0]["event_type"], "subtitle_fallback_placeholder")
+        self.assertEqual(audit_rows[0]["reason"], "unsupported_suffix")
+        self.assertEqual(audit_rows[0]["reason_detail"], "unsupported_suffix:.txt")
+
+    def test_model_unavailable_emits_fallback_reason_model_unavailable(self) -> None:
+        self._seed_single_media_boundary(session_id="session-subtitle-audit-model")
+        service = SubtitleService(self.settings)
+        service._load_whisper_model = lambda: None
+
+        service.run()
+
+        audit_rows = _read_jsonl(self.temp_root / "subtitles-events.jsonl")
+        self.assertEqual(audit_rows[0]["event_type"], "subtitle_fallback_placeholder")
+        self.assertEqual(audit_rows[0]["reason"], "model_unavailable")
+
+    def test_transcribe_exception_emits_fallback_reason_transcribe_failed(self) -> None:
+        self._seed_single_media_boundary(session_id="session-subtitle-audit-exc")
+        service = SubtitleService(self.settings)
+        service._load_whisper_model = lambda: _WhisperModelStub(
+            language_probability=0.95,
+            raises=RuntimeError("CUDA error"),
+        )
+
+        service.run()
+
+        audit_rows = _read_jsonl(self.temp_root / "subtitles-events.jsonl")
+        self.assertEqual(audit_rows[0]["event_type"], "subtitle_fallback_placeholder")
+        self.assertEqual(audit_rows[0]["reason"], "transcribe_failed")
+        self.assertIn("RuntimeError:CUDA error", audit_rows[0]["reason_detail"])
+
+    def test_low_language_probability_emits_fallback_reason_low_language_confidence(self) -> None:
+        self._seed_single_media_boundary(session_id="session-subtitle-audit-low-language")
+        service = SubtitleService(self.settings)
+        service._load_whisper_model = lambda: _WhisperModelStub(
+            language_probability=0.3,
+            language="ko",
+        )
+
+        service.run()
+
+        audit_rows = _read_jsonl(self.temp_root / "subtitles-events.jsonl")
+        self.assertEqual(audit_rows[0]["event_type"], "subtitle_fallback_placeholder")
+        self.assertEqual(audit_rows[0]["reason"], "low_language_confidence")
+        self.assertEqual(audit_rows[0]["language"], "ko")
+        self.assertEqual(audit_rows[0]["language_probability"], 0.3)
+
     def test_subtitle_service_auto_extracts_stage_signals_from_generated_srt(self) -> None:
         append_model(
             self.boundaries_path,

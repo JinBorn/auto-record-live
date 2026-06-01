@@ -404,6 +404,7 @@ class ExportAsset(BaseModel):
   - Optional segment stage hints: `data/tmp/match-stage-hints.jsonl`
   - Optional segment stage signals: `data/tmp/match-stage-signals.jsonl`
   - Subtitle assets: `data/tmp/subtitle-assets.jsonl`
+  - Subtitle audit events: `data/tmp/subtitles-events.jsonl`
   - Export assets: `data/tmp/export-assets.jsonl`
   - Exporter audit events: `data/tmp/exporter-events.jsonl`
   - Stage idempotency states: `data/tmp/recorder-state.json`, `data/tmp/recovery-state.json`, `data/tmp/segmenter-state.json`, `data/tmp/subtitles-state.json`, `data/tmp/exporter-state.json`, `data/tmp/stage-signal-ingest-state.json`
@@ -436,6 +437,8 @@ class ExportAsset(BaseModel):
   - `ARL_SUBTITLES_ENABLED` (`0`/`1`, default `1`)
   - `ARL_SUBTITLE_PROVIDER` (string, default `faster-whisper`)
   - `ARL_WHISPER_MODEL_SIZE` (string, default `small`)
+  - `ARL_WHISPER_MODEL_CACHE_DIR` (path, default `data/tmp/whisper-models`)
+  - `ARL_WHISPER_MIN_LANGUAGE_PROBABILITY` (float 0.0..1.0, default `0.5`)
   - `ARL_SUBTITLE_LANGUAGE` (string, default `zh`)
   - `ARL_STAGE_KEYWORDS_PATH` (optional JSON file path for stage keyword overrides)
 - CLI helper signature for manual stage-hint ingestion:
@@ -520,7 +523,11 @@ class ExportAsset(BaseModel):
 - Subtitle generation contract:
   - when `subtitles.provider == "faster-whisper"` and recording input is a transcribable media path, subtitles may be generated from ASR segments within each `MatchBoundary`
   - any provider mismatch, missing dependency/model initialization failure, unsupported recording suffix, or runtime transcribe error must degrade to deterministic placeholder SRT output
+  - faster-whisper model files should be cached under `ARL_WHISPER_MODEL_CACHE_DIR`; `SubtitleService` sets `HF_HOME` before lazy import unless the operator already set `HF_HOME`
+  - when `ARL_SUBTITLE_LANGUAGE` is configured and faster-whisper reports `language_probability < ARL_WHISPER_MIN_LANGUAGE_PROBABILITY`, subtitles must emit deterministic placeholder SRT instead of accepting low-confidence text
   - SRT output should use non-negative relative timestamps and monotonically increasing cue indices
+  - subtitles must append exactly one `SubtitleAuditEvent` row per processed match to `data/tmp/subtitles-events.jsonl`: `subtitle_transcribe_succeeded` with language/probability on success, or `subtitle_fallback_placeholder` with reason/reason_detail on fallback
+  - `SubtitleAuditEvent` deliberately omits the recorder/exporter canonical ffmpeg decision tuple (`decision` / `failure_category` / `is_retryable` / `reason_code`). Subtitle failures are in-process ASR/model/input-quality domains, not ffmpeg process taxonomy. The subtitles audit log is observability-only; orchestrator does not consume it.
   - after subtitle asset emission, subtitles stage should run best-effort `stage-signals-from-subtitles` ingestion to keep `match-stage-signals.jsonl` synchronized with latest SRT outputs
   - failures inside stage-signal ingest should be logged but must not fail subtitle asset emission
 - `ffmpeg` execution paths are opt-in and controlled by config:
@@ -638,9 +645,11 @@ class ExportAsset(BaseModel):
 | `arl subtitles` filtered run matches zero boundary rows | Command logs explicit no-match filter message and exits successfully with `processed_matches=0` |
 | `arl subtitles` runs with filter flags and auto-triggers stage-signal ingest | Auto-triggered `stage-signals-from-subtitles` run inherits same `session_id/match_index` scope and should not process unrelated subtitle rows |
 | Subtitle generation is disabled | Do not emit a `SubtitleAsset`; exporter must detect subtitle absence explicitly |
-| Subtitle provider is unsupported for transcription | Emit deterministic placeholder SRT instead of failing the stage |
-| Subtitle provider is `faster-whisper` but dependency/model is unavailable | Emit deterministic placeholder SRT and continue pipeline |
-| Subtitle provider is `faster-whisper` but recording path is non-media (e.g., placeholder `.txt`) | Emit deterministic placeholder SRT and continue pipeline |
+| Subtitle provider is unsupported for transcription | Emit deterministic placeholder SRT and one `subtitle_fallback_placeholder` audit row |
+| Subtitle provider is `faster-whisper` but dependency/model is unavailable | Emit deterministic placeholder SRT, one `subtitle_fallback_placeholder reason=model_unavailable`, and continue pipeline |
+| Subtitle provider is `faster-whisper` but recording path is non-media (e.g., placeholder `.txt`) | Emit deterministic placeholder SRT and one `subtitle_fallback_placeholder reason=unsupported_suffix` |
+| faster-whisper returns low language confidence below `ARL_WHISPER_MIN_LANGUAGE_PROBABILITY` | Emit deterministic placeholder SRT and one `subtitle_fallback_placeholder reason=low_language_confidence` with language/probability fields |
+| faster-whisper returns accepted transcription segments | Emit real SRT cues and one `subtitle_transcribe_succeeded` row with language/probability fields |
 | Export input references a missing subtitle file | Fail the export step deterministically instead of silently skipping subtitle burn-in |
 | A stage receives an unknown asset format or status | Reject or audit explicitly; do not guess |
 | `ARL_RECORDING_ENABLE_FFMPEG=1` but `stream_url` missing | Recorder logs skip reason and writes placeholder recording artifact |

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,7 @@ from arl.segmenter.signals_from_subtitles import StageSignalFromSubtitlesService
 from arl.shared.contracts import MatchBoundary, RecordingAsset, SubtitleAsset
 from arl.shared.jsonl_store import append_model, load_models
 from arl.shared.logging import log
-from arl.subtitles.models import SubtitleStateFile
+from arl.subtitles.models import SubtitleAuditEvent, SubtitleStateFile
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ class SubtitleService:
         self.boundaries_path = settings.storage.temp_dir / "match-boundaries.jsonl"
         self.recording_assets_path = settings.storage.temp_dir / "recording-assets.jsonl"
         self.assets_path = settings.storage.temp_dir / "subtitle-assets.jsonl"
+        self.audit_path = settings.storage.temp_dir / "subtitles-events.jsonl"
         self.state_path = settings.storage.temp_dir / "subtitles-state.json"
         self._whisper_model: Any | None = None
         self._whisper_model_initialized = False
@@ -109,7 +111,7 @@ class SubtitleService:
                 continue
 
             recording_path = latest_recording_path_by_session.get(boundary.session_id)
-            subtitle_path = self._write_subtitle(boundary, recording_path)
+            subtitle_path, outcome = self._write_subtitle(boundary, recording_path)
             subtitle_asset = SubtitleAsset(
                 session_id=boundary.session_id,
                 match_index=boundary.match_index,
@@ -117,6 +119,7 @@ class SubtitleService:
                 format="srt",
             )
             append_model(self.assets_path, subtitle_asset)
+            self._append_subtitle_audit(boundary, outcome)
             state.processed_match_keys.append(key)
             processed += 1
             log(
@@ -161,7 +164,7 @@ class SubtitleService:
         self,
         boundary: MatchBoundary,
         recording_path: str | None,
-    ) -> Path:
+    ) -> tuple[Path, TranscribeOutcome]:
         output_dir = self.settings.storage.processed_dir / boundary.session_id
         output_dir.mkdir(parents=True, exist_ok=True)
         subtitle_path = output_dir / f"match-{boundary.match_index:02d}.srt"
@@ -170,7 +173,7 @@ class SubtitleService:
             subtitle_path.write_text(self._build_srt(outcome.entries), encoding="utf-8")
         else:
             subtitle_path.write_text(self._placeholder_srt(), encoding="utf-8")
-        return subtitle_path
+        return subtitle_path, outcome
 
     def _transcribe_boundary(
         self,
@@ -348,6 +351,33 @@ class SubtitleService:
     def _save_state(self, state: SubtitleStateFile) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.write_text(state.model_dump_json(indent=2) + "\n", encoding="utf-8")
+
+    def _append_subtitle_audit(
+        self,
+        boundary: MatchBoundary,
+        outcome: TranscribeOutcome,
+    ) -> None:
+        if outcome.entries:
+            event = SubtitleAuditEvent(
+                event_type="subtitle_transcribe_succeeded",
+                session_id=boundary.session_id,
+                match_index=boundary.match_index,
+                language=outcome.language,
+                language_probability=outcome.language_probability,
+                created_at=datetime.now(timezone.utc),
+            )
+        else:
+            event = SubtitleAuditEvent(
+                event_type="subtitle_fallback_placeholder",
+                session_id=boundary.session_id,
+                match_index=boundary.match_index,
+                language=outcome.language,
+                language_probability=outcome.language_probability,
+                reason=outcome.reason or "model_unavailable",
+                reason_detail=outcome.reason_detail,
+                created_at=datetime.now(timezone.utc),
+            )
+        append_model(self.audit_path, event)
 
     def _key(self, session_id: str, match_index: int) -> str:
         return f"{session_id}:{match_index}"

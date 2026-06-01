@@ -147,6 +147,16 @@ The current MVP backend is a local pipeline with file-backed contracts and typed
 
 **Prevention**: Add tests for unsupported provider, missing ASR dependency path, and SRT output formatting from transcription entries.
 
+### Common Mistake: Adding subtitle failures to `CORE_DECISION_EVENT_TYPES`
+
+**Symptom**: `subtitles-events.jsonl` rows start carrying recorder/exporter fields such as `decision`, `failure_category`, `is_retryable`, and `reason_code`, or validation failures appear because subtitle reasons like `model_unavailable` are not in the ffmpeg taxonomy.
+
+**Cause**: Treating all stage audit logs as if they shared the ffmpeg subprocess failure contract.
+
+**Fix**: Keep subtitle audit rows on the `SubtitleAuditEvent` schema only: `subtitle_transcribe_succeeded` carries language/probability, and `subtitle_fallback_placeholder` carries `reason`/`reason_detail`. Do not add subtitle events to `CORE_DECISION_EVENT_TYPES`.
+
+**Prevention**: Keep subtitle audit tests asserting the minimal schema and update `.trellis/spec/backend/orchestration-contracts.md` if new subtitle fallback reasons are added.
+
 ### Common Mistake: Playwright probe short-circuits HTTP fallback
 
 **Symptom**: Windows agent reports offline due Playwright runtime errors even though room page HTML still exposes a valid direct-stream URL.
