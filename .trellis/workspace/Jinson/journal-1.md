@@ -1427,3 +1427,38 @@ Added tests/e2e helpers and five smoke cases covering golden path, probe cookie-
 ### Next Steps
 
 - None - task complete
+
+
+## Session 34: Faster-whisper subtitles hardening
+
+**Date**: 2026-06-01
+**Task**: Faster-whisper subtitles hardening
+**Branch**: `main`
+
+### Summary
+
+Added subtitles optional dependency/install spec, local Whisper cache, language-confidence gate, subtitles-events audit JSONL, and updated tests/docs/specs.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5b5ed6f` | (see git log) |
+| `8299024` | (see git log) |
+| `384b99d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
