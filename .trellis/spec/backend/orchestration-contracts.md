@@ -1,4 +1,4 @@
-# Orchestration Contracts
+﻿# Orchestration Contracts
 
 > Executable contracts for the local Windows agent and orchestrator pipeline.
 
@@ -151,13 +151,13 @@ class RecordingJobRecord(BaseModel):
   - The accompanying snapshot (probe path) is the same payload emitted with the underlying event; no extra fields are required. The recorder-path row carries `session_id`, `job_id`, `source_type`, and `reason` only — all canonical decision fields (`decision`, `failure_category`, `is_retryable`, `reason_code`, `reason_detail`) MUST be omitted/`null` since this row is informational, not a core decision event.
   - Orchestrator: `_handle_event` MUST route any agent-side `cookie_expired_for_<platform>` event to the audit log; `_handle_recorder_event` MUST route any recorder-side `cookie_expired_for_<platform>` event to the audit log without classifying it as `recorder_event_ignored` and without advancing the per-job monotonic watermark (so the accompanying `ffmpeg_record_failed` at the same `created_at` is not skipped as stale). Neither path mutates session/job state.
 - State lifecycle contract:
-  - one active live session per platform (`active_session_id_by_platform[platform]`); cross-platform sessions coexist
-  - one active recording job per platform (`active_recording_job_id_by_platform[platform]`); cross-platform jobs coexist
+  - one active live session per monitored stream key (`active_session_id_by_platform["<platform>:<room_url>"]`); cross-platform and same-platform multi-room sessions coexist
+  - one active recording job per monitored stream key (`active_recording_job_id_by_platform["<platform>:<room_url>"]`); cross-platform and same-platform multi-room jobs coexist
   - duplicate `live_started` for the same `(platform, room_url)` enriches the active session in place — must not create a second session/job, may update `stream_url` from `None` → known, and refreshes `stream_headers` from the latest snapshot (so probe-side token rotation propagates without a session restart)
-  - `live_started` from the SAME platform with a different `room_url` supersedes that platform's active session — superseded session keeps `stop_reason="superseded_by_new_live_started"` and the new room's session/job inherit `stream_url` + `stream_headers` from the new snapshot. Cross-platform `live_started` does NOT supersede; each platform's active session is tracked independently.
-  - `live_stopped` closes the active session and active recording job if they exist
+  - `live_started` from the same platform with a different `room_url` creates an independent session/job; production monitoring may track multiple rooms per platform without one room superseding another
+  - `live_stopped` closes the active session and active recording job for the matching `(platform, room_url)` if they exist
   - recorder audit events may transition recording job status:
-    - `recording_retry_scheduled` -> `retrying` and re-open `active_recording_job_id_by_platform[job.platform]` to that job
+    - `recording_retry_scheduled` -> `retrying` and re-open `active_recording_job_id_by_platform["<job.platform>:<session.room_url>"]` to that job
     - `recording_retry_exhausted`, `ffmpeg_skipped`, `ffmpeg_fallback_placeholder`, `recording_session_retry_budget_exceeded` -> `failed`
     - `quality_below_actual_resolution` -> `failed` with `failure_category="quality_unusable_non_retryable"`; clear active job linkage so a later live snapshot can create fresh work
     - `ffmpeg_record_failed` -> `retrying` when failure is recoverable; otherwise `failed`
@@ -408,6 +408,17 @@ class ExportAsset(BaseModel):
   - Export assets: `data/tmp/export-assets.jsonl`
   - Exporter audit events: `data/tmp/exporter-events.jsonl`
   - Stage idempotency states: `data/tmp/recorder-state.json`, `data/tmp/recovery-state.json`, `data/tmp/segmenter-state.json`, `data/tmp/subtitles-state.json`, `data/tmp/exporter-state.json`, `data/tmp/stage-signal-ingest-state.json`
+- Environment keys for live-room monitoring:
+  - `ARL_PLATFORMS` (comma-separated registered platform keys, default single `douyin`)
+  - `ARL_DOUYIN_ROOM_URL` / `ARL_STREAMER_NAME` configure one Douyin room for backward compatibility
+  - `ARL_BILIBILI_ROOM_URL` / `ARL_BILIBILI_STREAMER_NAME` configure one Bilibili room
+  - `ARL_DOUYIN_ROOM_URLS` / `ARL_DOUYIN_STREAMER_NAMES` configure multiple Douyin rooms; comma positions pair names to URLs and missing names fall back to `ARL_STREAMER_NAME`
+  - `ARL_BILIBILI_ROOM_URLS` / `ARL_BILIBILI_STREAMER_NAMES` configure multiple Bilibili rooms; comma positions pair names to URLs and missing names fall back to `ARL_BILIBILI_STREAMER_NAME`
+- Environment keys for long-run maintenance:
+  - `ARL_MAINTENANCE_MAX_JSONL_BYTES` (int bytes, default `52428800`) controls when maintenance archives large JSONL files
+  - `ARL_MAINTENANCE_KEEP_RECENT_LINES` (int, default `5000`) controls tail lines kept in pure audit logs
+  - `ARL_LAUNCHER_LOG_RETAIN_COUNT` (int >= 0, default `20`) controls `data/tmp/launcher-logs/*.log` retention by newest mtime
+  - `ARL_MAINTENANCE_ARCHIVE_DIR` (path, default `data/tmp/archive`) stores archived JSONL prefixes
 - Environment keys for ffmpeg-enabled paths:
   - `ARL_RECORDING_ENABLE_FFMPEG` (`0`/`1`, default `0`)
   - `ARL_DIRECT_STREAM_TIMEOUT_SECONDS` (int seconds, default `20`)
@@ -439,6 +450,9 @@ class ExportAsset(BaseModel):
   - `ARL_WHISPER_MODEL_SIZE` (string, default `small`)
   - `ARL_WHISPER_MODEL_CACHE_DIR` (path, default `data/tmp/whisper-models`)
   - `ARL_WHISPER_MIN_LANGUAGE_PROBABILITY` (float 0.0..1.0, default `0.5`)
+  - `ARL_WHISPER_DEVICE` (`auto|cuda|cpu`, default `auto`)
+  - `ARL_WHISPER_COMPUTE_TYPE` (string, default `auto`; resolves to `float16` on CUDA and `ARL_WHISPER_CPU_COMPUTE_TYPE` on CPU)
+  - `ARL_WHISPER_CPU_COMPUTE_TYPE` (string, default `int8`)
   - `ARL_SUBTITLE_LANGUAGE` (string, default `zh`)
   - `ARL_STAGE_KEYWORDS_PATH` (optional JSON file path for stage keyword overrides)
 - CLI helper signature for manual stage-hint ingestion:
@@ -453,6 +467,14 @@ class ExportAsset(BaseModel):
   - `arl stage-signals-from-subtitles [--stage-keywords-path <json_path>] [--force-reprocess] [--session-id <id>] [--session-ids <csv>] [--subtitle-path <path>] [--subtitle-paths <csv>] [--match-index <n>] [--match-indices <csv>]`
 - CLI helper signature for subtitle generation (with best-effort signal ingest):
   - `arl subtitles [--stage-keywords-path <json_path>] [--session-id <id>] [--session-ids <csv>] [--match-index <n>] [--match-indices <csv>]`
+- CLI helper signature for post-live unattended processing:
+  - `arl postprocess [--once]`
+- CLI helper signature for local operator status:
+  - `arl status`
+- CLI helper signature for local long-run maintenance:
+  - `arl maintenance [--once]`
+- CLI helper signature for runtime soak checks:
+  - `arl soak [--cycles <n>] [--interval-seconds <seconds>] [--skip-recorder] [--skip-postprocess] [--maintenance]`
 
 ### 3. Contracts
 
@@ -475,6 +497,12 @@ class ExportAsset(BaseModel):
   - for one recording asset, generated starts are `0, interval, 2*interval...` while `< duration`.
   - if a session already has any `in_game` hint, auto command skips generating additional hints for that session.
   - command is idempotent across repeated runs on unchanged manifests.
+- CLI `status` contract:
+  - command prints one local-only JSON object and must not include cookies, auth headers, raw stream URLs, or transcript text.
+  - `summary.health` is `ok`, `degraded`, or `action_required`.
+  - `summary.action_required_reasons` lists stable reason objects for manual-required recorder jobs, failed orchestrator jobs, pending/undispatched/failed recovery actions, and exporter batch aborts.
+  - `summary.degraded_reasons` lists stable reason objects for subtitle fallbacks, exporter fallbacks, missing subtitle/export outputs, and recorder failure audit events.
+  - reason objects may include bounded local identifiers such as `job_ids` or `session_ids`, but must not include platform stream URLs or secret-bearing media URLs.
 - CLI `stage-hints-semantic` ingestion contract:
   - supports optional `--stage-keywords-path` override; when provided, this CLI value takes precedence over `ARL_STAGE_KEYWORDS_PATH`.
   - command should run best-effort `stage-signals-from-subtitles` ingest before reading `match-stage-signals.jsonl`, so newly generated SRT assets can be considered without manual pre-step.
@@ -510,6 +538,15 @@ class ExportAsset(BaseModel):
   - when filters are provided, command should emit filter summary observability (`total_boundaries`, `matched_boundaries`) before generation.
   - when filters are provided and no boundaries match, command should emit explicit no-match filter diagnostics and complete with `processed_matches=0` (no failure exit).
   - post-generation best-effort `stage-signals-from-subtitles` ingest should inherit the same `session_id/match_index` filter scope used by the subtitles run, so targeted generation does not trigger unrelated subtitle-asset scans.
+- CLI `postprocess` contract:
+  - command is single-pass and exits; looping belongs to `scripts/windows-postprocess-loop.ps1`.
+  - command runs existing idempotent post-live stages in this order: `stage-hints-semantic`, `segmenter`, `subtitles`, `exporter`.
+  - command must not create a second global processed-state file; it relies on each stage's own idempotency state.
+- CLI `status` contract:
+  - command is read-only and emits one JSON object to stdout.
+  - command summarizes existing local state/audit/manifest files only; it must not probe live rooms, run ffmpeg, mutate state, or append audit rows.
+  - output must not include raw stream URLs, cookies, stream headers, full transcripts, or full audit payloads.
+  - top-level `summary.health` is one of `ok`, `degraded`, or `action_required`.
 - Stage keyword override contract (`ARL_STAGE_KEYWORDS_PATH`):
   - when configured and file exists, JSON payload may override per-stage keyword lists by keys: `champion_select`, `loading`, `in_game`, `post_game`.
   - project-maintained example: `examples/stage-keywords.example.json`.
@@ -523,10 +560,12 @@ class ExportAsset(BaseModel):
 - Subtitle generation contract:
   - when `subtitles.provider == "faster-whisper"` and recording input is a transcribable media path, subtitles may be generated from ASR segments within each `MatchBoundary`
   - any provider mismatch, missing dependency/model initialization failure, unsupported recording suffix, or runtime transcribe error must degrade to deterministic placeholder SRT output
+  - `ARL_WHISPER_DEVICE=auto` tries CUDA first and falls back to CPU for both model initialization failures and lazy runtime failures raised while iterating returned segments; after a CUDA failure, the same batch must not repeatedly try CUDA for later boundaries
+  - `ARL_WHISPER_DEVICE=cuda` is explicit CUDA-only mode and must not silently fall back to CPU; `ARL_WHISPER_DEVICE=cpu` uses CPU only
   - faster-whisper model files should be cached under `ARL_WHISPER_MODEL_CACHE_DIR`; `SubtitleService` sets `HF_HOME` before lazy import unless the operator already set `HF_HOME`
   - when `ARL_SUBTITLE_LANGUAGE` is configured and faster-whisper reports `language_probability < ARL_WHISPER_MIN_LANGUAGE_PROBABILITY`, subtitles must emit deterministic placeholder SRT instead of accepting low-confidence text
   - SRT output should use non-negative relative timestamps and monotonically increasing cue indices
-  - subtitles must append exactly one `SubtitleAuditEvent` row per processed match to `data/tmp/subtitles-events.jsonl`: `subtitle_transcribe_succeeded` with language/probability on success, or `subtitle_fallback_placeholder` with reason/reason_detail on fallback
+  - subtitles must append exactly one `SubtitleAuditEvent` row per processed match to `data/tmp/subtitles-events.jsonl`: `subtitle_transcribe_succeeded` with language/probability/device/compute_type on success, or `subtitle_fallback_placeholder` with reason/reason_detail/device/compute_type on fallback; CPU retry after CUDA failure should be visible via `fallback_device="cpu"`
   - `SubtitleAuditEvent` deliberately omits the recorder/exporter canonical ffmpeg decision tuple (`decision` / `failure_category` / `is_retryable` / `reason_code`). Subtitle failures are in-process ASR/model/input-quality domains, not ffmpeg process taxonomy. The subtitles audit log is observability-only; orchestrator does not consume it.
   - after subtitle asset emission, subtitles stage should run best-effort `stage-signals-from-subtitles` ingestion to keep `match-stage-signals.jsonl` synchronized with latest SRT outputs
   - failures inside stage-signal ingest should be logged but must not fail subtitle asset emission
@@ -584,12 +623,27 @@ class ExportAsset(BaseModel):
   - action-key callback handlers should accept both current and legacy key shapes for compatibility during keying migrations
   - when a legacy key collides with multiple rows, callback targeting must be deterministic: choose the latest row by (`created_at`, then append order)
 - Recovery stage should expose a pending-action query view for operator tooling (pending dispatched actions only).
+- Recovery stage should expose a pending-action report view grouped by `job_id` for unattended handoff:
+  - report must include pending action/job counts and grouped breakdowns by `action_type` and `failure_category`
+  - report job entries must include bounded local identifiers, action keys, action types, failure categories, messages, and explicit resolve/fail command strings
+  - report is read-only; it must not dispatch, resolve, fail, or requeue recovery actions
 - Recovery stage should expose an aggregated summary view with total/pending/resolved/failed counts and grouped breakdowns.
 - Recovery stage should support batch job updates (multi-job resolve/fail in one operation).
 - Recovery stage should provide maintenance to control file growth:
   - archive terminal recovery events into `recovery-events-archive.jsonl`
   - compact terminal actions out of `recorder-recovery-actions.jsonl`
   - compact terminal keys out of `recovery-state.json`
+- `arl maintenance --once` controls general long-run file growth:
+  - for orchestrator input logs (`windows-agent-events.jsonl`, `recorder-events.jsonl`), archive only the already-consumed prefix indicated by `orchestrator-state.json` cursor offsets, then reset those offsets to `0`
+  - for pure audit logs (`orchestrator-events.jsonl`, `subtitles-events.jsonl`, `exporter-events.jsonl`, `recovery-events.jsonl`), archive old prefix lines only when the file exceeds `ARL_MAINTENANCE_MAX_JSONL_BYTES`, keeping the most recent `ARL_MAINTENANCE_KEEP_RECENT_LINES`
+  - rotate `data/tmp/launcher-logs/*.log` by newest mtime using `ARL_LAUNCHER_LOG_RETAIN_COUNT`
+  - do not compact asset manifests (`*-assets.jsonl`, `match-boundaries.jsonl`, hints/signals) in this slice because downstream idempotency and status checks treat them as durable indexes
+- `arl soak` provides repeated unattended health cycles:
+  - default run is `cycles=3`, `interval_seconds=30`
+  - each cycle runs `windows-agent` once, `orchestrator` once, `recorder`, `postprocess`, optional `maintenance`, then `status`
+  - `--skip-recorder` and `--skip-postprocess` allow lower-impact dry-ish checks without recording or post-live writes
+  - stage exceptions are captured in the JSON report and do not prevent the final `status` stage from running
+  - command exits non-zero only when a stage raises; degraded/action-required status is reported in JSON for operator review
 - Recorder `ffmpeg` path activation requires all of:
   - `recording.enable_ffmpeg == True`
   - `ffmpeg` available on PATH
@@ -649,6 +703,7 @@ class ExportAsset(BaseModel):
 | Subtitle provider is `faster-whisper` but dependency/model is unavailable | Emit deterministic placeholder SRT, one `subtitle_fallback_placeholder reason=model_unavailable`, and continue pipeline |
 | Subtitle provider is `faster-whisper` but recording path is non-media (e.g., placeholder `.txt`) | Emit deterministic placeholder SRT and one `subtitle_fallback_placeholder reason=unsupported_suffix` |
 | faster-whisper returns low language confidence below `ARL_WHISPER_MIN_LANGUAGE_PROBABILITY` | Emit deterministic placeholder SRT and one `subtitle_fallback_placeholder reason=low_language_confidence` with language/probability fields |
+| faster-whisper runs successfully but returns no text segments inside the match boundary | Emit deterministic placeholder SRT and one `subtitle_fallback_placeholder reason=no_transcript_segments` with device/compute fields |
 | faster-whisper returns accepted transcription segments | Emit real SRT cues and one `subtitle_transcribe_succeeded` row with language/probability fields |
 | Export input references a missing subtitle file | Fail the export step deterministically instead of silently skipping subtitle burn-in |
 | A stage receives an unknown asset format or status | Reject or audit explicitly; do not guess |

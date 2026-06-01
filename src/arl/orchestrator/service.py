@@ -165,40 +165,8 @@ class OrchestratorService:
         event: AgentEventPayload,
     ) -> None:
         snapshot = event.snapshot
-        active_session = self._active_session(state, snapshot.platform)
-        if active_session is not None and active_session.ended_at is None:
-            # Same platform, different room: the streamer migrated rooms within
-            # the same platform, so the previous live session is stale. Cross-
-            # platform live_started is NOT a supersede trigger because
-            # _active_session is already platform-scoped.
-            if active_session.room_url != snapshot.room_url:
-                active_session.ended_at = snapshot.detected_at
-                active_session.status = SessionStatus.STOPPED
-                active_session.stop_reason = "superseded_by_new_live_started"
-                self.state_store.append_audit(
-                    "session_replaced_by_new_live_started",
-                    session_id=active_session.session_id,
-                    message=(
-                        f"next_platform={snapshot.platform} "
-                        f"next_streamer={snapshot.streamer_name} "
-                        f"next_room={snapshot.room_url}"
-                    ),
-                )
-                active_job = self._active_job(state, snapshot.platform)
-                if active_job is not None and active_job.ended_at is None:
-                    active_job.status = RecordingJobStatus.STOPPED
-                    active_job.ended_at = snapshot.detected_at
-                    active_job.stop_reason = "superseded_by_new_live_started"
-                    self.state_store.append_audit(
-                        "recording_job_stopped",
-                        session_id=active_job.session_id,
-                        job_id=active_job.job_id,
-                        message=f"reason={active_job.stop_reason}",
-                    )
-                state.active_session_id_by_platform.pop(snapshot.platform, None)
-                state.active_recording_job_id_by_platform.pop(snapshot.platform, None)
-                active_session = None
-
+        active_key = self._active_key(snapshot.platform, snapshot.room_url)
+        active_session = self._active_session(state, snapshot.platform, snapshot.room_url)
         if active_session is not None and active_session.ended_at is None:
             lock_browser_capture = self._session_has_http_4xx_failure(
                 state, active_session.session_id
@@ -224,7 +192,7 @@ class OrchestratorService:
                 # may carry refreshed tokens (e.g. B 站 stream URL token rotation
                 # via probe ↔ recorder feedback in a future PR).
                 active_session.stream_headers = dict(snapshot.stream_headers)
-            active_job = self._active_job(state, snapshot.platform)
+            active_job = self._active_job(state, snapshot.platform, snapshot.room_url)
             if (
                 active_job is not None
                 and active_job.ended_at is None
@@ -277,6 +245,7 @@ class OrchestratorService:
                     state=state,
                     session_id=active_session.session_id,
                     platform=active_session.platform,
+                    room_url=active_session.room_url,
                     source_type=snapshot.source_type,
                     stream_url=snapshot.stream_url,
                     stream_headers=dict(active_session.stream_headers),
@@ -303,7 +272,7 @@ class OrchestratorService:
             started_at=snapshot.detected_at,
         )
         state.sessions.append(session)
-        state.active_session_id_by_platform[snapshot.platform] = session_id
+        state.active_session_id_by_platform[active_key] = session_id
         self.state_store.append_audit(
             "session_started",
             session_id=session_id,
@@ -320,6 +289,7 @@ class OrchestratorService:
                 state=state,
                 session_id=session_id,
                 platform=snapshot.platform,
+                room_url=snapshot.room_url,
                 source_type=snapshot.source_type,
                 stream_url=snapshot.stream_url,
                 stream_headers=dict(snapshot.stream_headers),
@@ -342,6 +312,7 @@ class OrchestratorService:
         state: OrchestratorStateFile,
         session_id: str,
         platform: str,
+        room_url: str,
         source_type,
         stream_url: str | None,
         stream_headers: dict[str, str],
@@ -359,7 +330,7 @@ class OrchestratorService:
             created_at=created_at,
         )
         state.recording_jobs.append(job)
-        state.active_recording_job_id_by_platform[platform] = job_id
+        state.active_recording_job_id_by_platform[self._active_key(platform, room_url)] = job_id
         return job
 
 
@@ -369,7 +340,8 @@ class OrchestratorService:
         event: AgentEventPayload,
     ) -> None:
         snapshot = event.snapshot
-        active_session = self._active_session(state, snapshot.platform)
+        active_key = self._active_key(snapshot.platform, snapshot.room_url)
+        active_session = self._active_session(state, snapshot.platform, snapshot.room_url)
         if active_session is None or active_session.ended_at is not None:
             self.state_store.append_audit(
                 "live_stopped_without_active_session",
@@ -390,9 +362,11 @@ class OrchestratorService:
             "orchestrator",
             f"session stopped session_id={active_session.session_id}",
         )
-        state.active_session_id_by_platform.pop(snapshot.platform, None)
+        state.active_session_id_by_platform.pop(active_key, None)
+        if state.active_session_id_by_platform.get(snapshot.platform) == active_session.session_id:
+            state.active_session_id_by_platform.pop(snapshot.platform, None)
 
-        active_job = self._active_job(state, snapshot.platform)
+        active_job = self._active_job(state, snapshot.platform, snapshot.room_url)
         if active_job is not None and active_job.ended_at is None:
             active_job.status = RecordingJobStatus.STOPPED
             active_job.ended_at = snapshot.detected_at
@@ -407,7 +381,13 @@ class OrchestratorService:
                 "orchestrator",
                 f"recording job stopped job_id={active_job.job_id}",
             )
-        state.active_recording_job_id_by_platform.pop(snapshot.platform, None)
+        state.active_recording_job_id_by_platform.pop(active_key, None)
+        if (
+            active_job is not None
+            and state.active_recording_job_id_by_platform.get(snapshot.platform)
+            == active_job.job_id
+        ):
+            state.active_recording_job_id_by_platform.pop(snapshot.platform, None)
 
     def _handle_recorder_event(
         self,
@@ -484,7 +464,9 @@ class OrchestratorService:
             job.status = RecordingJobStatus.RETRYING
             job.stop_reason = self._event_reason_detail(event) or "retry_scheduled"
             job.ended_at = None
-            state.active_recording_job_id_by_platform[job.platform] = job.job_id
+            state.active_recording_job_id_by_platform[
+                self._active_key_for_job(state, job)
+            ] = job.job_id
             self._apply_failure_metadata(state, job, event)
             self.state_store.append_audit(
                 "recording_job_retrying",
@@ -505,8 +487,7 @@ class OrchestratorService:
             job.stop_reason = self._event_reason_detail(event) or "retry_exhausted"
             if job.ended_at is None:
                 job.ended_at = event.created_at
-            if state.active_recording_job_id_by_platform.get(job.platform) == job.job_id:
-                state.active_recording_job_id_by_platform.pop(job.platform, None)
+            self._clear_active_job_if_current(state, job)
             self._apply_failure_metadata(state, job, event)
             self.state_store.append_audit(
                 "recording_job_failed",
@@ -529,8 +510,7 @@ class OrchestratorService:
             )
             if job.ended_at is None:
                 job.ended_at = event.created_at
-            if state.active_recording_job_id_by_platform.get(job.platform) == job.job_id:
-                state.active_recording_job_id_by_platform.pop(job.platform, None)
+            self._clear_active_job_if_current(state, job)
             self._apply_failure_metadata(state, job, event)
             self.state_store.append_audit(
                 "recording_job_failed",
@@ -551,8 +531,7 @@ class OrchestratorService:
             job.stop_reason = self._event_reason_detail(event) or event.event_type
             if job.ended_at is None:
                 job.ended_at = event.created_at
-            if state.active_recording_job_id_by_platform.get(job.platform) == job.job_id:
-                state.active_recording_job_id_by_platform.pop(job.platform, None)
+            self._clear_active_job_if_current(state, job)
             self._apply_failure_metadata(state, job, event)
             self.state_store.append_audit(
                 "recording_job_failed",
@@ -570,9 +549,12 @@ class OrchestratorService:
             # and pick up refreshed source_type/stream_url (for example browser_capture).
             if (
                 job.failure_category == "http_4xx_non_retryable"
-                and state.active_session_id_by_platform.get(job.platform) == job.session_id
+                and state.active_session_id_by_platform.get(
+                    self._active_key_for_job(state, job)
+                )
+                == job.session_id
             ):
-                state.active_recording_job_id_by_platform.pop(job.platform, None)
+                self._clear_active_job_if_current(state, job)
             self._mark_recorder_event_applied(state, event)
             return
 
@@ -584,8 +566,7 @@ class OrchestratorService:
             )
             if job.ended_at is None:
                 job.ended_at = event.created_at
-            if state.active_recording_job_id_by_platform.get(job.platform) == job.job_id:
-                state.active_recording_job_id_by_platform.pop(job.platform, None)
+            self._clear_active_job_if_current(state, job)
             self._apply_failure_metadata(state, job, event)
             self.state_store.append_audit(
                 "recording_job_quality_rejected",
@@ -606,8 +587,7 @@ class OrchestratorService:
             job.stop_reason = None
             if job.ended_at is None:
                 job.ended_at = event.created_at
-            if state.active_recording_job_id_by_platform.get(job.platform) == job.job_id:
-                state.active_recording_job_id_by_platform.pop(job.platform, None)
+            self._clear_active_job_if_current(state, job)
             self._clear_failure_metadata(job)
             self.state_store.append_audit(
                 "recording_job_recorded",
@@ -642,8 +622,7 @@ class OrchestratorService:
                     job.stop_reason = self._event_reason_detail(event) or "ffmpeg_record_failed"
                     if job.ended_at is None:
                         job.ended_at = event.created_at
-                    if state.active_recording_job_id_by_platform.get(job.platform) == job.job_id:
-                        state.active_recording_job_id_by_platform.pop(job.platform, None)
+                    self._clear_active_job_if_current(state, job)
                     self.state_store.append_audit(
                         "recording_job_attempt_failed_terminal",
                         session_id=job.session_id,
@@ -668,9 +647,16 @@ class OrchestratorService:
         return
 
     def _active_session(
-        self, state: OrchestratorStateFile, platform: str
+        self,
+        state: OrchestratorStateFile,
+        platform: str,
+        room_url: str,
     ) -> SessionRecord | None:
-        session_id = state.active_session_id_by_platform.get(platform)
+        session_id = state.active_session_id_by_platform.get(
+            self._active_key(platform, room_url)
+        )
+        if session_id is None:
+            session_id = state.active_session_id_by_platform.get(platform)
         if session_id is None:
             return None
         for session in state.sessions:
@@ -679,15 +665,46 @@ class OrchestratorService:
         return None
 
     def _active_job(
-        self, state: OrchestratorStateFile, platform: str
+        self,
+        state: OrchestratorStateFile,
+        platform: str,
+        room_url: str,
     ) -> RecordingJobRecord | None:
-        job_id = state.active_recording_job_id_by_platform.get(platform)
+        job_id = state.active_recording_job_id_by_platform.get(
+            self._active_key(platform, room_url)
+        )
+        if job_id is None:
+            job_id = state.active_recording_job_id_by_platform.get(platform)
         if job_id is None:
             return None
         for job in state.recording_jobs:
             if job.job_id == job_id:
                 return job
         return None
+
+    def _active_key(self, platform: str, room_url: str) -> str:
+        return f"{platform}:{room_url}"
+
+    def _active_key_for_job(
+        self,
+        state: OrchestratorStateFile,
+        job: RecordingJobRecord,
+    ) -> str:
+        for session in state.sessions:
+            if session.session_id == job.session_id:
+                return self._active_key(job.platform, session.room_url)
+        return job.platform
+
+    def _clear_active_job_if_current(
+        self,
+        state: OrchestratorStateFile,
+        job: RecordingJobRecord,
+    ) -> None:
+        active_key = self._active_key_for_job(state, job)
+        if state.active_recording_job_id_by_platform.get(active_key) == job.job_id:
+            state.active_recording_job_id_by_platform.pop(active_key, None)
+        if state.active_recording_job_id_by_platform.get(job.platform) == job.job_id:
+            state.active_recording_job_id_by_platform.pop(job.platform, None)
 
     def _find_job(self, state: OrchestratorStateFile, job_id: str) -> RecordingJobRecord | None:
         for job in state.recording_jobs:

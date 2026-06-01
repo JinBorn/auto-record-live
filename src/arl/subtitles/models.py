@@ -15,6 +15,9 @@ class SubtitleAuditEvent(BaseModel):
     match_index: int
     language: str | None = None
     language_probability: float | None = None
+    device: str | None = None
+    compute_type: str | None = None
+    fallback_device: str | None = None
     reason: str | None = None
     reason_detail: str | None = None
     created_at: datetime

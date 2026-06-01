@@ -7,7 +7,9 @@ from pathlib import Path
 
 from arl.config import load_settings
 from arl.exporter.service import ExporterService
+from arl.maintenance.service import MaintenanceService
 from arl.orchestrator.service import OrchestratorService
+from arl.postprocess.service import PostProcessService
 from arl.recovery.service import RecoveryService
 from arl.recorder.service import RecorderService
 from arl.segmenter.auto_hints import AutoStageHintService
@@ -17,6 +19,8 @@ from arl.segmenter.signals_from_subtitles import StageSignalFromSubtitlesService
 from arl.segmenter.semantic_hints import SemanticStageHintService
 from arl.segmenter.service import SegmenterService
 from arl.shared.contracts import MatchStage
+from arl.soak.service import SoakService
+from arl.status.service import StatusService
 from arl.subtitles.service import SubtitleService
 from arl.windows_agent.cookie_health import run_cookie_health
 from arl.windows_agent.registry import build_probes
@@ -73,6 +77,47 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("show-config", help="Print resolved settings.")
+    subparsers.add_parser("status", help="Print local pipeline health/status summary.")
+    maintenance = subparsers.add_parser(
+        "maintenance",
+        help="Run local long-run maintenance once.",
+    )
+    maintenance.add_argument(
+        "--once",
+        action="store_true",
+        help="Run one maintenance pass and exit (default behavior).",
+    )
+    soak = subparsers.add_parser(
+        "soak",
+        help="Run repeated unattended pipeline health cycles.",
+    )
+    soak.add_argument(
+        "--cycles",
+        type=_parse_positive_int,
+        default=3,
+        help="Number of soak cycles to run (default: 3).",
+    )
+    soak.add_argument(
+        "--interval-seconds",
+        type=float,
+        default=30.0,
+        help="Sleep seconds between cycles (default: 30).",
+    )
+    soak.add_argument(
+        "--skip-recorder",
+        action="store_true",
+        help="Skip recorder stage during soak cycles.",
+    )
+    soak.add_argument(
+        "--skip-postprocess",
+        action="store_true",
+        help="Skip postprocess stage during soak cycles.",
+    )
+    soak.add_argument(
+        "--maintenance",
+        action="store_true",
+        help="Run maintenance during each soak cycle.",
+    )
     windows_agent = subparsers.add_parser("windows-agent", help="Run the Windows agent.")
     windows_agent.add_argument(
         "--once",
@@ -129,6 +174,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="List all pending dispatched recovery actions.",
     )
     recovery_mode.add_argument(
+        "--pending-report",
+        action="store_true",
+        help="Show pending recovery actions grouped by job with operator commands.",
+    )
+    recovery_mode.add_argument(
         "--summary",
         action="store_true",
         help="Show aggregated recovery action status summary.",
@@ -143,6 +193,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional operator message for resolved/failed status updates.",
     )
     subparsers.add_parser("segmenter", help="Run the match segmenter worker.")
+    postprocess = subparsers.add_parser(
+        "postprocess",
+        help="Run the post-live processing chain once.",
+    )
+    postprocess.add_argument(
+        "--once",
+        action="store_true",
+        help="Run one post-processing pass and exit (default behavior).",
+    )
     subparsers.add_parser(
         "stage-hints-auto",
         help="Auto-generate in_game stage hints from recording duration heuristics.",
@@ -292,6 +351,25 @@ def main() -> int:
         print(settings.model_dump_json(indent=2))
         return 0
 
+    if args.command == "status":
+        print(json.dumps(StatusService(settings).build(), ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "maintenance":
+        print(json.dumps(MaintenanceService(settings).run_once().as_dict(), ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "soak":
+        report = SoakService(settings).run(
+            cycles=args.cycles,
+            interval_seconds=args.interval_seconds,
+            run_recorder=not args.skip_recorder,
+            run_postprocess=not args.skip_postprocess,
+            run_maintenance=args.maintenance,
+        )
+        print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+        return 1 if report.failed_stages > 0 else 0
+
     if args.command == "windows-agent":
         WindowsAgentService(settings).run(once=args.once)
         return 0
@@ -333,6 +411,9 @@ def main() -> int:
         if args.maintenance:
             print(json.dumps(service.maintain(), ensure_ascii=False, indent=2))
             return 0
+        if args.pending_report:
+            print(json.dumps(service.pending_report(), ensure_ascii=False, indent=2))
+            return 0
         if args.list_pending:
             print(json.dumps(service.list_pending_actions(), ensure_ascii=False, indent=2))
             return 0
@@ -367,6 +448,10 @@ def main() -> int:
 
     if args.command == "segmenter":
         SegmenterService(settings).run()
+        return 0
+
+    if args.command == "postprocess":
+        PostProcessService(settings).run_once()
         return 0
 
     if args.command == "stage-hints-auto":

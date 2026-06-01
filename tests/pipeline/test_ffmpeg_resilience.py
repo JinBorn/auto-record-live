@@ -930,7 +930,12 @@ class FfmpegResilienceTest(unittest.TestCase):
         self.assertEqual(updated_state.recording_jobs[0].status, RecordingJobStatus.RETRYING)
         self.assertEqual(updated_state.recording_jobs[0].stop_reason, "operator-fixed")
         self.assertIsNone(updated_state.recording_jobs[0].ended_at)
-        self.assertEqual(updated_state.active_recording_job_id_by_platform["douyin"], "job-manual-requeue")
+        self.assertEqual(
+            updated_state.active_recording_job_id_by_platform[
+                "douyin:https://live.douyin.com/room"
+            ],
+            "job-manual-requeue",
+        )
 
         recorder_event_payloads = [
             json.loads(line)

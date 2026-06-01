@@ -1,9 +1,7 @@
 param(
-  [Parameter(Mandatory=$true)]
-  [string]$RoomUrl,
+  [string]$RoomUrl = "",
 
-  [Parameter(Mandatory=$true)]
-  [string]$StreamerName,
+  [string]$StreamerName = "",
 
   [int]$IntervalSeconds = 15,
   [string]$ProjectPath = ""
@@ -85,8 +83,12 @@ if (!(Test-Path "node_modules")) {
   npm install
 }
 
-$env:ARL_DOUYIN_ROOM_URL = $RoomUrl
-$env:ARL_STREAMER_NAME = $StreamerName
+if (-not [string]::IsNullOrWhiteSpace($RoomUrl)) {
+  $env:ARL_DOUYIN_ROOM_URL = $RoomUrl
+}
+if (-not [string]::IsNullOrWhiteSpace($StreamerName)) {
+  $env:ARL_STREAMER_NAME = $StreamerName
+}
 
 $cookieGate = if ($env:ARL_COOKIE_HEALTH_GATE) { $env:ARL_COOKIE_HEALTH_GATE } else { "warning" }
 if ($cookieGate -ne "skip") {
@@ -110,8 +112,8 @@ Write-Host "[ARL] windows-agent loop started"
 Write-Host "[ARL] project: $ProjectPath"
 Write-Host "[ARL] venv: $venvPython"
 Write-Host "[ARL] install mode: $installMode"
-Write-Host "[ARL] room: $RoomUrl"
-Write-Host "[ARL] streamer: $StreamerName"
+Write-Host "[ARL] room: $(if ($env:ARL_DOUYIN_ROOM_URL) { $env:ARL_DOUYIN_ROOM_URL } else { '<env/.env>' })"
+Write-Host "[ARL] streamer: $(if ($env:ARL_STREAMER_NAME) { $env:ARL_STREAMER_NAME } else { '<env/.env>' })"
 Write-Host "[ARL] interval: ${IntervalSeconds}s"
 if ($ProjectPath -like "\\wsl$\*") {
   Write-Warning "Using a UNC WSL path from Windows may be slower; prefer a Windows-local path when possible."

@@ -143,29 +143,33 @@ class OrchestratorMultiPlatformTests(unittest.TestCase):
         self.assertEqual(bilibili_session.status, SessionStatus.LIVE)
         self.assertIsNone(bilibili_session.stop_reason)
 
-        # Per-platform active id maps both populated.
+        # Active id maps are keyed by platform + room so same-platform rooms
+        # can coexist.
         self.assertEqual(
-            state.active_session_id_by_platform["douyin"],
+            state.active_session_id_by_platform["douyin:https://live.douyin.com/room"],
             douyin_session.session_id,
         )
         self.assertEqual(
-            state.active_session_id_by_platform["bilibili"],
+            state.active_session_id_by_platform["bilibili:https://live.bilibili.com/12345"],
             bilibili_session.session_id,
         )
 
-        # Both recording jobs queued, both reachable via active_recording_job_id_by_platform.
+        # Both recording jobs queued, both reachable via active stream keys.
         self.assertEqual(len(state.recording_jobs), 2)
         for job in state.recording_jobs:
+            session = next(
+                session for session in state.sessions if session.session_id == job.session_id
+            )
             self.assertEqual(
-                state.active_recording_job_id_by_platform[job.platform],
+                state.active_recording_job_id_by_platform[
+                    f"{job.platform}:{session.room_url}"
+                ],
                 job.job_id,
             )
 
-    def test_same_platform_different_room_supersedes_active_session(self) -> None:
-        # Same platform but a different room_url = the streamer migrated
-        # rooms within Douyin. The previous Douyin session is stale and must
-        # be stopped before the new one starts, so we don't accumulate
-        # multiple live sessions for the same platform.
+    def test_same_platform_different_rooms_run_concurrently(self) -> None:
+        # Production monitoring can track multiple rooms on the same platform.
+        # A live_started for Douyin room B must not supersede room A.
         self._append_event(
             _live_started_line(
                 platform="douyin",
@@ -192,19 +196,22 @@ class OrchestratorMultiPlatformTests(unittest.TestCase):
             self.settings.orchestrator.state_file.read_text(encoding="utf-8")
         )
         self.assertEqual(len(state.sessions), 2)
-        old_session, new_session = state.sessions
+        first_session, second_session = state.sessions
 
-        self.assertEqual(old_session.room_url, "https://live.douyin.com/room-old")
-        self.assertEqual(old_session.status, SessionStatus.STOPPED)
-        self.assertEqual(old_session.stop_reason, "superseded_by_new_live_started")
+        self.assertEqual(first_session.room_url, "https://live.douyin.com/room-old")
+        self.assertEqual(first_session.status, SessionStatus.LIVE)
+        self.assertIsNone(first_session.stop_reason)
 
-        self.assertEqual(new_session.room_url, "https://live.douyin.com/room-new")
-        self.assertEqual(new_session.status, SessionStatus.LIVE)
+        self.assertEqual(second_session.room_url, "https://live.douyin.com/room-new")
+        self.assertEqual(second_session.status, SessionStatus.LIVE)
 
-        # Only the new session is active for douyin.
         self.assertEqual(
-            state.active_session_id_by_platform["douyin"],
-            new_session.session_id,
+            state.active_session_id_by_platform["douyin:https://live.douyin.com/room-old"],
+            first_session.session_id,
+        )
+        self.assertEqual(
+            state.active_session_id_by_platform["douyin:https://live.douyin.com/room-new"],
+            second_session.session_id,
         )
 
     def test_same_platform_duplicate_live_started_does_not_supersede(self) -> None:

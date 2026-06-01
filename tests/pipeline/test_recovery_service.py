@@ -247,6 +247,62 @@ class RecoveryServiceTest(unittest.TestCase):
         self.assertEqual(recorder_event_payloads[0]["job_id"], "job-k")
         self.assertEqual(recorder_event_payloads[0]["reason"], "done-2")
 
+    def test_recovery_pending_report_groups_actions_by_job_with_commands(self) -> None:
+        append_model(
+            self.actions_path,
+            RecorderRecoveryAction(
+                action_type="inspect_failure_logs",
+                session_id="session-report",
+                job_id="job-report",
+                source_type=SourceType.DIRECT_STREAM,
+                failure_category="unknown",
+                recoverable=None,
+                stop_reason="subprocess_error",
+                recovery_hint="Inspect logs.",
+                steps=["Inspect logs."],
+                created_at=datetime(2026, 4, 25, 11, 10, tzinfo=timezone.utc),
+            ),
+        )
+        append_model(
+            self.actions_path,
+            RecorderRecoveryAction(
+                action_type="restore_source_prerequisites",
+                session_id="session-report",
+                job_id="job-report",
+                source_type=SourceType.DIRECT_STREAM,
+                failure_category="prerequisite",
+                recoverable=True,
+                stop_reason="missing_stream_url",
+                recovery_hint="Restore stream URL.",
+                steps=["Restore stream URL."],
+                created_at=datetime(2026, 4, 25, 11, 11, tzinfo=timezone.utc),
+            ),
+        )
+
+        service = RecoveryService(self.settings)
+        service.run()
+        report = service.pending_report()
+
+        self.assertEqual(report["summary"]["pending_actions"], 2)
+        self.assertEqual(report["summary"]["pending_jobs"], 1)
+        self.assertEqual(
+            report["summary"]["by_action_type"],
+            {"inspect_failure_logs": 1, "restore_source_prerequisites": 1},
+        )
+        self.assertEqual(len(report["jobs"]), 1)
+        job = report["jobs"][0]
+        self.assertEqual(job["job_id"], "job-report")
+        self.assertEqual(job["action_count"], 2)
+        self.assertEqual(job["session_ids"], ["session-report"])
+        self.assertEqual(
+            job["action_types"],
+            ["inspect_failure_logs", "restore_source_prerequisites"],
+        )
+        self.assertIn("--resolve-job-id \"job-report\"", job["commands"]["resolve_job"])
+        self.assertIn("--fail-job-id \"job-report\"", job["commands"]["fail_job"])
+        self.assertIn("--resolve-job-ids \"job-report\"", report["commands"]["resolve_all_pending_jobs"])
+        self.assertEqual(len(report["actions"]), 2)
+
     def test_recovery_service_does_not_requeue_when_action_failed_for_same_job(self) -> None:
         append_model(
             self.actions_path,

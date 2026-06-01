@@ -102,6 +102,14 @@ def _recorder_event_line(
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _active_key(state: OrchestratorStateFile, job_index: int = 0) -> str:
+    job = state.recording_jobs[job_index]
+    session = next(
+        session for session in state.sessions if session.session_id == job.session_id
+    )
+    return f"{job.platform}:{session.room_url}"
+
+
 class OrchestratorServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -177,8 +185,9 @@ class OrchestratorServiceTest(unittest.TestCase):
         )
         self.assertEqual(len(state.sessions), 1)
         self.assertEqual(len(state.recording_jobs), 1)
-        self.assertIn("douyin", state.active_session_id_by_platform)
-        self.assertIn("douyin", state.active_recording_job_id_by_platform)
+        active_key = _active_key(state)
+        self.assertIn(active_key, state.active_session_id_by_platform)
+        self.assertIn(active_key, state.active_recording_job_id_by_platform)
         self.assertEqual(state.sessions[0].status, SessionStatus.LIVE)
         self.assertEqual(state.recording_jobs[0].status, RecordingJobStatus.QUEUED)
 
@@ -270,9 +279,12 @@ class OrchestratorServiceTest(unittest.TestCase):
             updated.recording_jobs[-1].stream_url,
             "https://cdn.example/live-3.m3u8",
         )
-        self.assertEqual(updated.active_recording_job_id_by_platform[updated.recording_jobs[-1].platform], updated.recording_jobs[-1].job_id)
+        self.assertEqual(
+            updated.active_recording_job_id_by_platform[_active_key(updated, -1)],
+            updated.recording_jobs[-1].job_id,
+        )
 
-    def test_new_streamer_live_started_replaces_stale_active_session(self) -> None:
+    def test_new_streamer_same_platform_different_room_runs_concurrently(self) -> None:
         lines = [
             _event_line(
                 "live_started",
@@ -298,12 +310,26 @@ class OrchestratorServiceTest(unittest.TestCase):
         )
         self.assertEqual(len(state.sessions), 2)
         self.assertEqual(len(state.recording_jobs), 2)
-        self.assertEqual(state.sessions[0].status, SessionStatus.STOPPED)
-        self.assertEqual(state.sessions[0].stop_reason, "superseded_by_new_live_started")
+        self.assertEqual(state.sessions[0].status, SessionStatus.LIVE)
+        self.assertIsNone(state.sessions[0].stop_reason)
         self.assertEqual(state.sessions[1].status, SessionStatus.LIVE)
         self.assertEqual(state.sessions[1].streamer_name, "streamer-b")
-        self.assertEqual(state.active_session_id_by_platform[state.sessions[1].platform], state.sessions[1].session_id)
-        self.assertEqual(state.active_recording_job_id_by_platform[state.recording_jobs[1].platform], state.recording_jobs[1].job_id)
+        self.assertEqual(
+            state.active_session_id_by_platform[_active_key(state, 0)],
+            state.sessions[0].session_id,
+        )
+        self.assertEqual(
+            state.active_session_id_by_platform[_active_key(state, 1)],
+            state.sessions[1].session_id,
+        )
+        self.assertEqual(
+            state.active_recording_job_id_by_platform[_active_key(state, 0)],
+            state.recording_jobs[0].job_id,
+        )
+        self.assertEqual(
+            state.active_recording_job_id_by_platform[_active_key(state, 1)],
+            state.recording_jobs[1].job_id,
+        )
 
     def test_cursor_supports_incremental_processing(self) -> None:
         self.agent_event_log.write_text(
@@ -418,7 +444,7 @@ class OrchestratorServiceTest(unittest.TestCase):
         self.assertEqual(state.recording_jobs[0].status, RecordingJobStatus.RETRYING)
         self.assertEqual(state.recording_jobs[0].stop_reason, "manual_recovery_resolved")
         self.assertIsNone(state.recording_jobs[0].ended_at)
-        self.assertEqual(state.active_recording_job_id_by_platform[job.platform], job.job_id)
+        self.assertEqual(state.active_recording_job_id_by_platform[_active_key(state)], job.job_id)
 
     def test_ffmpeg_success_event_closes_retrying_job(self) -> None:
         self.agent_event_log.write_text(
@@ -690,7 +716,7 @@ class OrchestratorServiceTest(unittest.TestCase):
         )
         self.assertEqual(state.recording_jobs[0].status, RecordingJobStatus.RETRYING)
         self.assertEqual(state.recording_jobs[0].stop_reason, "retry_after_unknown")
-        self.assertEqual(state.active_recording_job_id_by_platform[job.platform], job.job_id)
+        self.assertEqual(state.active_recording_job_id_by_platform[_active_key(state)], job.job_id)
 
         audit_lines = [
             json.loads(line)
@@ -846,7 +872,7 @@ class OrchestratorServiceTest(unittest.TestCase):
         self.assertEqual(state.recording_jobs[0].status, RecordingJobStatus.RETRYING)
         self.assertEqual(state.recording_jobs[0].failure_category, "ffmpeg_process_error_retryable")
         self.assertTrue(state.recording_jobs[0].recoverable)
-        self.assertEqual(state.active_recording_job_id_by_platform[job.platform], job.job_id)
+        self.assertEqual(state.active_recording_job_id_by_platform[_active_key(state)], job.job_id)
 
         audit_lines = [
             json.loads(line)
@@ -1018,7 +1044,10 @@ class OrchestratorServiceTest(unittest.TestCase):
         self.assertEqual(len(updated.recording_jobs), 2)
         self.assertEqual(updated.recording_jobs[-1].status, RecordingJobStatus.QUEUED)
         self.assertEqual(updated.recording_jobs[-1].source_type.value, "browser_capture")
-        self.assertEqual(updated.active_recording_job_id_by_platform[updated.recording_jobs[-1].platform], updated.recording_jobs[-1].job_id)
+        self.assertEqual(
+            updated.active_recording_job_id_by_platform[_active_key(updated, -1)],
+            updated.recording_jobs[-1].job_id,
+        )
 
     def test_http_4xx_failure_locks_session_to_browser_capture(self) -> None:
         self.agent_event_log.write_text(
@@ -1071,7 +1100,10 @@ class OrchestratorServiceTest(unittest.TestCase):
         self.assertIsNone(updated.sessions[0].stream_url)
         self.assertEqual(updated.recording_jobs[-1].source_type.value, "browser_capture")
         self.assertIsNone(updated.recording_jobs[-1].stream_url)
-        self.assertEqual(updated.active_recording_job_id_by_platform[updated.recording_jobs[-1].platform], updated.recording_jobs[-1].job_id)
+        self.assertEqual(
+            updated.active_recording_job_id_by_platform[_active_key(updated, -1)],
+            updated.recording_jobs[-1].job_id,
+        )
 
     def test_ffmpeg_record_failed_http_503_keeps_job_retrying(self) -> None:
         self.agent_event_log.write_text(
@@ -1110,7 +1142,7 @@ class OrchestratorServiceTest(unittest.TestCase):
         self.assertEqual(state.recording_jobs[0].status, RecordingJobStatus.RETRYING)
         self.assertEqual(state.recording_jobs[0].failure_category, "http_5xx_retryable")
         self.assertTrue(state.recording_jobs[0].recoverable)
-        self.assertEqual(state.active_recording_job_id_by_platform[job.platform], job.job_id)
+        self.assertEqual(state.active_recording_job_id_by_platform[_active_key(state)], job.job_id)
 
 
 if __name__ == "__main__":

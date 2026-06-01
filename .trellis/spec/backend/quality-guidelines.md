@@ -145,7 +145,7 @@ The current MVP backend is a local pipeline with file-backed contracts and typed
 
 **Fix**: Keep transcription optional and degrade to deterministic placeholder SRT when provider/dependency/media checks fail.
 
-**Prevention**: Add tests for unsupported provider, missing ASR dependency path, and SRT output formatting from transcription entries.
+**Prevention**: Add tests for unsupported provider, missing ASR dependency path, and SRT output formatting from transcription entries. For `faster-whisper`, also test failures raised while iterating returned `segments`; model execution is lazy and CUDA/runtime dependency errors may appear after `model.transcribe(...)` returns. In `ARL_WHISPER_DEVICE=auto`, retry the same boundary once on CPU and disable CUDA for the rest of the batch so later boundaries do not repeatedly enter the broken CUDA path. In explicit `cuda` mode, keep the failure visible as a placeholder instead of silently changing device policy.
 
 ### Common Mistake: Adding subtitle failures to `CORE_DECISION_EVENT_TYPES`
 

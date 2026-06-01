@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,8 +20,17 @@ class TranscribeOutcome:
     entries: list[tuple[float, float, str]]
     language: str | None = None
     language_probability: float | None = None
+    device: str | None = None
+    compute_type: str | None = None
+    fallback_device: str | None = None
     reason: str | None = None
     reason_detail: str | None = None
+
+
+@dataclass(frozen=True)
+class WhisperModelConfig:
+    device: str
+    compute_type: str
 
 
 class SubtitleService:
@@ -49,6 +59,11 @@ class SubtitleService:
         self.state_path = settings.storage.temp_dir / "subtitles-state.json"
         self._whisper_model: Any | None = None
         self._whisper_model_initialized = False
+        self._whisper_models: dict[WhisperModelConfig, Any | None] = {}
+        self._whisper_model_initialized_configs: set[WhisperModelConfig] = set()
+        self._current_whisper_model_config: WhisperModelConfig | None = None
+        self._disabled_whisper_configs: set[WhisperModelConfig] = set()
+        self._cuda_disabled_for_batch = False
 
     def run(
         self,
@@ -218,14 +233,80 @@ class SubtitleService:
                 reason_detail=reason_detail,
             )
 
-        model = self._load_whisper_model()
-        if model is None:
-            return TranscribeOutcome(
-                entries=[],
-                reason="model_unavailable",
-                reason_detail="load_whisper_model_returned_none",
-            )
+        last_failure: TranscribeOutcome | None = None
+        attempted_devices: list[str] = []
+        for model_config in self._whisper_model_candidates():
+            if model_config.device == "cuda" and self._cuda_disabled_for_batch:
+                continue
+            if model_config in self._disabled_whisper_configs:
+                continue
+            attempted_devices.append(model_config.device)
+            model = self._load_whisper_model_for_config(model_config)
+            if model is None:
+                last_failure = TranscribeOutcome(
+                    entries=[],
+                    device=model_config.device,
+                    compute_type=model_config.compute_type,
+                    reason="model_unavailable",
+                    reason_detail=(
+                        "load_whisper_model_returned_none "
+                        f"device={model_config.device} compute_type={model_config.compute_type}"
+                    ),
+                )
+                if model_config.device == "cuda":
+                    self._cuda_disabled_for_batch = True
+                    continue
+                return last_failure
 
+            outcome = self._transcribe_with_model(
+                model,
+                model_config,
+                boundary,
+                source_path,
+            )
+            if model_config.device == "cpu" and "cuda" in attempted_devices:
+                outcome = TranscribeOutcome(
+                    entries=outcome.entries,
+                    language=outcome.language,
+                    language_probability=outcome.language_probability,
+                    device=outcome.device,
+                    compute_type=outcome.compute_type,
+                    fallback_device="cpu",
+                    reason=outcome.reason,
+                    reason_detail=outcome.reason_detail,
+                )
+            if outcome.reason is None or outcome.reason == "low_language_confidence":
+                return outcome
+            last_failure = outcome
+            if model_config.device == "cuda" and self._should_retry_cpu_after_cuda_failure():
+                self._cuda_disabled_for_batch = True
+                continue
+            return outcome
+
+        if last_failure is not None:
+            if last_failure.device == "cuda" and self._should_retry_cpu_after_cuda_failure():
+                return TranscribeOutcome(
+                    entries=[],
+                    reason="model_unavailable",
+                    reason_detail=(
+                        "all_whisper_candidates_unavailable "
+                        f"attempted_devices={','.join(attempted_devices) or '-'}"
+                    ),
+                )
+            return last_failure
+        return TranscribeOutcome(
+            entries=[],
+            reason="model_unavailable",
+            reason_detail="no_whisper_model_candidates",
+        )
+
+    def _transcribe_with_model(
+        self,
+        model: Any,
+        model_config: WhisperModelConfig,
+        boundary: MatchBoundary,
+        source_path: Path,
+    ) -> TranscribeOutcome:
         try:
             segments, info = model.transcribe(
                 str(source_path),
@@ -237,13 +318,21 @@ class SubtitleService:
                 (
                     "transcribe failed "
                     f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    f"device={model_config.device} compute_type={model_config.compute_type} "
                     f"reason={exc}"
                 ),
             )
+            self._disable_whisper_model_config(model_config)
             return TranscribeOutcome(
                 entries=[],
+                device=model_config.device,
+                compute_type=model_config.compute_type,
+                fallback_device=self._fallback_device_for(model_config),
                 reason="transcribe_failed",
-                reason_detail=f"transcribe_exc:{exc.__class__.__name__}:{exc}",
+                reason_detail=(
+                    f"transcribe_exc:{exc.__class__.__name__}:{exc} "
+                    f"device={model_config.device} compute_type={model_config.compute_type}"
+                ),
             )
 
         language = getattr(info, "language", None)
@@ -267,39 +356,146 @@ class SubtitleService:
                 entries=[],
                 language=str(language) if language is not None else None,
                 language_probability=language_probability,
+                device=model_config.device,
+                compute_type=model_config.compute_type,
                 reason="low_language_confidence",
                 reason_detail=(
                     f"language={language or 'unknown'} "
-                    f"probability={language_probability} threshold={threshold}"
+                    f"probability={language_probability} threshold={threshold} "
+                    f"device={model_config.device} compute_type={model_config.compute_type}"
                 ),
             )
 
         boundary_start = boundary.started_at_seconds
         boundary_end = boundary.ended_at_seconds
         entries: list[tuple[float, float, str]] = []
-        for segment in segments:
-            raw_text = str(getattr(segment, "text", "")).strip()
-            if not raw_text:
-                continue
-            seg_start = float(getattr(segment, "start", 0.0))
-            seg_end = float(getattr(segment, "end", seg_start))
-            if seg_end <= boundary_start or seg_start >= boundary_end:
-                continue
-            rel_start = max(seg_start, boundary_start) - boundary_start
-            rel_end = min(seg_end, boundary_end) - boundary_start
-            if rel_end <= rel_start:
-                continue
-            entries.append((rel_start, rel_end, raw_text))
+        try:
+            for segment in segments:
+                raw_text = str(getattr(segment, "text", "")).strip()
+                if not raw_text:
+                    continue
+                seg_start = float(getattr(segment, "start", 0.0))
+                seg_end = float(getattr(segment, "end", seg_start))
+                if seg_end <= boundary_start or seg_start >= boundary_end:
+                    continue
+                rel_start = max(seg_start, boundary_start) - boundary_start
+                rel_end = min(seg_end, boundary_end) - boundary_start
+                if rel_end <= rel_start:
+                    continue
+                entries.append((rel_start, rel_end, raw_text))
+        except Exception as exc:
+            log(
+                "subtitles",
+                (
+                    "transcribe failed "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    f"device={model_config.device} compute_type={model_config.compute_type} "
+                    f"reason={exc}"
+                ),
+            )
+            self._disable_whisper_model_config(model_config)
+            return TranscribeOutcome(
+                entries=[],
+                language=str(language) if language is not None else None,
+                language_probability=language_probability,
+                device=model_config.device,
+                compute_type=model_config.compute_type,
+                fallback_device=self._fallback_device_for(model_config),
+                reason="transcribe_failed",
+                reason_detail=(
+                    f"transcribe_exc:{exc.__class__.__name__}:{exc} "
+                    f"device={model_config.device} compute_type={model_config.compute_type}"
+                ),
+            )
+        if not entries:
+            return TranscribeOutcome(
+                entries=[],
+                language=str(language) if language is not None else None,
+                language_probability=language_probability,
+                device=model_config.device,
+                compute_type=model_config.compute_type,
+                reason="no_transcript_segments",
+                reason_detail=(
+                    "no_segments_with_text_inside_boundary "
+                    f"device={model_config.device} compute_type={model_config.compute_type}"
+                ),
+            )
         return TranscribeOutcome(
             entries=entries,
             language=str(language) if language is not None else None,
             language_probability=language_probability,
+            device=model_config.device,
+            compute_type=model_config.compute_type,
         )
 
-    def _load_whisper_model(self) -> Any | None:
-        if self._whisper_model_initialized:
+    def _whisper_model_candidates(self) -> list[WhisperModelConfig]:
+        device = self.settings.subtitles.device
+        compute_type = self.settings.subtitles.compute_type
+        cpu_compute_type = self.settings.subtitles.cpu_compute_type
+        cuda_compute_type = "float16" if compute_type == "auto" else compute_type
+        resolved_cpu_compute_type = cpu_compute_type if compute_type == "auto" else compute_type
+
+        if device == "cpu":
+            return [WhisperModelConfig("cpu", resolved_cpu_compute_type)]
+        if device == "cuda":
+            return [WhisperModelConfig("cuda", cuda_compute_type)]
+        return [
+            WhisperModelConfig("cuda", cuda_compute_type),
+            WhisperModelConfig("cpu", resolved_cpu_compute_type),
+        ]
+
+    def _should_retry_cpu_after_cuda_failure(self) -> bool:
+        return self.settings.subtitles.device == "auto"
+
+    def _fallback_device_for(self, model_config: WhisperModelConfig) -> str | None:
+        if model_config.device == "cuda" and self._should_retry_cpu_after_cuda_failure():
+            return "cpu"
+        return None
+
+    def _disable_whisper_model_config(self, model_config: WhisperModelConfig) -> None:
+        self._disabled_whisper_configs.add(model_config)
+        self._whisper_models[model_config] = None
+        if model_config.device == "cuda":
+            self._cuda_disabled_for_batch = True
+        if self._current_whisper_model_config == model_config:
+            self._whisper_model = None
+
+    def _load_whisper_model_for_config(self, model_config: WhisperModelConfig) -> Any | None:
+        signature = inspect.signature(self._load_whisper_model)
+        accepts_config = any(
+            parameter.kind
+            in {
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.VAR_POSITIONAL,
+            }
+            for parameter in signature.parameters.values()
+        )
+        if not accepts_config:
+            return self._load_whisper_model()
+        return self._load_whisper_model(model_config)
+
+    def _load_whisper_model(
+        self,
+        model_config: WhisperModelConfig | None = None,
+    ) -> Any | None:
+        if model_config is None:
+            model_config = self._current_whisper_model_config or self._whisper_model_candidates()[0]
+        self._current_whisper_model_config = model_config
+
+        if model_config in self._disabled_whisper_configs:
+            return None
+        if (
+            self._whisper_model_initialized
+            and not self._whisper_model_initialized_configs
+            and self._whisper_model is not None
+        ):
+            self._whisper_model_initialized_configs.add(model_config)
+            self._whisper_models[model_config] = self._whisper_model
             return self._whisper_model
-        self._whisper_model_initialized = True
+        if model_config in self._whisper_model_initialized_configs:
+            return self._whisper_models.get(model_config)
+        self._whisper_model_initialized_configs.add(model_config)
 
         cache_dir = self.settings.subtitles.model_cache_dir.resolve()
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -312,11 +508,27 @@ class SubtitleService:
             return None
 
         try:
-            self._whisper_model = WhisperModel(self.settings.subtitles.model_size)
+            model = WhisperModel(
+                self.settings.subtitles.model_size,
+                device=model_config.device,
+                compute_type=model_config.compute_type,
+            )
         except Exception as exc:
-            log("subtitles", f"failed to initialize faster-whisper model reason={exc}")
-            self._whisper_model = None
-        return self._whisper_model
+            log(
+                "subtitles",
+                (
+                    "failed to initialize faster-whisper model "
+                    f"device={model_config.device} compute_type={model_config.compute_type} "
+                    f"reason={exc}"
+                ),
+            )
+            model = None
+            if model_config.device == "cuda":
+                self._cuda_disabled_for_batch = True
+        self._whisper_models[model_config] = model
+        self._whisper_model = model
+        self._whisper_model_initialized = True
+        return model
 
     def _build_srt(self, entries: list[tuple[float, float, str]]) -> str:
         rows: list[str] = []
@@ -364,6 +576,9 @@ class SubtitleService:
                 match_index=boundary.match_index,
                 language=outcome.language,
                 language_probability=outcome.language_probability,
+                device=outcome.device,
+                compute_type=outcome.compute_type,
+                fallback_device=outcome.fallback_device,
                 created_at=datetime.now(timezone.utc),
             )
         else:
@@ -373,6 +588,9 @@ class SubtitleService:
                 match_index=boundary.match_index,
                 language=outcome.language,
                 language_probability=outcome.language_probability,
+                device=outcome.device,
+                compute_type=outcome.compute_type,
+                fallback_device=outcome.fallback_device,
                 reason=outcome.reason or "model_unavailable",
                 reason_detail=outcome.reason_detail,
                 created_at=datetime.now(timezone.utc),

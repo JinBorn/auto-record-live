@@ -10,7 +10,7 @@
 
 ## 架构概览
 
-运行时为单一原生 Windows 主机，三组 PowerShell 长跑进程共享同一 `.venv`：
+运行时为单一原生 Windows 主机，五组 PowerShell 长跑进程共享同一 `.venv`：
 
 - **Windows agent**：按 `ARL_PLATFORMS` 配置串行探测各平台直播间状态（抖音走 Playwright；B 站走 anonymous HTTP API），输出 `data/tmp/windows-agent-events.jsonl`
 - **Orchestrator**：消费 agent 事件，维护会话与录制任务状态，写 `data/tmp/orchestrator-state.json`
@@ -128,6 +128,22 @@ $env:ARL_BILIBILI_STREAMER_NAME = "<streamer>"
 $env:ARL_PLATFORMS = "douyin,bilibili"
 ```
 
+Multi-room monitoring:
+
+```powershell
+# Two Douyin rooms plus two Bilibili rooms. The agent probes them in order.
+$env:ARL_PLATFORMS = "douyin,bilibili"
+$env:ARL_DOUYIN_ROOM_URLS = "https://live.douyin.com/111,https://live.douyin.com/222"
+$env:ARL_DOUYIN_STREAMER_NAMES = "douyin-a,douyin-b"
+$env:ARL_BILIBILI_ROOM_URLS = "https://live.bilibili.com/333,https://live.bilibili.com/444"
+$env:ARL_BILIBILI_STREAMER_NAMES = "bili-a,bili-b"
+```
+
+`ARL_DOUYIN_ROOM_URL` / `ARL_BILIBILI_ROOM_URL` remain valid for one room.
+When plural `*_ROOM_URLS` is set, the orchestrator tracks active sessions by
+`platform:room_url`, so multiple rooms on the same platform can be live and
+recorded independently.
+
 **B 站与抖音的差异**：
 
 - **纯 HTTP API**：调 `api.live.bilibili.com/room/v1/Room/get_info` 取状态、`xlive/web-room/v2/index/getRoomPlayInfo` 取拉流 URL。无 Playwright、无 cookie、无 WBI 签名，单次探测延迟通常 < 1s。
@@ -186,7 +202,7 @@ orchestrator/recorder launcher 不重复跑这个启动门；recorder 路径的 
 
 ### 2) 再切换到常驻运行（推荐）
 
-打开 **三个 PowerShell 窗口**，分别跑三组 launcher：
+打开 **五个 PowerShell 窗口**，分别跑五组 launcher：
 
 **窗口 1（agent 探测循环）：**
 
@@ -206,11 +222,104 @@ orchestrator/recorder launcher 不重复跑这个启动门；recorder 路径的 
 .\scripts\windows-recorder-loop.ps1
 ```
 
-> 说明：三个 launcher 共享同一 `.venv`，自带 venv 自举 + `ensurepip` 兜底 + `.deps-ready` sentinel 跳过重装。第一次启动会自动 `pip install -e ".[subtitles]"`；之后启动秒级返回。
+> 说明：五个 launcher 共享同一 `.venv`，自带 venv 自举 + `ensurepip` 兜底 + `.deps-ready` sentinel 跳过重装。第一次启动会自动 `pip install -e ".[subtitles]"`；之后启动秒级返回。
 > 说明：每个 launcher 默认用脚本所在仓库目录；也可显式传入 `-ProjectPath`（例如 `-ProjectPath "C:\auto-record-live"`）。
 > 说明：`ARL_WIN_INSTALL_MODE` 默认 `if-missing`，仅首次安装依赖；如需每次启动都强制重装，设置 `$env:ARL_WIN_INSTALL_MODE = "always"`。
 > 说明：`windows-agent-loop.ps1` 默认会在启动轮询前跑一次 cookie 健康检查；可用 `$env:ARL_COOKIE_HEALTH_GATE = "fatal"` 改成失败即退出，或设为 `"skip"` 跳过。
 > 说明：`ARL_RECORDER_INTERVAL_SECONDS` 控制 recorder 轮询间隔（默认 5 秒），也可用 `-IntervalSeconds` 参数覆盖。
+
+**Window 4 (postprocess loop):**
+
+```powershell
+.\scripts\windows-postprocess-loop.ps1
+```
+
+The postprocess loop runs `arl postprocess --once` repeatedly. One pass runs
+semantic stage hints, segmenter, subtitles, and exporter in order. Use
+`ARL_POSTPROCESS_INTERVAL_SECONDS` or `-IntervalSeconds` to change the default
+30 second interval.
+
+**Window 5 (recovery loop):**
+
+```powershell
+.\scripts\windows-recovery-loop.ps1
+```
+
+The recovery loop runs `arl recovery` repeatedly so recorder-generated manual
+recovery actions move from `undispatched` to `pending` without operator
+grepping. It does not resolve or fail actions automatically; use the explicit
+`arl recovery --resolve-*` / `--fail-*` commands after the operator action is
+actually done. Use `ARL_RECOVERY_INTERVAL_SECONDS` or `-IntervalSeconds` to
+change the default 30 second interval.
+
+### Optional Windows autostart / supervisor
+
+Autostart is disabled by default. To enable it explicitly, install the logon
+Scheduled Task:
+
+```powershell
+.\scripts\windows-autostart.ps1 -Action Install
+```
+
+The default trigger is `AtLogOn`, which is the recommended local-workstation
+mode because it runs after the user profile and `.env` context are available.
+If you explicitly need machine startup instead, use:
+
+```powershell
+.\scripts\windows-autostart.ps1 -Action Install -TriggerMode AtStartup
+```
+
+Check or remove it:
+
+```powershell
+.\scripts\windows-autostart.ps1 -Action Status
+.\scripts\windows-autostart.ps1 -Action Uninstall
+```
+
+The task starts `scripts/windows-supervisor.ps1` at user logon. The supervisor
+starts the five launchers hidden and restarts any child that exits. Child logs
+are written under `data/tmp/launcher-logs/`.
+
+### Long-run maintenance
+
+Run maintenance manually when JSONL/log files grow too large:
+
+```powershell
+.\.venv\Scripts\python.exe -m arl.cli maintenance --once
+```
+
+It archives already-consumed orchestrator input log prefixes, keeps recent tail
+lines for pure audit logs, and rotates `data/tmp/launcher-logs/*.log`.
+Configuration:
+
+- `ARL_MAINTENANCE_MAX_JSONL_BYTES` default `52428800`
+- `ARL_MAINTENANCE_KEEP_RECENT_LINES` default `5000`
+- `ARL_LAUNCHER_LOG_RETAIN_COUNT` default `20`
+- `ARL_MAINTENANCE_ARCHIVE_DIR` default `data/tmp/archive`
+
+### Runtime soak check
+
+Run repeated unattended health cycles:
+
+```powershell
+.\.venv\Scripts\python.exe -m arl.cli soak --cycles 6 --interval-seconds 300
+```
+
+Each cycle runs agent, orchestrator, recorder, postprocess, and status. For a
+lower-impact check that does not record or postprocess:
+
+```powershell
+.\.venv\Scripts\python.exe -m arl.cli soak --cycles 1 --interval-seconds 0 --skip-recorder --skip-postprocess
+```
+
+The command prints a JSON report with per-stage timing, stage errors, final
+status health, and failed stage count.
+
+`arl status` also includes `summary.action_required_reasons` and
+`summary.degraded_reasons`, so unattended runs show why health is not `ok`
+without grepping audit files. These reason lists use bounded local identifiers
+such as job/session ids and do not print cookies, auth headers, raw stream URLs,
+or transcript text.
 
 ### 3) 录制完成后的后处理顺序（按需手动执行）
 
@@ -225,6 +334,12 @@ orchestrator/recorder launcher 不重复跑这个启动门；recorder 路径的 
 
 # 3. 导出
 .\.venv\Scripts\python.exe -m arl.cli exporter
+
+# 或：一键跑一轮后处理（语义提示 -> 分段 -> 字幕 -> 导出）
+.\.venv\Scripts\python.exe -m arl.cli postprocess --once
+
+# 查看本地管线健康摘要
+.\.venv\Scripts\python.exe -m arl.cli status
 ```
 
 ### 4) 故障恢复与排查命令
@@ -232,8 +347,14 @@ orchestrator/recorder launcher 不重复跑这个启动门；recorder 路径的 
 ```powershell
 .\.venv\Scripts\python.exe -m arl.cli recovery
 .\.venv\Scripts\python.exe -m arl.cli recovery --list-pending
+.\.venv\Scripts\python.exe -m arl.cli recovery --pending-report
 .\.venv\Scripts\python.exe -m arl.cli recovery --summary
 ```
+
+Use `--pending-report` for unattended recovery handoff. It groups pending
+actions by `job_id`, includes action/failure counts, and prints PowerShell
+commands for resolving or failing each job after the operator has completed the
+manual step.
 
 #### ffmpeg 失败排查（recorder）
 
@@ -252,12 +373,19 @@ orchestrator/recorder launcher 不重复跑这个启动门；recorder 路径的 
 .\.venv\Scripts\python.exe -m pip install -e ".[subtitles]"
 ```
 
-三个 Windows launcher 会自动使用这个 install spec。模型缓存默认放在 `data/tmp/whisper-models/`，可用 `ARL_WHISPER_MODEL_CACHE_DIR` 覆盖，避免下载到 OneDrive 或系统用户目录。`ARL_WHISPER_MIN_LANGUAGE_PROBABILITY`（默认 `0.5`）控制语言识别置信度门；低于阈值时输出占位 SRT，避免错误语言幻觉进入后续流程。
+Windows launcher 会自动使用这个 install spec。模型缓存默认放在 `data/tmp/whisper-models/`，可用 `ARL_WHISPER_MODEL_CACHE_DIR` 覆盖，避免下载到 OneDrive 或系统用户目录。`ARL_WHISPER_MIN_LANGUAGE_PROBABILITY`（默认 `0.5`）控制语言识别置信度门；低于阈值时输出占位 SRT，避免错误语言幻觉进入后续流程。
+
+ASR device policy:
+
+- `ARL_WHISPER_DEVICE=auto` (default): try CUDA first, then retry CPU once if CUDA initialization or lazy segment iteration fails.
+- `ARL_WHISPER_DEVICE=cuda`: CUDA only; failures stay visible as placeholder subtitles.
+- `ARL_WHISPER_DEVICE=cpu`: CPU only.
+- `ARL_WHISPER_COMPUTE_TYPE=auto` resolves to `float16` on CUDA and `ARL_WHISPER_CPU_COMPUTE_TYPE` on CPU. CPU default is `int8`.
 
 字幕阶段会写 `data/tmp/subtitles-events.jsonl`：
 
-1. **成功**：`subtitle_transcribe_succeeded`，带 `language` 和 `language_probability`。
-2. **回退**：`subtitle_fallback_placeholder`，带 `reason` / `reason_detail`。常见 `reason`：`model_unavailable`、`missing_recording`、`unsupported_suffix`、`transcribe_failed`、`low_language_confidence`。
+1. **成功**：`subtitle_transcribe_succeeded`，带 `language`、`language_probability`、`device` 和 `compute_type`。
+2. **回退**：`subtitle_fallback_placeholder`，带 `reason` / `reason_detail` / `device` / `compute_type`。常见 `reason`：`model_unavailable`、`missing_recording`、`unsupported_suffix`、`transcribe_failed`、`low_language_confidence`、`no_transcript_segments`。
 
 排查命令：
 

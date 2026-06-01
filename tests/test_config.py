@@ -108,6 +108,42 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertIsInstance(settings.platforms[0], BilibiliSettings)
         self.assertIsInstance(settings.platforms[1], DouyinSettings)
 
+    def test_arl_platforms_expands_multiple_rooms_per_platform(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_PLATFORMS"] = "douyin,bilibili"
+            os.environ["ARL_DOUYIN_ROOM_URLS"] = (
+                "https://live.douyin.com/111, https://live.douyin.com/222"
+            )
+            os.environ["ARL_DOUYIN_STREAMER_NAMES"] = "douyin-a,douyin-b"
+            os.environ["ARL_BILIBILI_ROOM_URLS"] = (
+                "https://live.bilibili.com/333, https://live.bilibili.com/444"
+            )
+            os.environ["ARL_BILIBILI_STREAMER_NAMES"] = "bili-a,bili-b"
+            settings = load_settings()
+
+        self.assertEqual(len(settings.platforms), 4)
+        self.assertEqual(
+            [(platform.type, platform.room_url, platform.streamer_name) for platform in settings.platforms],
+            [
+                ("douyin", "https://live.douyin.com/111", "douyin-a"),
+                ("douyin", "https://live.douyin.com/222", "douyin-b"),
+                ("bilibili", "https://live.bilibili.com/333", "bili-a"),
+                ("bilibili", "https://live.bilibili.com/444", "bili-b"),
+            ],
+        )
+
+    def test_douyin_room_urls_expand_when_platforms_omitted(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_DOUYIN_ROOM_URLS"] = (
+                "https://live.douyin.com/111,https://live.douyin.com/222"
+            )
+            settings = load_settings()
+
+        self.assertEqual(
+            [platform.room_url for platform in settings.platforms],
+            ["https://live.douyin.com/111", "https://live.douyin.com/222"],
+        )
+
     def test_quality_gate_envs_load_into_platform_settings(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             os.environ["ARL_PLATFORMS"] = "douyin,bilibili"
@@ -151,10 +187,26 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(settings.export.backoff_max_seconds, 6.0)
         self.assertEqual(settings.export.batch_fallback_budget, 2)
 
+    def test_maintenance_envs_load(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_MAINTENANCE_MAX_JSONL_BYTES"] = "2048"
+            os.environ["ARL_MAINTENANCE_KEEP_RECENT_LINES"] = "123"
+            os.environ["ARL_LAUNCHER_LOG_RETAIN_COUNT"] = "7"
+            os.environ["ARL_MAINTENANCE_ARCHIVE_DIR"] = "data/tmp/custom-archive"
+            settings = load_settings()
+
+        self.assertEqual(settings.maintenance.max_jsonl_bytes, 2048)
+        self.assertEqual(settings.maintenance.keep_recent_lines, 123)
+        self.assertEqual(settings.maintenance.launcher_log_retain_count, 7)
+        self.assertEqual(settings.maintenance.archive_dir, Path("data/tmp/custom-archive"))
+
     def test_subtitle_model_cache_env_loads(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             os.environ["ARL_WHISPER_MODEL_CACHE_DIR"] = "data/tmp/custom-whisper-cache"
             os.environ["ARL_WHISPER_MIN_LANGUAGE_PROBABILITY"] = "0.7"
+            os.environ["ARL_WHISPER_DEVICE"] = "CPU"
+            os.environ["ARL_WHISPER_COMPUTE_TYPE"] = "AUTO"
+            os.environ["ARL_WHISPER_CPU_COMPUTE_TYPE"] = "INT8"
             settings = load_settings()
 
         self.assertEqual(
@@ -162,6 +214,9 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             Path("data/tmp/custom-whisper-cache"),
         )
         self.assertEqual(settings.subtitles.min_language_probability, 0.7)
+        self.assertEqual(settings.subtitles.device, "cpu")
+        self.assertEqual(settings.subtitles.compute_type, "auto")
+        self.assertEqual(settings.subtitles.cpu_compute_type, "int8")
 
 
 class SettingsValidatorTests(unittest.TestCase):

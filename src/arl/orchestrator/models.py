@@ -116,10 +116,8 @@ class OrchestratorStateFile(BaseModel):
     recorder_last_event_at_by_job_id: dict[str, datetime] = Field(default_factory=dict)
     unknown_failure_event_times_by_job_id: dict[str, list[datetime]] = Field(default_factory=dict)
     unknown_failure_last_escalated_at_by_job_id: dict[str, datetime] = Field(default_factory=dict)
-    # Per-platform active id maps. Multi-platform deployments (e.g. ARL_PLATFORMS=
-    # douyin,bilibili) need each platform to track its own active session/job
-    # independently, otherwise a live_started on one platform would supersede the
-    # other's already-live session.
+    # Active id maps keyed by "<platform>:<room_url>". Multi-room deployments
+    # need same-platform rooms to coexist without superseding each other.
     active_session_id_by_platform: dict[str, str] = Field(default_factory=dict)
     active_recording_job_id_by_platform: dict[str, str] = Field(default_factory=dict)
     sessions: list[SessionRecord] = Field(default_factory=list)

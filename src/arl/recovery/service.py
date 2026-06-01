@@ -143,6 +143,65 @@ class RecoveryService:
             )
         return items
 
+    def pending_report(self) -> dict[str, Any]:
+        pending_actions = self.list_pending_actions()
+        jobs: dict[str, dict[str, Any]] = {}
+        for action in pending_actions:
+            job_id = str(action["job_id"])
+            job = jobs.setdefault(
+                job_id,
+                {
+                    "job_id": job_id,
+                    "session_ids": [],
+                    "action_count": 0,
+                    "action_types": [],
+                    "failure_categories": [],
+                    "messages": [],
+                    "action_keys": [],
+                    "commands": {
+                        "resolve_job": self._cli_command("--resolve-job-id", job_id),
+                        "fail_job": self._cli_command("--fail-job-id", job_id),
+                    },
+                },
+            )
+            job["action_count"] += 1
+            self._append_unique(job["session_ids"], action["session_id"])
+            self._append_unique(job["action_types"], action["action_type"])
+            self._append_unique(job["failure_categories"], action.get("failure_category") or "unknown")
+            self._append_unique(job["messages"], action["message"])
+            self._append_unique(job["action_keys"], action["action_key"])
+
+        pending_job_ids = sorted(jobs)
+        return {
+            "summary": {
+                "pending_actions": len(pending_actions),
+                "pending_jobs": len(pending_job_ids),
+                "by_action_type": self._count_values(
+                    str(action["action_type"]) for action in pending_actions
+                ),
+                "by_failure_category": self._count_values(
+                    str(action.get("failure_category") or "unknown")
+                    for action in pending_actions
+                ),
+            },
+            "jobs": [jobs[job_id] for job_id in pending_job_ids],
+            "actions": pending_actions,
+            "commands": {
+                "resolve_all_pending_jobs": self._cli_command(
+                    "--resolve-job-ids",
+                    ",".join(pending_job_ids),
+                )
+                if pending_job_ids
+                else None,
+                "fail_all_pending_jobs": self._cli_command(
+                    "--fail-job-ids",
+                    ",".join(pending_job_ids),
+                )
+                if pending_job_ids
+                else None,
+            },
+        }
+
     def summary(self) -> dict[str, Any]:
         actions = load_models(self.actions_path, RecorderRecoveryAction)
         state = self._load_state()
@@ -726,3 +785,22 @@ class RecoveryService:
             for model in models:
                 handle.write(json.dumps(model.model_dump(mode="json"), ensure_ascii=False))
                 handle.write("\n")
+
+    def _append_unique(self, items: list[Any], value: Any) -> None:
+        if value not in items:
+            items.append(value)
+
+    def _count_values(self, values) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for value in values:
+            counts[value] = counts.get(value, 0) + 1
+        return counts
+
+    def _cli_command(self, flag: str, value: str) -> str:
+        return (
+            ".\\.venv\\Scripts\\python.exe -m arl.cli recovery "
+            f"{flag} {self._quote_powershell_arg(value)}"
+        )
+
+    def _quote_powershell_arg(self, value: str) -> str:
+        return '"' + value.replace('"', '`"') + '"'

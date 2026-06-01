@@ -136,6 +136,9 @@ class SubtitleSettings(BaseModel):
     language: str = "zh"
     model_cache_dir: Path = Path("data/tmp/whisper-models")
     min_language_probability: float = 0.5
+    device: str = "auto"
+    compute_type: str = "auto"
+    cpu_compute_type: str = "int8"
 
 
 class SegmenterSettings(BaseModel):
@@ -154,6 +157,13 @@ class ExportSettings(BaseModel):
     batch_fallback_budget: int = 3
 
 
+class MaintenanceSettings(BaseModel):
+    max_jsonl_bytes: int = 50 * 1024 * 1024
+    keep_recent_lines: int = 5000
+    launcher_log_retain_count: int = 20
+    archive_dir: Path = Path("data/tmp/archive")
+
+
 class Settings(BaseModel):
     douyin: DouyinSettings = Field(default_factory=DouyinSettings)
     windows_agent: WindowsAgentSettings = Field(default_factory=WindowsAgentSettings)
@@ -164,6 +174,7 @@ class Settings(BaseModel):
     segmenter: SegmenterSettings = Field(default_factory=SegmenterSettings)
     subtitles: SubtitleSettings = Field(default_factory=SubtitleSettings)
     export: ExportSettings = Field(default_factory=ExportSettings)
+    maintenance: MaintenanceSettings = Field(default_factory=MaintenanceSettings)
 
     @model_validator(mode="after")
     def _default_platforms_from_douyin(self) -> "Settings":
@@ -184,6 +195,19 @@ def _env_bool(key: str, default: bool) -> bool:
     if raw is None or raw.strip() == "":
         return default
     return raw != "0"
+
+
+def _env_csv(key: str) -> list[str]:
+    raw = os.getenv(key, "").strip()
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _pick_indexed(values: list[str], index: int, default: str = "") -> str:
+    if index < len(values):
+        return values[index]
+    return default
 
 
 def _load_douyin_settings() -> DouyinSettings:
@@ -214,6 +238,30 @@ def _load_douyin_settings() -> DouyinSettings:
     )
 
 
+def _load_douyin_settings_list() -> list[DouyinSettings]:
+    room_urls = _env_csv("ARL_DOUYIN_ROOM_URLS")
+    if not room_urls:
+        return [_load_douyin_settings()]
+
+    streamer_names = _env_csv("ARL_DOUYIN_STREAMER_NAMES")
+    legacy = _load_douyin_settings()
+    settings: list[DouyinSettings] = []
+    for index, room_url in enumerate(room_urls):
+        settings.append(
+            legacy.model_copy(
+                update={
+                    "room_url": room_url,
+                    "streamer_name": _pick_indexed(
+                        streamer_names,
+                        index,
+                        legacy.streamer_name,
+                    ),
+                }
+            )
+        )
+    return settings
+
+
 def _load_bilibili_settings() -> BilibiliSettings:
     return BilibiliSettings(
         room_url=os.getenv("ARL_BILIBILI_ROOM_URL", ""),
@@ -227,9 +275,38 @@ def _load_bilibili_settings() -> BilibiliSettings:
     )
 
 
+def _load_bilibili_settings_list() -> list[BilibiliSettings]:
+    room_urls = _env_csv("ARL_BILIBILI_ROOM_URLS")
+    if not room_urls:
+        return [_load_bilibili_settings()]
+
+    streamer_names = _env_csv("ARL_BILIBILI_STREAMER_NAMES")
+    legacy = _load_bilibili_settings()
+    settings: list[BilibiliSettings] = []
+    for index, room_url in enumerate(room_urls):
+        settings.append(
+            legacy.model_copy(
+                update={
+                    "room_url": room_url,
+                    "streamer_name": _pick_indexed(
+                        streamer_names,
+                        index,
+                        legacy.streamer_name,
+                    ),
+                }
+            )
+        )
+    return settings
+
+
 _PLATFORM_LOADERS: dict[str, Callable[[], PlatformSettings]] = {
     "douyin": _load_douyin_settings,
     "bilibili": _load_bilibili_settings,
+}
+
+_PLATFORM_LIST_LOADERS: dict[str, Callable[[], list[PlatformSettings]]] = {
+    "douyin": _load_douyin_settings_list,
+    "bilibili": _load_bilibili_settings_list,
 }
 
 
@@ -239,6 +316,8 @@ def _load_platforms(default_douyin: DouyinSettings) -> list[PlatformSettings]:
         # Backward compat: a deployment that never set ARL_PLATFORMS keeps
         # running the single-platform douyin loop derived from the legacy
         # ARL_DOUYIN_* env vars.
+        if _env_csv("ARL_DOUYIN_ROOM_URLS"):
+            return _load_douyin_settings_list()
         return [default_douyin]
 
     platforms: list[PlatformSettings] = []
@@ -248,16 +327,16 @@ def _load_platforms(default_douyin: DouyinSettings) -> list[PlatformSettings]:
         if not platform_type or platform_type in seen:
             continue
         seen.add(platform_type)
-        loader = _PLATFORM_LOADERS.get(platform_type)
+        loader = _PLATFORM_LIST_LOADERS.get(platform_type)
         if loader is None:
             raise ValueError(
                 f"unknown ARL_PLATFORMS entry: {platform_type!r}; "
                 f"registered={sorted(_PLATFORM_LOADERS)}"
             )
-        if platform_type == "douyin":
+        if platform_type == "douyin" and not _env_csv("ARL_DOUYIN_ROOM_URLS"):
             platforms.append(default_douyin)
         else:
-            platforms.append(loader())
+            platforms.extend(loader())
     return platforms
 
 
@@ -343,6 +422,14 @@ def load_settings() -> Settings:
                     float(os.getenv("ARL_WHISPER_MIN_LANGUAGE_PROBABILITY", "0.5")),
                 ),
             ),
+            device=os.getenv("ARL_WHISPER_DEVICE", "auto").strip().lower() or "auto",
+            compute_type=(
+                os.getenv("ARL_WHISPER_COMPUTE_TYPE", "auto").strip().lower() or "auto"
+            ),
+            cpu_compute_type=(
+                os.getenv("ARL_WHISPER_CPU_COMPUTE_TYPE", "int8").strip().lower()
+                or "int8"
+            ),
         ),
         segmenter=SegmenterSettings(stage_keywords_path=stage_keywords_path),
         recording=RecordingSettings(
@@ -416,6 +503,23 @@ def load_settings() -> Settings:
             batch_fallback_budget=max(
                 1,
                 int(os.getenv("ARL_EXPORTER_BATCH_FALLBACK_BUDGET", "3")),
+            ),
+        ),
+        maintenance=MaintenanceSettings(
+            max_jsonl_bytes=max(
+                1024,
+                _env_int("ARL_MAINTENANCE_MAX_JSONL_BYTES", 50 * 1024 * 1024),
+            ),
+            keep_recent_lines=max(
+                100,
+                _env_int("ARL_MAINTENANCE_KEEP_RECENT_LINES", 5000),
+            ),
+            launcher_log_retain_count=max(
+                0,
+                _env_int("ARL_LAUNCHER_LOG_RETAIN_COUNT", 20),
+            ),
+            archive_dir=Path(
+                os.getenv("ARL_MAINTENANCE_ARCHIVE_DIR", "data/tmp/archive")
             ),
         ),
     )
