@@ -2300,23 +2300,24 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
 
         payloads = self._audit_payloads()
         failed_rows = [item for item in payloads if item["event_type"] == "ffmpeg_export_failed"]
-        # ffmpeg_max_retries=1 → attempts=2 → two failed rows.
-        self.assertEqual(len(failed_rows), 2)
-        for idx, row in enumerate(failed_rows, start=1):
-            self.assertEqual(row["session_id"], "session-e")
-            self.assertEqual(row["match_index"], 1)
-            self.assertEqual(row["attempt"], idx)
-            self.assertEqual(row["max_attempts"], 2)
-            self.assertEqual(row["decision"], "attempt_failed")
-            self.assertEqual(row["failure_category"], "http_4xx_non_retryable")
-            self.assertFalse(row["is_retryable"])
-            self.assertEqual(row["reason_code"], "http_4xx")
-            self.assertIn("404", row["reason_detail"])
-            self.assertIsNotNone(row["stderr_excerpt"])
-            self.assertIn("404", row["stderr_excerpt"])
-            self.assertIsNotNone(row["stderr_log_path"])
-            self.assertTrue(Path(row["stderr_log_path"]).exists())
-            self.assertTrue(row["stderr_log_path"].endswith(f"session-e_match01-{idx}.log"))
+        # Non-retryable (http_4xx) short-circuits the attempt loop; see
+        # 05-13-exporter-ffmpeg-failure-alignment.
+        self.assertEqual(len(failed_rows), 1)
+        row = failed_rows[0]
+        self.assertEqual(row["session_id"], "session-e")
+        self.assertEqual(row["match_index"], 1)
+        self.assertEqual(row["attempt"], 1)
+        self.assertEqual(row["max_attempts"], 2)
+        self.assertEqual(row["decision"], "attempt_failed")
+        self.assertEqual(row["failure_category"], "http_4xx_non_retryable")
+        self.assertFalse(row["is_retryable"])
+        self.assertEqual(row["reason_code"], "http_4xx")
+        self.assertIn("404", row["reason_detail"])
+        self.assertIsNotNone(row["stderr_excerpt"])
+        self.assertIn("404", row["stderr_excerpt"])
+        self.assertIsNotNone(row["stderr_log_path"])
+        self.assertTrue(Path(row["stderr_log_path"]).exists())
+        self.assertTrue(row["stderr_log_path"].endswith("session-e_match01-1.log"))
 
         placeholder_rows = [
             item
@@ -2334,6 +2335,38 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         exports_path = self.temp_root / "export-assets.jsonl"
         payload = json.loads(exports_path.read_text(encoding="utf-8").splitlines()[0])
         self.assertTrue(payload["path"].endswith("_match01.txt"))
+
+    def test_non_retryable_short_circuits_with_max_retries_five(self) -> None:
+        new_settings = self.settings.model_copy(deep=True)
+        new_settings.export.ffmpeg_max_retries = 5
+        self._seed_export_inputs()
+        error = subprocess.CalledProcessError(
+            1,
+            ["ffmpeg"],
+            stderr="Server returned 404 Not Found",
+        )
+        with patch("arl.exporter.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=error,
+        ) as mocked_run:
+            ExporterService(new_settings).run()
+
+        self.assertEqual(mocked_run.call_count, 1)
+        payloads = self._audit_payloads()
+        failed_rows = [
+            item for item in payloads if item["event_type"] == "ffmpeg_export_failed"
+        ]
+        placeholder_rows = [
+            item
+            for item in payloads
+            if item["event_type"] == "ffmpeg_export_fallback_placeholder"
+        ]
+        self.assertEqual(len(failed_rows), 1)
+        self.assertEqual(len(placeholder_rows), 1)
+        self.assertEqual(failed_rows[0]["attempt"], 1)
+        self.assertEqual(failed_rows[0]["max_attempts"], 6)
+        self.assertFalse(failed_rows[0]["is_retryable"])
+        self.assertEqual(placeholder_rows[0]["reason_code"], "http_4xx")
 
     def test_success_emits_succeeded_audit_without_stderr_fields(self) -> None:
         self._seed_export_inputs()

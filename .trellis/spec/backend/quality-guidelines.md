@@ -177,6 +177,16 @@ The current MVP backend is a local pipeline with file-backed contracts and typed
 
 **Prevention**: Add tests asserting non-recoverable reasons (for example HTTP 4xx) stop in-run attempts early while still producing deterministic fallback artifacts.
 
+### Common Mistake: Retrying exporter ffmpeg on non-retryable failures
+
+**Symptom**: Exporter runs ffmpeg multiple times against the same local recording/subtitle inputs after a clear non-retryable error such as HTTP 4xx-style input rejection, producing duplicate `ffmpeg_export_failed` rows before falling back to the same placeholder.
+
+**Cause**: Exporter historically treated `ARL_EXPORT_FFMPEG_MAX_RETRIES` as a flat loop and ignored `classification.is_retryable`.
+
+**Fix**: After emitting `ffmpeg_export_failed`, break the exporter attempt loop immediately when `outcome.classification.is_retryable is False`; then emit the normal `ffmpeg_export_fallback_placeholder`.
+
+**Prevention**: Keep exporter regression tests with high `ffmpeg_max_retries` asserting one failed row plus one placeholder for non-retryable failures.
+
 ### Common Mistake: Burning the in-run retry budget on transient stream-URL failures
 
 **Symptom**: Recorder runs ffmpeg back-to-back against the same stale (token-expired) `stream_url`, producing duplicate 5xx/timeout/process_error failures before the orchestrator can refresh the URL. Audit log balloons with redundant `ffmpeg_record_failed` rows and recovery is delayed by `ffmpeg_max_retries * timeout` per run.

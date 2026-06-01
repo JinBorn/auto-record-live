@@ -201,6 +201,8 @@ class ExporterService:
                 stderr_excerpt=outcome.stderr_excerpt,
                 stderr_log_path=outcome.stderr_log_path,
             )
+            if not fd.is_retryable:
+                break
 
         fd = last_outcome.classification
         log(
