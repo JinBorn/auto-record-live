@@ -80,6 +80,29 @@ All launcher script output MUST conform to
 - No multi-line dumps. No secret URLs / cookies / tokens (see "What NOT to
   Log" in logging-guidelines).
 
+### Windows agent cookie-health gate
+
+`scripts/windows-agent-loop.ps1` MUST run one `arl cookie-health` check after
+venv/dependency bootstrap and after applying launcher `RoomUrl` /
+`StreamerName` arguments to env, but before entering the polling loop.
+
+The gate is controlled by `ARL_COOKIE_HEALTH_GATE`:
+
+| Value | Behavior |
+|---|---|
+| unset / `warning` | Run the gate; on non-zero exit, emit one `Write-Warning` and continue polling. |
+| `fatal` | Run the gate; on non-zero exit, throw before the first polling iteration. |
+| `skip` | Do not invoke `arl cookie-health`; proceed directly to polling. |
+
+The native command invocation MUST capture `$LASTEXITCODE` explicitly and be
+wrapped in `try`/`catch`, matching the native-exe stderr behavior documented
+below. Do not log cookie values or auth headers from the launcher.
+
+This gate intentionally applies only to `windows-agent-loop.ps1`. The
+orchestrator and recorder launchers do not directly probe platform cookies;
+recorder-side cookie suspicion is surfaced through the
+`cookie_expired_for_<platform>` audit path.
+
 ### `.venv` directory never goes in git
 
 `.venv/` is listed in `.gitignore`. Any new venv variant added in the

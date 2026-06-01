@@ -151,6 +151,16 @@ Cookie 失效时不再静默降级到低画质，而是输出可查询信号：
 
   对每个已配置平台跑一次 `detect()` + `classify_cookie_state()`，逐行打印 `platform=... status=fresh|expired|not_configured|error detail=...`，全部 fresh/未配置时退出码 0；任一已配置 cookie 失效则退出码 1 并附 `hint=Refresh ...` 行。可串到 launcher 启动检查或定期巡检脚本里。
 
+### Launcher 启动门
+
+`windows-agent-loop.ps1` 启动时会在 venv/依赖准备完成后、轮询循环开始前跑一次 `arl cookie-health`：
+
+- 默认模式（未设置 `ARL_COOKIE_HEALTH_GATE` 或设为 `warning`）：cookie 过期时打印 `Write-Warning` 提醒，然后继续进入轮询。
+- `$env:ARL_COOKIE_HEALTH_GATE = "fatal"`：cookie 过期时 launcher 直接退出，适合必须保证 1080P+ 质量的部署。
+- `$env:ARL_COOKIE_HEALTH_GATE = "skip"`：完全跳过启动检查，适合不配置抖音 cookie / B 站 SESSDATA 的匿名部署。
+
+orchestrator/recorder launcher 不重复跑这个启动门；recorder 路径的 `cookie_expired_for_<platform>` 审计会在录制失败场景自然出现。
+
 抓取 cookie 的方式见各平台 dev tools 抓 Network → 复制 `Cookie` request header（抖音）/ Application → Cookies → SESSDATA（B 站）。
 
 ## 录制命令执行流程（MVP）
@@ -193,6 +203,7 @@ Cookie 失效时不再静默降级到低画质，而是输出可查询信号：
 > 说明：三个 launcher 共享同一 `.venv`，自带 venv 自举 + `ensurepip` 兜底 + `.deps-ready` sentinel 跳过重装。第一次启动会自动 `pip install -e .`；之后启动秒级返回。
 > 说明：每个 launcher 默认用脚本所在仓库目录；也可显式传入 `-ProjectPath`（例如 `-ProjectPath "C:\auto-record-live"`）。
 > 说明：`ARL_WIN_INSTALL_MODE` 默认 `if-missing`，仅首次安装依赖；如需每次启动都强制重装，设置 `$env:ARL_WIN_INSTALL_MODE = "always"`。
+> 说明：`windows-agent-loop.ps1` 默认会在启动轮询前跑一次 cookie 健康检查；可用 `$env:ARL_COOKIE_HEALTH_GATE = "fatal"` 改成失败即退出，或设为 `"skip"` 跳过。
 > 说明：`ARL_RECORDER_INTERVAL_SECONDS` 控制 recorder 轮询间隔（默认 5 秒），也可用 `-IntervalSeconds` 参数覆盖。
 
 ### 3) 录制完成后的后处理顺序（按需手动执行）

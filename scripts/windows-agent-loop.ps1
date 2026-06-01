@@ -86,6 +86,24 @@ if (!(Test-Path "node_modules")) {
 $env:ARL_DOUYIN_ROOM_URL = $RoomUrl
 $env:ARL_STREAMER_NAME = $StreamerName
 
+$cookieGate = if ($env:ARL_COOKIE_HEALTH_GATE) { $env:ARL_COOKIE_HEALTH_GATE } else { "warning" }
+if ($cookieGate -ne "skip") {
+  Write-Host "[ARL] running cookie-health gate (mode=$cookieGate)"
+  $cookieExit = 0
+  try {
+    & $venvPython -m arl.cli cookie-health
+    $cookieExit = $LASTEXITCODE
+  } catch {
+    $cookieExit = if ($LASTEXITCODE -ne 0) { $LASTEXITCODE } else { 1 }
+  }
+  if ($cookieExit -ne 0) {
+    if ($cookieGate -eq "fatal") {
+      throw "[ARL] cookie expired (exit=$cookieExit). Refresh ARL_DOUYIN_COOKIE / ARL_BILIBILI_SESSDATA, or set ARL_COOKIE_HEALTH_GATE=warning to continue anyway."
+    }
+    Write-Warning "[ARL] cookie expired (exit=$cookieExit) - launcher continuing; recordings may be degraded. Refresh cookie env vars or set ARL_COOKIE_HEALTH_GATE=fatal to abort on expired."
+  }
+}
+
 Write-Host "[ARL] windows-agent loop started"
 Write-Host "[ARL] project: $ProjectPath"
 Write-Host "[ARL] venv: $venvPython"
