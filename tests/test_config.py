@@ -154,12 +154,14 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
     def test_subtitle_model_cache_env_loads(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             os.environ["ARL_WHISPER_MODEL_CACHE_DIR"] = "data/tmp/custom-whisper-cache"
+            os.environ["ARL_WHISPER_MIN_LANGUAGE_PROBABILITY"] = "0.7"
             settings = load_settings()
 
         self.assertEqual(
             settings.subtitles.model_cache_dir,
             Path("data/tmp/custom-whisper-cache"),
         )
+        self.assertEqual(settings.subtitles.min_language_probability, 0.7)
 
 
 class SettingsValidatorTests(unittest.TestCase):

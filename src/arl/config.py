@@ -135,6 +135,7 @@ class SubtitleSettings(BaseModel):
     model_size: str = "small"
     language: str = "zh"
     model_cache_dir: Path = Path("data/tmp/whisper-models")
+    min_language_probability: float = 0.5
 
 
 class SegmenterSettings(BaseModel):
@@ -334,6 +335,13 @@ def load_settings() -> Settings:
                     "ARL_WHISPER_MODEL_CACHE_DIR",
                     "data/tmp/whisper-models",
                 )
+            ),
+            min_language_probability=min(
+                1.0,
+                max(
+                    0.0,
+                    float(os.getenv("ARL_WHISPER_MIN_LANGUAGE_PROBABILITY", "0.5")),
+                ),
             ),
         ),
         segmenter=SegmenterSettings(stage_keywords_path=stage_keywords_path),

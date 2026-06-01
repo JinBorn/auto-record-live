@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import os
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,15 @@ from arl.shared.contracts import MatchBoundary, RecordingAsset, SubtitleAsset
 from arl.shared.jsonl_store import append_model, load_models
 from arl.shared.logging import log
 from arl.subtitles.models import SubtitleStateFile
+
+
+@dataclass(frozen=True)
+class TranscribeOutcome:
+    entries: list[tuple[float, float, str]]
+    language: str | None = None
+    language_probability: float | None = None
+    reason: str | None = None
+    reason_detail: str | None = None
 
 
 class SubtitleService:
@@ -155,9 +165,9 @@ class SubtitleService:
         output_dir = self.settings.storage.processed_dir / boundary.session_id
         output_dir.mkdir(parents=True, exist_ok=True)
         subtitle_path = output_dir / f"match-{boundary.match_index:02d}.srt"
-        entries = self._transcribe_boundary(boundary, recording_path)
-        if entries:
-            subtitle_path.write_text(self._build_srt(entries), encoding="utf-8")
+        outcome = self._transcribe_boundary(boundary, recording_path)
+        if outcome.entries:
+            subtitle_path.write_text(self._build_srt(outcome.entries), encoding="utf-8")
         else:
             subtitle_path.write_text(self._placeholder_srt(), encoding="utf-8")
         return subtitle_path
@@ -166,9 +176,13 @@ class SubtitleService:
         self,
         boundary: MatchBoundary,
         recording_path: str | None,
-    ) -> list[tuple[float, float, str]]:
+    ) -> TranscribeOutcome:
         if self.settings.subtitles.provider != "faster-whisper":
-            return []
+            return TranscribeOutcome(
+                entries=[],
+                reason="model_unavailable",
+                reason_detail=f"unsupported_provider:{self.settings.subtitles.provider}",
+            )
         if recording_path is None:
             log(
                 "subtitles",
@@ -178,26 +192,39 @@ class SubtitleService:
                     "reason=missing_recording_asset"
                 ),
             )
-            return []
+            return TranscribeOutcome(
+                entries=[],
+                reason="missing_recording",
+                reason_detail=f"no_recording_asset_for_session={boundary.session_id}",
+            )
 
         source_path = Path(recording_path)
         if source_path.suffix.lower() not in self._TRANSCRIBE_SUFFIXES:
+            reason_detail = f"unsupported_suffix:{source_path.suffix.lower()}"
             log(
                 "subtitles",
                 (
                     "fallback to placeholder "
                     f"session_id={boundary.session_id} match_index={boundary.match_index} "
-                    f"reason=unsupported_suffix:{source_path.suffix.lower()}"
+                    f"reason={reason_detail}"
                 ),
             )
-            return []
+            return TranscribeOutcome(
+                entries=[],
+                reason="unsupported_suffix",
+                reason_detail=reason_detail,
+            )
 
         model = self._load_whisper_model()
         if model is None:
-            return []
+            return TranscribeOutcome(
+                entries=[],
+                reason="model_unavailable",
+                reason_detail="load_whisper_model_returned_none",
+            )
 
         try:
-            segments, _ = model.transcribe(
+            segments, info = model.transcribe(
                 str(source_path),
                 language=self.settings.subtitles.language or None,
             )
@@ -210,7 +237,39 @@ class SubtitleService:
                     f"reason={exc}"
                 ),
             )
-            return []
+            return TranscribeOutcome(
+                entries=[],
+                reason="transcribe_failed",
+                reason_detail=f"transcribe_exc:{exc.__class__.__name__}:{exc}",
+            )
+
+        language = getattr(info, "language", None)
+        language_probability = getattr(info, "language_probability", None)
+        if language_probability is not None:
+            language_probability = float(language_probability)
+        threshold = self.settings.subtitles.min_language_probability
+        if (
+            self.settings.subtitles.language
+            and language_probability is not None
+            and language_probability < threshold
+        ):
+            log(
+                "subtitles",
+                "low language confidence "
+                f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                f"language={language or 'unknown'} "
+                f"probability={language_probability} threshold={threshold}",
+            )
+            return TranscribeOutcome(
+                entries=[],
+                language=str(language) if language is not None else None,
+                language_probability=language_probability,
+                reason="low_language_confidence",
+                reason_detail=(
+                    f"language={language or 'unknown'} "
+                    f"probability={language_probability} threshold={threshold}"
+                ),
+            )
 
         boundary_start = boundary.started_at_seconds
         boundary_end = boundary.ended_at_seconds
@@ -228,7 +287,11 @@ class SubtitleService:
             if rel_end <= rel_start:
                 continue
             entries.append((rel_start, rel_end, raw_text))
-        return entries
+        return TranscribeOutcome(
+            entries=entries,
+            language=str(language) if language is not None else None,
+            language_probability=language_probability,
+        )
 
     def _load_whisper_model(self) -> Any | None:
         if self._whisper_model_initialized:
