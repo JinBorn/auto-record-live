@@ -1292,3 +1292,36 @@ Both have `ffmpeg_record_succeeded` events in `data/tmp/recorder-events.jsonl` (
 #### Outcome
 
 PRD acceptance criteria met. Task ready for archive pending operator confirmation.
+
+
+## Session 30: Actual 1080p recorder quality gate
+
+**Date**: 2026-06-01
+**Task**: Actual 1080p recorder quality gate
+**Branch**: `main`
+
+### Summary
+
+Implemented recorder-side actual resolution validation for direct-stream recordings: ffprobe diagnostics reject below-1080p outputs, clean partial files, emit quality_below_actual_resolution, and orchestrator treats the event as a terminal quality rejection. Updated contracts, specs, task artifacts, and regression tests; full pytest suite passed.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d7ac797` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
