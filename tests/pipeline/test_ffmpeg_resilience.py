@@ -2452,6 +2452,135 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertEqual(failed_rows[0]["reason_code"], "http_5xx")
 
 
+class ExporterAttemptBackoffTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.temp_root = root / "tmp"
+        self.raw_root = root / "raw"
+        self.processed_root = root / "processed"
+        self.export_root = root / "exports"
+        self.settings = Settings(
+            douyin=DouyinSettings(event_log_path=self.temp_root / "windows-agent-events.jsonl"),
+            storage=StorageSettings(
+                raw_dir=self.raw_root,
+                processed_dir=self.processed_root,
+                export_dir=self.export_root,
+                temp_dir=self.temp_root,
+            ),
+            recording=RecordingSettings(enable_ffmpeg=False),
+            subtitles=SubtitleSettings(enabled=True),
+            export=ExportSettings(
+                enable_ffmpeg=True,
+                ffmpeg_timeout_seconds=10,
+                ffmpeg_max_retries=0,
+                backoff_initial_seconds=2.0,
+                backoff_max_seconds=8.0,
+            ),
+        )
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _seed_export_inputs(self) -> None:
+        boundary = MatchBoundary(
+            session_id="session-backoff",
+            match_index=1,
+            started_at_seconds=0.0,
+            ended_at_seconds=60.0,
+            confidence=0.9,
+        )
+        subtitle_file = self.processed_root / "session-backoff" / "match-01.srt"
+        subtitle_file.parent.mkdir(parents=True, exist_ok=True)
+        subtitle_file.write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nhello\n",
+            encoding="utf-8",
+        )
+        recording_file = self.raw_root / "session-backoff" / "recording-source.mp4"
+        recording_file.parent.mkdir(parents=True, exist_ok=True)
+        recording_file.write_text("not-a-real-video", encoding="utf-8")
+        append_model(self.temp_root / "match-boundaries.jsonl", boundary)
+        append_model(
+            self.temp_root / "subtitle-assets.jsonl",
+            SubtitleAsset(
+                session_id="session-backoff",
+                match_index=1,
+                path=str(subtitle_file),
+                format="srt",
+            ),
+        )
+        append_model(
+            self.temp_root / "recording-assets.jsonl",
+            RecordingAsset(
+                session_id="session-backoff",
+                source_type=SourceType.DIRECT_STREAM,
+                path=str(recording_file),
+                started_at=datetime(2026, 5, 12, 1, 0, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 5, 12, 1, 10, tzinfo=timezone.utc),
+            ),
+        )
+
+    def _run_export_with_error(
+        self,
+        settings: Settings,
+        error: BaseException,
+    ) -> list[float]:
+        self._seed_export_inputs()
+        sleep_calls: list[float] = []
+        with patch("arl.exporter.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=error,
+        ), patch("arl.exporter.service.time.sleep", side_effect=sleep_calls.append):
+            ExporterService(settings).run()
+        return sleep_calls
+
+    def test_no_sleep_before_first_attempt(self) -> None:
+        error = subprocess.CalledProcessError(1, ["ffmpeg"], stderr="exit_status:1")
+        sleep_calls = self._run_export_with_error(self.settings, error)
+        self.assertEqual(sleep_calls, [])
+
+    def test_sleep_between_two_retryable_attempts(self) -> None:
+        settings = self.settings.model_copy(deep=True)
+        settings.export.ffmpeg_max_retries = 1
+        error = subprocess.CalledProcessError(1, ["ffmpeg"], stderr="exit_status:1")
+        sleep_calls = self._run_export_with_error(settings, error)
+        self.assertEqual(sleep_calls, [2.0])
+
+    def test_sleep_doubles_and_caps_across_three_attempts(self) -> None:
+        settings = self.settings.model_copy(deep=True)
+        settings.export.ffmpeg_max_retries = 2
+        error = subprocess.CalledProcessError(1, ["ffmpeg"], stderr="exit_status:1")
+        sleep_calls = self._run_export_with_error(settings, error)
+        self.assertEqual(sleep_calls, [2.0, 4.0])
+
+    def test_sleep_caps_at_max(self) -> None:
+        settings = self.settings.model_copy(deep=True)
+        settings.export.ffmpeg_max_retries = 4
+        error = subprocess.CalledProcessError(1, ["ffmpeg"], stderr="exit_status:1")
+        sleep_calls = self._run_export_with_error(settings, error)
+        self.assertEqual(sleep_calls, [2.0, 4.0, 8.0, 8.0])
+
+    def test_no_sleep_after_non_retryable_short_circuit(self) -> None:
+        settings = self.settings.model_copy(deep=True)
+        settings.export.ffmpeg_max_retries = 3
+        error = subprocess.CalledProcessError(
+            1,
+            ["ffmpeg"],
+            stderr="Server returned 404 Not Found",
+        )
+        sleep_calls = self._run_export_with_error(settings, error)
+        self.assertEqual(sleep_calls, [])
+
+    def test_config_overrides_backoff_schedule(self) -> None:
+        settings = self.settings.model_copy(deep=True)
+        settings.export.ffmpeg_max_retries = 2
+        settings.export.backoff_initial_seconds = 1.0
+        settings.export.backoff_max_seconds = 3.0
+        error = subprocess.CalledProcessError(1, ["ffmpeg"], stderr="exit_status:1")
+        sleep_calls = self._run_export_with_error(settings, error)
+        self.assertEqual(sleep_calls, [1.0, 2.0])
+
+
 if __name__ == "__main__":
     unittest.main()
 

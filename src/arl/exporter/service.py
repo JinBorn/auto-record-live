@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess  # noqa: F401 — re-exported as patch shim so existing tests can mock arl.exporter.service.subprocess.run after the ffmpeg_runner refactor
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -203,6 +204,8 @@ class ExporterService:
             )
             if not fd.is_retryable:
                 break
+            if attempt < attempts:
+                time.sleep(self._backoff_seconds(attempt))
 
         fd = last_outcome.classification
         log(
@@ -235,6 +238,11 @@ class ExporterService:
     def _looks_like_video(self, path: str) -> bool:
         suffix = Path(path).suffix.lower()
         return suffix in {".mp4", ".mkv", ".flv", ".ts", ".mov"}
+
+    def _backoff_seconds(self, attempt: int) -> float:
+        initial = self.settings.export.backoff_initial_seconds
+        maximum = self.settings.export.backoff_max_seconds
+        return min(initial * (2 ** (attempt - 1)), maximum)
 
     def _subtitle_filter_arg(self, subtitle_path: Path) -> str:
         escaped = str(subtitle_path).replace("\\", "\\\\").replace(":", "\\:")

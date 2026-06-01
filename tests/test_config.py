@@ -139,6 +139,15 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             3,
         )
 
+    def test_exporter_backoff_envs_load(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_EXPORTER_BACKOFF_INITIAL_SECONDS"] = "1.5"
+            os.environ["ARL_EXPORTER_BACKOFF_MAX_SECONDS"] = "6"
+            settings = load_settings()
+
+        self.assertEqual(settings.export.backoff_initial_seconds, 1.5)
+        self.assertEqual(settings.export.backoff_max_seconds, 6.0)
+
 
 class SettingsValidatorTests(unittest.TestCase):
     def test_settings_with_empty_platforms_defaults_to_douyin(self) -> None:

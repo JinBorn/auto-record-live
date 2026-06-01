@@ -147,6 +147,8 @@ class ExportSettings(BaseModel):
     ffmpeg_timeout_seconds: int = 120
     ffmpeg_max_retries: int = 1
     stderr_retain_count: int = 200
+    backoff_initial_seconds: float = 2.0
+    backoff_max_seconds: float = 8.0
 
 
 class Settings(BaseModel):
@@ -386,6 +388,14 @@ def load_settings() -> Settings:
             ),
             stderr_retain_count=max(
                 0, int(os.getenv("ARL_EXPORTER_STDERR_RETAIN_COUNT", "200"))
+            ),
+            backoff_initial_seconds=max(
+                0.0,
+                float(os.getenv("ARL_EXPORTER_BACKOFF_INITIAL_SECONDS", "2")),
+            ),
+            backoff_max_seconds=max(
+                0.0,
+                float(os.getenv("ARL_EXPORTER_BACKOFF_MAX_SECONDS", "8")),
             ),
         ),
     )
