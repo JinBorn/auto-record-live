@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 34
-- **Last Active**: 2026-06-01
+- **Total Sessions**: 35
+- **Last Active**: 2026-06-02
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1464 | Active |
+| `journal-1.md` | ~1527 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 35 | 2026-06-02 | Production unattended hardening daily progress | - | `main` |
 | 34 | 2026-06-01 | Faster-whisper subtitles hardening | `5b5ed6f`, `8299024`, `384b99d` | `main` |
 | 33 | 2026-06-01 | Full-pipeline e2e smoke coverage | `30a6297`, `7ad4e61` | `main` |
 | 32 | 2026-06-01 | Cookie health launcher gate | `c1739bb` | `main` |

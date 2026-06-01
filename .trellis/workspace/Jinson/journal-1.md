@@ -1462,3 +1462,68 @@ Added subtitles optional dependency/install spec, local Whisper cache, language-
 ### Next Steps
 
 - None - task complete
+
+
+## Session 35: Production unattended hardening daily progress
+
+**Date**: 2026-06-02
+**Task**: Production unattended hardening daily progress
+**Branch**: `main`
+
+### Summary
+
+Recorded daily progress for production unattended hardening; task remains in progress with uncommitted implementation and validation complete.
+
+### Main Changes
+
+- Continued active task `.trellis/tasks/06-01-production-unattended-hardening` without archiving it; task remains `in_progress` because code/docs are intentionally uncommitted and still under review.
+- Added unattended post-live processing: `arl postprocess --once`, `scripts/windows-postprocess-loop.ps1`, and tests.
+- Added local operator status: `arl status` with health, degraded/action-required reasons, subtitle fallback/device counts, multi-room active stream visibility, and tests.
+- Added ASR CPU/CUDA fallback policy: `ARL_WHISPER_DEVICE=auto|cuda|cpu`, compute-type controls, CUDA-to-CPU retry in auto mode, and status visibility.
+- Added multi-room/multi-platform monitoring support for Douyin and Bilibili plural room envs; orchestrator active keys now support multiple rooms on the same platform.
+- Added optional Windows supervisor/autostart scripts; autostart remains disabled by default and requires explicit `windows-autostart.ps1 -Action Install`.
+- Added long-run maintenance: `arl maintenance --once` for consumed JSONL prefixes, audit tails, and launcher-log rotation.
+- Added runtime soak check: `arl soak` with repeated agent/orchestrator/recorder/postprocess/status cycles and stage error reporting.
+- Added recovery unattended dispatch support: `scripts/windows-recovery-loop.ps1` and supervisor integration.
+- Added recovery operator handoff: `arl recovery --pending-report`, grouped by job with resolve/fail commands.
+
+### Validation
+
+- `pytest -q`: 363 passed.
+- `npm run test:probe`: 14 passed.
+- `git diff --check`: passed with CRLF warnings only.
+- `arl recovery --pending-report`: verified against current runtime data; 9 pending jobs reported, all `restore_source_prerequisites` / `http_4xx_non_retryable`.
+- `arl status`: verified action-required reasons now identify manual-required/failed jobs and recovery pending actions.
+
+### Current Runtime State
+
+- Current default `data/` status is still `action_required` due historical failed/manual-recovery jobs, not a newly introduced test failure.
+- Recovery loop has dispatched previously undispatched actions; current handoff state is pending operator action.
+- CUDA runtime on this host still lacks `cublas64_12.dll`; ASR auto fallback to CPU is the intended behavior.
+
+### Next Steps
+
+- Decide whether to resolve or fail the 9 pending recovery jobs after checking whether those historical recordings need rerun.
+- Consider adding scheduled health report / maintenance integration in supervisor if the next slice continues unattended operations.
+- Commit the production-unattended-hardening changes before final Trellis archive.
+
+
+### Git Commits
+
+(No commits yet - active task remains in progress with uncommitted implementation changes.)
+
+### Testing
+
+- [OK] `pytest -q`: 363 passed.
+- [OK] `npm run test:probe`: 14 passed.
+- [OK] `git diff --check`: passed with CRLF warnings only.
+
+### Status
+
+[IN PROGRESS] **Daily progress archived; task not completed**
+
+### Next Steps
+
+- Commit the production-unattended-hardening changes.
+- Resolve or fail the 9 pending recovery jobs after operator review.
+- Archive the Trellis task only after the implementation is committed and final acceptance is complete.
