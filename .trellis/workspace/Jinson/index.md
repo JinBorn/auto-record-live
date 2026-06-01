@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 32
+- **Total Sessions**: 33
 - **Last Active**: 2026-06-01
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1395 | Active |
+| `journal-1.md` | ~1429 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 33 | 2026-06-01 | Full-pipeline e2e smoke coverage | `30a6297`, `7ad4e61` | `main` |
 | 32 | 2026-06-01 | Cookie health launcher gate | `c1739bb` | `main` |
 | 31 | 2026-06-01 | Exporter ffmpeg failure alignment | `8674864`, `41c333c`, `8f96841` | `main` |
 | 30 | 2026-06-01 | Actual 1080p recorder quality gate | `d7ac797` | `main` |

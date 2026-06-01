@@ -1393,3 +1393,37 @@ Added a startup cookie-health gate to windows-agent-loop with warning/fatal/skip
 ### Next Steps
 
 - None - task complete
+
+
+## Session 33: Full-pipeline e2e smoke coverage
+
+**Date**: 2026-06-01
+**Task**: Full-pipeline e2e smoke coverage
+**Branch**: `main`
+
+### Summary
+
+Added tests/e2e helpers and five smoke cases covering golden path, probe cookie-expired routing, recorder transient retry scheduling, exporter fallback, and dual-platform isolation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `30a6297` | (see git log) |
+| `7ad4e61` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
