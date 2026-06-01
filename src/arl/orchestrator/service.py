@@ -458,6 +458,7 @@ class OrchestratorService:
             "ffmpeg_skipped",
             "ffmpeg_record_succeeded",
             "ffmpeg_record_failed",
+            "quality_below_actual_resolution",
         }
         if event.event_type not in known_event_types:
             self.state_store.append_audit(
@@ -572,6 +573,31 @@ class OrchestratorService:
                 and state.active_session_id_by_platform.get(job.platform) == job.session_id
             ):
                 state.active_recording_job_id_by_platform.pop(job.platform, None)
+            self._mark_recorder_event_applied(state, event)
+            return
+
+        if event.event_type == "quality_below_actual_resolution":
+            job.status = RecordingJobStatus.FAILED
+            job.stop_reason = (
+                self._event_reason_detail(event)
+                or "quality_below_actual_resolution"
+            )
+            if job.ended_at is None:
+                job.ended_at = event.created_at
+            if state.active_recording_job_id_by_platform.get(job.platform) == job.job_id:
+                state.active_recording_job_id_by_platform.pop(job.platform, None)
+            self._apply_failure_metadata(state, job, event)
+            self.state_store.append_audit(
+                "recording_job_quality_rejected",
+                session_id=job.session_id,
+                job_id=job.job_id,
+                message=f"reason={job.stop_reason}",
+            )
+            self._append_recovery_audit(
+                job,
+                mode="manual",
+                origin_event=event.event_type,
+            )
             self._mark_recorder_event_applied(state, event)
             return
 
@@ -781,6 +807,10 @@ class OrchestratorService:
             "unknown_unclassified_non_retryable": (
                 "Failure classification was inconclusive. "
                 "Follow manual recovery and inspect recorder-events diagnostics."
+            ),
+            "quality_unusable_non_retryable": (
+                "Recorded stream is below the required actual resolution. "
+                "Wait for a higher-quality candidate or choose another source."
             ),
         }
         return (

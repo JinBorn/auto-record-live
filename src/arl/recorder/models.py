@@ -31,6 +31,10 @@ class RecorderAuditEvent(BaseModel):
     max_attempts: int | None = None
     stderr_excerpt: str | None = None
     stderr_log_path: str | None = None
+    observed_width: int | None = None
+    observed_height: int | None = None
+    observed_bitrate_kbps: int | None = None
+    min_required_height: int | None = None
     created_at: datetime
 
     @model_validator(mode="after")

@@ -125,6 +125,20 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(bilibili.min_stream_qn, 10000)
         self.assertEqual(bilibili.min_stream_bitrate_kbps, 6000)
 
+    def test_recording_actual_resolution_gate_envs_load(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_RECORDING_VALIDATE_ACTUAL_RESOLUTION"] = "0"
+            os.environ["ARL_RECORDING_MIN_ACTUAL_RESOLUTION_HEIGHT"] = "720"
+            os.environ["ARL_RECORDING_ACTUAL_RESOLUTION_PROBE_TIMEOUT_SECONDS"] = "3"
+            settings = load_settings()
+
+        self.assertFalse(settings.recording.validate_actual_resolution)
+        self.assertEqual(settings.recording.min_actual_resolution_height, 720)
+        self.assertEqual(
+            settings.recording.actual_resolution_probe_timeout_seconds,
+            3,
+        )
+
 
 class SettingsValidatorTests(unittest.TestCase):
     def test_settings_with_empty_platforms_defaults_to_douyin(self) -> None:

@@ -1598,6 +1598,113 @@ class RecorderHardeningTest(unittest.TestCase):
         self.assertIsNone(success_events[0].get("stderr_excerpt"))
         self.assertIsNone(success_events[0].get("stderr_log_path"))
 
+    def test_quality_gate_rejects_actual_resolution_below_1080p(self) -> None:
+        self._seed_state(job_id="job-quality-low")
+
+        def _which(binary: str) -> str | None:
+            if binary in {"ffmpeg", "ffprobe"}:
+                return f"/usr/bin/{binary}"
+            return None
+
+        def _fake_run(command, **kwargs):
+            if command[0].endswith("ffmpeg"):
+                output_path = Path(command[-1])
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text("fake 720p video", encoding="utf-8")
+                return subprocess.CompletedProcess(args=command, returncode=0)
+            if command[0].endswith("ffprobe"):
+                return subprocess.CompletedProcess(
+                    args=command,
+                    returncode=0,
+                    stdout=json.dumps(
+                        {
+                            "streams": [
+                                {
+                                    "width": 1280,
+                                    "height": 720,
+                                    "bit_rate": "3800000",
+                                }
+                            ]
+                        }
+                    ),
+                )
+            raise AssertionError(f"unexpected command: {command}")
+
+        with patch("arl.recorder.service.shutil.which", side_effect=_which), patch(
+            "arl.recorder.service.subprocess.run", side_effect=_fake_run
+        ):
+            RecorderService(self.settings).run()
+
+        recording_file = self.raw_root / "session-hd" / "recording-source.mp4"
+        self.assertFalse(recording_file.exists())
+        self.assertFalse((self.temp_root / "recording-assets.jsonl").exists())
+        events = self._audit_payloads()
+        quality_events = [
+            item
+            for item in events
+            if item["event_type"] == "quality_below_actual_resolution"
+        ]
+        self.assertEqual(len(quality_events), 1)
+        event = quality_events[0]
+        self.assertEqual(event["observed_width"], 1280)
+        self.assertEqual(event["observed_height"], 720)
+        self.assertEqual(event["observed_bitrate_kbps"], 3800)
+        self.assertEqual(event["min_required_height"], 1080)
+        self.assertEqual(event["failure_category"], "quality_unusable_non_retryable")
+        self.assertEqual(event["reason_code"], "quality_below_actual_resolution")
+        self.assertFalse(any(item["event_type"] == "ffmpeg_record_succeeded" for item in events))
+
+    def test_quality_gate_accepts_actual_resolution_at_1080p(self) -> None:
+        self._seed_state(job_id="job-quality-pass")
+
+        def _which(binary: str) -> str | None:
+            if binary in {"ffmpeg", "ffprobe"}:
+                return f"/usr/bin/{binary}"
+            return None
+
+        def _fake_run(command, **kwargs):
+            if command[0].endswith("ffmpeg"):
+                output_path = Path(command[-1])
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text("fake 1080p video", encoding="utf-8")
+                return subprocess.CompletedProcess(args=command, returncode=0)
+            if command[0].endswith("ffprobe"):
+                return subprocess.CompletedProcess(
+                    args=command,
+                    returncode=0,
+                    stdout=json.dumps(
+                        {
+                            "streams": [
+                                {
+                                    "width": 1920,
+                                    "height": 1080,
+                                    "bit_rate": "6200000",
+                                }
+                            ]
+                        }
+                    ),
+                )
+            raise AssertionError(f"unexpected command: {command}")
+
+        with patch("arl.recorder.service.shutil.which", side_effect=_which), patch(
+            "arl.recorder.service.subprocess.run", side_effect=_fake_run
+        ):
+            RecorderService(self.settings).run()
+
+        recording_file = self.raw_root / "session-hd" / "recording-source.mp4"
+        self.assertTrue(recording_file.exists())
+        payload = json.loads(
+            (self.temp_root / "recording-assets.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()[0]
+        )
+        self.assertTrue(payload["path"].endswith("recording-source.mp4"))
+        events = self._audit_payloads()
+        self.assertTrue(any(item["event_type"] == "ffmpeg_record_succeeded" for item in events))
+        self.assertFalse(
+            any(item["event_type"] == "quality_below_actual_resolution" for item in events)
+        )
+
     def test_r3_stderr_log_rotation_keeps_only_retain_count_newest(self) -> None:
         stderr_dir = self.temp_root / "recorder-stderr"
         stderr_dir.mkdir(parents=True, exist_ok=True)

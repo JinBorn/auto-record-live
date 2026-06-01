@@ -7,11 +7,13 @@ from arl.shared.failure_contracts import (
     FAILURE_CATEGORY_HTTP_4XX_NON_RETRYABLE,
     FAILURE_CATEGORY_HTTP_5XX_RETRYABLE,
     FAILURE_CATEGORY_NETWORK_TIMEOUT_RETRYABLE,
+    FAILURE_CATEGORY_QUALITY_UNUSABLE_NON_RETRYABLE,
     FAILURE_CATEGORY_UNKNOWN_UNCLASSIFIED_NON_RETRYABLE,
     REASON_CODE_HTTP_4XX,
     REASON_CODE_HTTP_403_FORBIDDEN,
     REASON_CODE_HTTP_5XX,
     REASON_CODE_NETWORK_TIMEOUT,
+    REASON_CODE_QUALITY_BELOW_ACTUAL_RESOLUTION,
     REASON_CODE_UNKNOWN_UNCLASSIFIED,
     classify_failure_reason,
 )
@@ -77,10 +79,30 @@ class ClassifyFailureReasonTest(unittest.TestCase):
             decision.failure_category, FAILURE_CATEGORY_UNKNOWN_UNCLASSIFIED_NON_RETRYABLE
         )
 
+    def test_quality_resolution_marker_returns_quality_reason_code(self) -> None:
+        decision = classify_failure_reason(
+            "quality_below_actual_resolution:1280x720<0x1080"
+        )
+        self.assertEqual(
+            decision.reason_code,
+            REASON_CODE_QUALITY_BELOW_ACTUAL_RESOLUTION,
+        )
+        self.assertEqual(
+            decision.failure_category,
+            FAILURE_CATEGORY_QUALITY_UNUSABLE_NON_RETRYABLE,
+        )
+        self.assertFalse(decision.is_retryable)
+
     def test_http_403_reason_code_is_in_canonical_set(self) -> None:
         # Required so RecorderAuditEvent's validate_core_decision_fields accepts
         # the new reason_code on core decision events.
         self.assertIn(REASON_CODE_HTTP_403_FORBIDDEN, CANONICAL_REASON_CODES)
+
+    def test_quality_resolution_reason_code_is_in_canonical_set(self) -> None:
+        self.assertIn(
+            REASON_CODE_QUALITY_BELOW_ACTUAL_RESOLUTION,
+            CANONICAL_REASON_CODES,
+        )
 
 
 if __name__ == "__main__":

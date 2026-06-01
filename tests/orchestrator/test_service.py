@@ -471,6 +471,62 @@ class OrchestratorServiceTest(unittest.TestCase):
         self.assertIsNone(state.recording_jobs[0].recoverable)
         self.assertIsNone(state.recording_jobs[0].recovery_hint)
 
+    def test_quality_below_actual_resolution_event_fails_job_and_clears_active_link(self) -> None:
+        self.agent_event_log.write_text(
+            _event_line(
+                "live_started",
+                state="live",
+                detected_at="2026-04-24T01:00:00Z",
+                source_type="direct_stream",
+                stream_url="https://cdn.example/live.m3u8",
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.service.run_once()
+        state = OrchestratorStateFile.model_validate_json(
+            self.state_file.read_text(encoding="utf-8")
+        )
+        job = state.recording_jobs[0]
+
+        reason = "quality_below_actual_resolution:1280x720<0x1080;bitrate_kbps=3800"
+        self.recorder_event_log.write_text(
+            json.dumps(
+                {
+                    "event_type": "quality_below_actual_resolution",
+                    "session_id": job.session_id,
+                    "job_id": job.job_id,
+                    "source_type": "direct_stream",
+                    "reason": reason,
+                    "decision": "quality_rejected",
+                    "failure_category": "quality_unusable_non_retryable",
+                    "is_retryable": False,
+                    "reason_code": "quality_below_actual_resolution",
+                    "reason_detail": reason,
+                    "observed_width": 1280,
+                    "observed_height": 720,
+                    "observed_bitrate_kbps": 3800,
+                    "min_required_height": 1080,
+                    "created_at": "2026-04-24T01:05:00Z",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.service.run_once()
+
+        state = OrchestratorStateFile.model_validate_json(
+            self.state_file.read_text(encoding="utf-8")
+        )
+        job = state.recording_jobs[0]
+        self.assertEqual(job.status, RecordingJobStatus.FAILED)
+        self.assertEqual(job.stop_reason, reason)
+        self.assertEqual(job.failure_category, "quality_unusable_non_retryable")
+        self.assertFalse(job.recoverable)
+        self.assertNotIn("douyin", state.active_recording_job_id_by_platform)
+        audit_text = self.audit_log.read_text(encoding="utf-8")
+        self.assertIn("recording_job_quality_rejected", audit_text)
+
     def test_stale_recorder_event_is_ignored_and_does_not_regress_status(self) -> None:
         self.agent_event_log.write_text(
             _event_line(

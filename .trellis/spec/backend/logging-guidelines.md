@@ -61,6 +61,7 @@ For these events only:
 - `recording_retry_scheduled`
 - `ffmpeg_record_failed`
 - `ffmpeg_fallback_placeholder`
+- `quality_below_actual_resolution`
 - `recording_manual_recovery_required`
 - `manual_recovery_action_dispatched`
 - `manual_recovery_action_resolved`
@@ -84,6 +85,7 @@ For these events only:
 - `network_timeout`
 - `ffmpeg_process_error`
 - `unknown_unclassified`
+- `quality_below_actual_resolution`
 
 `failure_category` must be one of:
 
@@ -92,6 +94,7 @@ For these events only:
 - `network_timeout_retryable`
 - `ffmpeg_process_error_retryable`
 - `unknown_unclassified_non_retryable`
+- `quality_unusable_non_retryable`
 
 Migration mapping (legacy -> canonical):
 
@@ -125,13 +128,14 @@ Unknown-classification rule:
   - `is_retryable: bool`
   - `reason_code: str` (strict enum)
   - `reason_detail: str`
-- `reason_code` enum: `http_4xx | http_403_forbidden | http_5xx | network_timeout | ffmpeg_process_error | unknown_unclassified`
+- `reason_code` enum: `http_4xx | http_403_forbidden | http_5xx | network_timeout | ffmpeg_process_error | unknown_unclassified | quality_below_actual_resolution`
 - `failure_category` enum:
   - `http_4xx_non_retryable`
   - `http_5xx_retryable`
   - `network_timeout_retryable`
   - `ffmpeg_process_error_retryable`
   - `unknown_unclassified_non_retryable`
+  - `quality_unusable_non_retryable`
 
 ### 4. Validation & Error Matrix
 - Missing any canonical field on core event -> reject row as invalid event.
@@ -141,6 +145,7 @@ Unknown-classification rule:
 
 ### 5. Good/Base/Bad Cases
 - Good: HTTP 404 -> `reason_code=http_4xx`, `failure_category=http_4xx_non_retryable`, `is_retryable=false`.
+- Good: actual recorded output is 720p -> `reason_code=quality_below_actual_resolution`, `failure_category=quality_unusable_non_retryable`, `is_retryable=false`.
 - Base: `exit_status:1` -> `reason_code=ffmpeg_process_error`, `failure_category=ffmpeg_process_error_retryable`, `is_retryable=true`.
 - Bad: free-form `reason_code=missing_binary` or legacy-only `recoverable` without canonical fields.
 

@@ -8,6 +8,7 @@ FAILURE_CATEGORY_HTTP_5XX_RETRYABLE = "http_5xx_retryable"
 FAILURE_CATEGORY_NETWORK_TIMEOUT_RETRYABLE = "network_timeout_retryable"
 FAILURE_CATEGORY_FFMPEG_PROCESS_ERROR_RETRYABLE = "ffmpeg_process_error_retryable"
 FAILURE_CATEGORY_UNKNOWN_UNCLASSIFIED_NON_RETRYABLE = "unknown_unclassified_non_retryable"
+FAILURE_CATEGORY_QUALITY_UNUSABLE_NON_RETRYABLE = "quality_unusable_non_retryable"
 
 CANONICAL_FAILURE_CATEGORIES = {
     FAILURE_CATEGORY_HTTP_4XX_NON_RETRYABLE,
@@ -15,6 +16,7 @@ CANONICAL_FAILURE_CATEGORIES = {
     FAILURE_CATEGORY_NETWORK_TIMEOUT_RETRYABLE,
     FAILURE_CATEGORY_FFMPEG_PROCESS_ERROR_RETRYABLE,
     FAILURE_CATEGORY_UNKNOWN_UNCLASSIFIED_NON_RETRYABLE,
+    FAILURE_CATEGORY_QUALITY_UNUSABLE_NON_RETRYABLE,
 }
 
 REASON_CODE_HTTP_4XX = "http_4xx"
@@ -23,6 +25,7 @@ REASON_CODE_HTTP_5XX = "http_5xx"
 REASON_CODE_NETWORK_TIMEOUT = "network_timeout"
 REASON_CODE_FFMPEG_PROCESS_ERROR = "ffmpeg_process_error"
 REASON_CODE_UNKNOWN_UNCLASSIFIED = "unknown_unclassified"
+REASON_CODE_QUALITY_BELOW_ACTUAL_RESOLUTION = "quality_below_actual_resolution"
 
 CANONICAL_REASON_CODES = {
     REASON_CODE_HTTP_4XX,
@@ -31,6 +34,7 @@ CANONICAL_REASON_CODES = {
     REASON_CODE_NETWORK_TIMEOUT,
     REASON_CODE_FFMPEG_PROCESS_ERROR,
     REASON_CODE_UNKNOWN_UNCLASSIFIED,
+    REASON_CODE_QUALITY_BELOW_ACTUAL_RESOLUTION,
 }
 
 CORE_DECISION_EVENT_TYPES = {
@@ -42,6 +46,7 @@ CORE_DECISION_EVENT_TYPES = {
     "manual_recovery_action_resolved",
     "manual_recovery_action_failed",
     "recording_session_retry_budget_exceeded",
+    "quality_below_actual_resolution",
     "ffmpeg_export_failed",
     "ffmpeg_export_fallback_placeholder",
 }
@@ -70,6 +75,13 @@ def classify_failure_reason(reason: str | None) -> FailureDecision:
             failure_category=FAILURE_CATEGORY_HTTP_4XX_NON_RETRYABLE,
             is_retryable=False,
             reason_code=REASON_CODE_HTTP_403_FORBIDDEN,
+        )
+
+    if contains("quality_below_actual_resolution:"):
+        return FailureDecision(
+            failure_category=FAILURE_CATEGORY_QUALITY_UNUSABLE_NON_RETRYABLE,
+            is_retryable=False,
+            reason_code=REASON_CODE_QUALITY_BELOW_ACTUAL_RESOLUTION,
         )
 
     if contains(

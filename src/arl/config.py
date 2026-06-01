@@ -115,6 +115,9 @@ class RecordingSettings(BaseModel):
     browser_capture_timeout_seconds: int = 20
     session_retry_budget: int = 8
     stderr_retain_count: int = 200
+    validate_actual_resolution: bool = True
+    min_actual_resolution_height: int = 1080
+    actual_resolution_probe_timeout_seconds: int = 10
 
 
 class OrchestratorSettings(BaseModel):
@@ -357,6 +360,18 @@ def load_settings() -> Settings:
             ),
             stderr_retain_count=max(
                 0, int(os.getenv("ARL_RECORDER_STDERR_RETAIN_COUNT", "200"))
+            ),
+            validate_actual_resolution=_env_bool(
+                "ARL_RECORDING_VALIDATE_ACTUAL_RESOLUTION",
+                True,
+            ),
+            min_actual_resolution_height=max(
+                1,
+                _env_int("ARL_RECORDING_MIN_ACTUAL_RESOLUTION_HEIGHT", 1080),
+            ),
+            actual_resolution_probe_timeout_seconds=max(
+                1,
+                _env_int("ARL_RECORDING_ACTUAL_RESOLUTION_PROBE_TIMEOUT_SECONDS", 10),
             ),
         ),
         export=ExportSettings(

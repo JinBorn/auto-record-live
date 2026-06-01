@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 import shutil
 import subprocess
@@ -23,8 +24,10 @@ from arl.recorder.models import (
 from arl.shared.contracts import RecordingAsset, SourceType
 from arl.shared.failure_contracts import (
     FAILURE_CATEGORY_FFMPEG_PROCESS_ERROR_RETRYABLE,
+    FAILURE_CATEGORY_QUALITY_UNUSABLE_NON_RETRYABLE,
     FAILURE_CATEGORY_UNKNOWN_UNCLASSIFIED_NON_RETRYABLE,
     REASON_CODE_HTTP_403_FORBIDDEN,
+    REASON_CODE_QUALITY_BELOW_ACTUAL_RESOLUTION,
     REASON_CODE_UNKNOWN_UNCLASSIFIED,
     CANONICAL_FAILURE_CATEGORIES,
     classify_failure_reason,
@@ -52,6 +55,14 @@ _PLATFORM_COOKIE_FIELD = {
 class RecordingBuildOutcome:
     output_path: Path | None
     retryable_failure_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ActualQualityProbeResult:
+    width: int | None
+    height: int | None
+    bitrate_kbps: int | None
+    reason: str | None = None
 
 
 class RecorderService:
@@ -404,6 +415,11 @@ class RecorderService:
 
         failure_reason = failure_reason or "ffmpeg_execution_failed"
         failure_decision = classify_failure_reason(failure_reason)
+        if (
+            failure_decision.failure_category
+            == FAILURE_CATEGORY_QUALITY_UNUSABLE_NON_RETRYABLE
+        ):
+            return RecordingBuildOutcome(output_path=None)
         retryable_failure = failure_decision.is_retryable
         if retryable_failure and self.settings.recording.auto_retry_max_attempts > 0:
             if retry_attempt_count < self.settings.recording.auto_retry_max_attempts:
@@ -487,6 +503,13 @@ class RecorderService:
                 attempt=attempt,
             )
             if outcome.success:
+                quality_failure = self._validate_actual_resolution(
+                    session_id=session_id,
+                    job_id=job_id,
+                    output_path=output_path,
+                )
+                if quality_failure is not None:
+                    return None, quality_failure
                 self._append_audit(
                     "ffmpeg_record_succeeded",
                     session_id=session_id,
@@ -539,6 +562,148 @@ class RecorderService:
             break
 
         return None, last_failure_reason
+
+    def _validate_actual_resolution(
+        self,
+        *,
+        session_id: str,
+        job_id: str,
+        output_path: Path,
+    ) -> str | None:
+        if not self.settings.recording.validate_actual_resolution:
+            return None
+        if not output_path.exists():
+            return None
+        ffprobe_path = shutil.which("ffprobe")
+        if ffprobe_path is None:
+            log(
+                "recorder",
+                f"actual resolution validation skipped missing_ffprobe session_id={session_id}",
+            )
+            return None
+
+        probe = self._probe_actual_quality(output_path, ffprobe_path=ffprobe_path)
+        if probe.height is None:
+            log(
+                "recorder",
+                "actual resolution validation inconclusive "
+                f"session_id={session_id} reason={probe.reason or 'unknown'}",
+            )
+            return None
+
+        min_height = self.settings.recording.min_actual_resolution_height
+        if probe.height >= min_height:
+            return None
+
+        reason_detail = (
+            "quality_below_actual_resolution:"
+            f"{probe.width or 0}x{probe.height}<0x{min_height}"
+        )
+        if probe.bitrate_kbps is not None:
+            reason_detail = f"{reason_detail};bitrate_kbps={probe.bitrate_kbps}"
+
+        try:
+            output_path.unlink()
+        except OSError:
+            log(
+                "recorder",
+                "failed to remove below-resolution partial "
+                f"session_id={session_id} path={output_path}",
+            )
+
+        self._append_audit(
+            "quality_below_actual_resolution",
+            session_id=session_id,
+            job_id=job_id,
+            source_type=SourceType.DIRECT_STREAM,
+            reason=reason_detail,
+            decision="quality_rejected",
+            failure_category=FAILURE_CATEGORY_QUALITY_UNUSABLE_NON_RETRYABLE,
+            is_retryable=False,
+            reason_code=REASON_CODE_QUALITY_BELOW_ACTUAL_RESOLUTION,
+            reason_detail=reason_detail,
+            observed_width=probe.width,
+            observed_height=probe.height,
+            observed_bitrate_kbps=probe.bitrate_kbps,
+            min_required_height=min_height,
+        )
+        log(
+            "recorder",
+            "quality rejected below actual resolution "
+            f"session_id={session_id} observed={probe.width or 0}x{probe.height} "
+            f"min_height={min_height}",
+        )
+        return reason_detail
+
+    def _probe_actual_quality(
+        self,
+        output_path: Path,
+        *,
+        ffprobe_path: str,
+    ) -> ActualQualityProbeResult:
+        command = [
+            ffprobe_path,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height,bit_rate:format=bit_rate",
+            "-of",
+            "json",
+            str(output_path),
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=self.settings.recording.actual_resolution_probe_timeout_seconds,
+            )
+        except (subprocess.SubprocessError, OSError) as error:
+            return ActualQualityProbeResult(
+                width=None,
+                height=None,
+                bitrate_kbps=None,
+                reason=format_ffmpeg_failure_reason(error),
+            )
+
+        stdout = getattr(result, "stdout", "") or ""
+        try:
+            payload = json.loads(stdout)
+        except json.JSONDecodeError:
+            return ActualQualityProbeResult(
+                width=None,
+                height=None,
+                bitrate_kbps=None,
+                reason="invalid_ffprobe_json",
+            )
+
+        streams = payload.get("streams")
+        stream = streams[0] if isinstance(streams, list) and streams else {}
+        if not isinstance(stream, dict):
+            stream = {}
+        width = self._optional_int(stream.get("width"))
+        height = self._optional_int(stream.get("height"))
+        bit_rate = self._optional_int(stream.get("bit_rate"))
+        if bit_rate is None and isinstance(payload.get("format"), dict):
+            bit_rate = self._optional_int(payload["format"].get("bit_rate"))
+        bitrate_kbps = bit_rate // 1000 if bit_rate is not None else None
+        return ActualQualityProbeResult(
+            width=width,
+            height=height,
+            bitrate_kbps=bitrate_kbps,
+        )
+
+    @staticmethod
+    def _optional_int(value: object) -> int | None:
+        try:
+            if value is None or value == "":
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _build_ffmpeg_header_args(stream_headers: dict[str, str]) -> list[str]:
@@ -724,6 +889,7 @@ class RecorderService:
                     "http_4xx_non_retryable": "server returned 404 not found",
                     "http_5xx_retryable": "server returned 503 service unavailable",
                     "network_timeout_retryable": "timed out",
+                    "quality_unusable_non_retryable": "quality_below_actual_resolution:0x720<0x1080",
                     "unknown_unclassified_non_retryable": "unknown_unclassified",
                 }.get(failure_category, "unknown_unclassified")
             )
@@ -737,6 +903,7 @@ class RecorderService:
             "network_timeout_retryable": "check_network_source_stability",
             "ffmpeg_process_error_retryable": "inspect_ffmpeg_process_failure",
             "unknown_unclassified_non_retryable": "inspect_failure_logs",
+            "quality_unusable_non_retryable": "wait_for_higher_quality_source",
         }
         return mapping.get(failure_category, "inspect_failure_logs")
 
@@ -754,6 +921,11 @@ class RecorderService:
             return [
                 "Check source/network stability and recorder host connectivity.",
                 "Retry recorder after transient conditions recover.",
+            ]
+        if failure_category == "quality_unusable_non_retryable":
+            return [
+                "Wait for the room/platform to expose a 1080p or higher source.",
+                "Retry recording after the next live stream snapshot refresh.",
             ]
         return [
             "Inspect recorder-events.jsonl and ffmpeg stderr for root cause.",
@@ -908,6 +1080,10 @@ class RecorderService:
         max_attempts: int | None = None,
         stderr_excerpt: str | None = None,
         stderr_log_path: str | None = None,
+        observed_width: int | None = None,
+        observed_height: int | None = None,
+        observed_bitrate_kbps: int | None = None,
+        min_required_height: int | None = None,
     ) -> None:
         append_model(
             self.audit_path,
@@ -926,6 +1102,10 @@ class RecorderService:
                 max_attempts=max_attempts,
                 stderr_excerpt=stderr_excerpt,
                 stderr_log_path=stderr_log_path,
+                observed_width=observed_width,
+                observed_height=observed_height,
+                observed_bitrate_kbps=observed_bitrate_kbps,
+                min_required_height=min_required_height,
                 created_at=datetime.now(timezone.utc),
             ),
         )
