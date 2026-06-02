@@ -49,6 +49,7 @@ class DouyinSettings(PlatformSettings):
     playwright_script: Path = Path("scripts/probe_douyin_room.mjs")
     playwright_timeout_ms: int = 20000
     use_playwright_probe: bool = True
+    playwright_headless: bool = True
     # Optional Douyin cookie header value, e.g. "k1=v1; k2=v2; ...". When
     # non-empty, DouyinRoomProbe forwards it to the Playwright subprocess
     # (--cookie), the httpx fallback (Cookie request header), and the
@@ -233,6 +234,7 @@ def _load_douyin_settings() -> DouyinSettings:
             os.getenv("ARL_DOUYIN_PLAYWRIGHT_TIMEOUT_MS", "20000")
         ),
         use_playwright_probe=os.getenv("ARL_USE_PLAYWRIGHT_PROBE", "1") != "0",
+        playwright_headless=_env_bool("ARL_DOUYIN_PLAYWRIGHT_HEADLESS", True),
         cookie=os.getenv("ARL_DOUYIN_COOKIE", ""),
         min_quality_tier=os.getenv("ARL_DOUYIN_MIN_QUALITY_TIER", "uhd"),
     )
@@ -241,9 +243,13 @@ def _load_douyin_settings() -> DouyinSettings:
 def _load_douyin_settings_list() -> list[DouyinSettings]:
     room_urls = _env_csv("ARL_DOUYIN_ROOM_URLS")
     if not room_urls:
+        room_urls = _env_csv("ARL_DOUYIN_ROOM_URL")
+    if not room_urls:
         return [_load_douyin_settings()]
 
     streamer_names = _env_csv("ARL_DOUYIN_STREAMER_NAMES")
+    if not streamer_names:
+        streamer_names = _env_csv("ARL_STREAMER_NAME")
     legacy = _load_douyin_settings()
     settings: list[DouyinSettings] = []
     for index, room_url in enumerate(room_urls):
@@ -278,9 +284,13 @@ def _load_bilibili_settings() -> BilibiliSettings:
 def _load_bilibili_settings_list() -> list[BilibiliSettings]:
     room_urls = _env_csv("ARL_BILIBILI_ROOM_URLS")
     if not room_urls:
+        room_urls = _env_csv("ARL_BILIBILI_ROOM_URL")
+    if not room_urls:
         return [_load_bilibili_settings()]
 
     streamer_names = _env_csv("ARL_BILIBILI_STREAMER_NAMES")
+    if not streamer_names:
+        streamer_names = _env_csv("ARL_BILIBILI_STREAMER_NAME")
     legacy = _load_bilibili_settings()
     settings: list[BilibiliSettings] = []
     for index, room_url in enumerate(room_urls):
@@ -316,7 +326,7 @@ def _load_platforms(default_douyin: DouyinSettings) -> list[PlatformSettings]:
         # Backward compat: a deployment that never set ARL_PLATFORMS keeps
         # running the single-platform douyin loop derived from the legacy
         # ARL_DOUYIN_* env vars.
-        if _env_csv("ARL_DOUYIN_ROOM_URLS"):
+        if _env_csv("ARL_DOUYIN_ROOM_URLS") or len(_env_csv("ARL_DOUYIN_ROOM_URL")) > 1:
             return _load_douyin_settings_list()
         return [default_douyin]
 
@@ -333,7 +343,11 @@ def _load_platforms(default_douyin: DouyinSettings) -> list[PlatformSettings]:
                 f"unknown ARL_PLATFORMS entry: {platform_type!r}; "
                 f"registered={sorted(_PLATFORM_LOADERS)}"
             )
-        if platform_type == "douyin" and not _env_csv("ARL_DOUYIN_ROOM_URLS"):
+        if (
+            platform_type == "douyin"
+            and not _env_csv("ARL_DOUYIN_ROOM_URLS")
+            and len(_env_csv("ARL_DOUYIN_ROOM_URL")) <= 1
+        ):
             platforms.append(default_douyin)
         else:
             platforms.extend(loader())

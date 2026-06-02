@@ -274,7 +274,9 @@ class DouyinRoomProbe(PlatformProbe):
         ]
         if self.settings.cookie:
             command.extend(["--cookie", self.settings.cookie])
-        command.extend(["--headless", "0"])
+        command.extend(
+            ["--headless", "1" if self.settings.playwright_headless else "0"]
+        )
         try:
             result = subprocess.run(
                 command,

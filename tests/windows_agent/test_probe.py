@@ -140,6 +140,29 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
         _, kwargs = run_mock.call_args
         self.assertEqual(kwargs.get("encoding"), "utf-8")
         self.assertEqual(kwargs.get("errors"), "replace")
+        command_args = run_mock.call_args.args[0]
+        headless_idx = command_args.index("--headless")
+        self.assertEqual(command_args[headless_idx + 1], "1")
+
+    def test_playwright_subprocess_can_run_headful_for_debugging(self) -> None:
+        result = subprocess.CompletedProcess(
+            args=["node"],
+            returncode=0,
+            stdout='{"ok":false,"error":"probe_failed"}',
+            stderr="",
+        )
+        settings = self.settings.model_copy(update={"playwright_headless": False})
+        probe = DouyinRoomProbe(settings)
+        with patch("arl.windows_agent.probe.subprocess.run", return_value=result) as run_mock:
+            probe._probe_with_playwright(
+                room_url=settings.room_url,
+                streamer_name=settings.streamer_name,
+                now=self.now,
+            )
+
+        command_args = run_mock.call_args.args[0]
+        headless_idx = command_args.index("--headless")
+        self.assertEqual(command_args[headless_idx + 1], "0")
 
     def test_playwright_invalid_source_type_with_stream_url_falls_back_to_direct_stream(self) -> None:
         payload = (

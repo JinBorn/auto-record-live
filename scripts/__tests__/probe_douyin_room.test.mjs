@@ -5,8 +5,10 @@ import {
   detectRoom,
   extractDirectStreamUrl,
   extractStreamUrlCandidates,
+  parseArgs,
   parseCookieString,
   pickPreferredStreamUrl,
+  resolveHeadless,
 } from "../probe_douyin_room.mjs";
 
 // All fixtures must include sign= or wsSecret= in the query string because
@@ -146,6 +148,24 @@ test("parseCookieString preserves '=' inside cookie value (e.g. base64 padding)"
     { name: "token", value: "abc==", domain: ".douyin.com", path: "/" },
     { name: "sid", value: "q==", domain: ".douyin.com", path: "/" },
   ]);
+});
+
+test("parseArgs keeps headless override value for browser visibility control", () => {
+  const args = parseArgs([
+    "node",
+    "probe_douyin_room.mjs",
+    "--room-url",
+    "https://live.douyin.com/123",
+    "--headless",
+    "0",
+  ]);
+  assert.equal(args.headless, "0");
+});
+
+test("resolveHeadless defaults to hidden Chromium and allows explicit headful debugging", () => {
+  assert.equal(resolveHeadless({}), true);
+  assert.equal(resolveHeadless({ headless: "1" }), true);
+  assert.equal(resolveHeadless({ headless: "0" }), false);
 });
 
 test("extractStreamUrlCandidates accepts signed _uhd URL whose query is JSON-escaped with \\u0026", () => {

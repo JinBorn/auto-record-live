@@ -99,6 +99,13 @@ npm install
 .\.venv\Scripts\python.exe -m arl.cli windows-agent --once
 ```
 
+只检测并列出已配置直播间是否在播（不写 agent 事件/状态文件）：
+
+```powershell
+.\.venv\Scripts\python.exe -m arl.cli live-status
+.\.venv\Scripts\python.exe -m arl.cli live-status --json
+```
+
 如需真实浏览器探测，先安装 Playwright 浏览器：
 
 ```powershell

@@ -144,6 +144,29 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             ["https://live.douyin.com/111", "https://live.douyin.com/222"],
         )
 
+    def test_comma_separated_legacy_room_url_envs_expand_per_room(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_PLATFORMS"] = "douyin,bilibili"
+            os.environ["ARL_DOUYIN_ROOM_URL"] = (
+                "https://live.douyin.com/111, https://live.douyin.com/222"
+            )
+            os.environ["ARL_STREAMER_NAME"] = "douyin-a,douyin-b"
+            os.environ["ARL_BILIBILI_ROOM_URL"] = (
+                "https://live.bilibili.com/333, https://live.bilibili.com/444"
+            )
+            os.environ["ARL_BILIBILI_STREAMER_NAME"] = "bili-a,bili-b"
+            settings = load_settings()
+
+        self.assertEqual(
+            [(platform.type, platform.room_url, platform.streamer_name) for platform in settings.platforms],
+            [
+                ("douyin", "https://live.douyin.com/111", "douyin-a"),
+                ("douyin", "https://live.douyin.com/222", "douyin-b"),
+                ("bilibili", "https://live.bilibili.com/333", "bili-a"),
+                ("bilibili", "https://live.bilibili.com/444", "bili-b"),
+            ],
+        )
+
     def test_quality_gate_envs_load_into_platform_settings(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             os.environ["ARL_PLATFORMS"] = "douyin,bilibili"
@@ -161,6 +184,26 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(douyin.min_quality_tier, "origin")
         self.assertEqual(bilibili.min_stream_qn, 10000)
         self.assertEqual(bilibili.min_stream_bitrate_kbps, 6000)
+
+    def test_douyin_playwright_headless_env_loads(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_PLATFORMS"] = "douyin"
+            os.environ["ARL_DOUYIN_ROOM_URL"] = "https://live.douyin.com/123"
+            settings = load_settings()
+
+        douyin = settings.platforms[0]
+        self.assertIsInstance(douyin, DouyinSettings)
+        self.assertTrue(douyin.playwright_headless)
+
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_PLATFORMS"] = "douyin"
+            os.environ["ARL_DOUYIN_ROOM_URL"] = "https://live.douyin.com/123"
+            os.environ["ARL_DOUYIN_PLAYWRIGHT_HEADLESS"] = "0"
+            settings = load_settings()
+
+        douyin = settings.platforms[0]
+        self.assertIsInstance(douyin, DouyinSettings)
+        self.assertFalse(douyin.playwright_headless)
 
     def test_recording_actual_resolution_gate_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):

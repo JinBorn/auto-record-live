@@ -23,6 +23,7 @@ from arl.soak.service import SoakService
 from arl.status.service import StatusService
 from arl.subtitles.service import SubtitleService
 from arl.windows_agent.cookie_health import run_cookie_health
+from arl.windows_agent.live_status import LiveStatusReport, run_live_status
 from arl.windows_agent.registry import build_probes
 from arl.windows_agent.service import WindowsAgentService
 
@@ -55,6 +56,36 @@ def _parse_iso_datetime(raw: str) -> datetime:
     return parsed
 
 
+def _format_live_status_text(report: LiveStatusReport) -> str:
+    lines: list[str] = []
+    for row in report.rows:
+        lines.append(
+            " ".join(
+                [
+                    f"platform={row.platform}",
+                    f"state={row.state}",
+                    f"streamer_name={row.streamer_name or 'n/a'}",
+                    f"room_url={row.room_url or 'n/a'}",
+                    f"source_type={row.source_type or 'none'}",
+                    f"reason={row.reason}",
+                ]
+            )
+        )
+    summary = report.as_dict()["summary"]
+    lines.append(
+        " ".join(
+            [
+                "summary=live_status",
+                f"total={summary['total']}",
+                f"live={summary['live']}",
+                f"offline={summary['offline']}",
+                f"error={summary['error']}",
+            ]
+        )
+    )
+    return "\n".join(lines)
+
+
 def _resolve_settings(
     args: argparse.Namespace,
 ):
@@ -78,6 +109,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("show-config", help="Print resolved settings.")
     subparsers.add_parser("status", help="Print local pipeline health/status summary.")
+    live_status = subparsers.add_parser(
+        "live-status",
+        help="Probe configured live rooms once and list whether each room is live.",
+    )
+    live_status.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON instead of line-oriented text.",
+    )
     maintenance = subparsers.add_parser(
         "maintenance",
         help="Run local long-run maintenance once.",
@@ -353,6 +393,14 @@ def main() -> int:
 
     if args.command == "status":
         print(json.dumps(StatusService(settings).build(), ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "live-status":
+        report = run_live_status(build_probes(settings.platforms))
+        if args.json:
+            print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+        else:
+            print(_format_live_status_text(report))
         return 0
 
     if args.command == "maintenance":

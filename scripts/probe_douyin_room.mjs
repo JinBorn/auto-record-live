@@ -33,6 +33,10 @@ function parseArgs(argv) {
   return args;
 }
 
+function resolveHeadless(args) {
+  return args["headless"] !== "0";
+}
+
 // Turn a "k1=v1; k2=v2" cookie header into the Playwright cookie array
 // shape addCookies expects. domain defaults to .douyin.com so cookies copied
 // from Chrome F12 (where the domain is implicit) reach every Douyin host.
@@ -308,7 +312,7 @@ async function main() {
   const roomUrl = args["room-url"];
   const profileDir = args["profile-dir"] || "data/tmp/chrome-profile";
   const timeoutMs = Number.parseInt(args["timeout-ms"] || "20000", 10);
-  const headless = args["headless"] === "1";
+  const headless = resolveHeadless(args);
 
   if (!roomUrl) {
     console.log(JSON.stringify({
@@ -391,4 +395,5 @@ export {
   parseArgs,
   parseCookieString,
   pickPreferredStreamUrl,
+  resolveHeadless,
 };
