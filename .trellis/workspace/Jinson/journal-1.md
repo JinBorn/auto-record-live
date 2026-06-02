@@ -1560,3 +1560,36 @@ Completed and archived the production unattended hardening slice: postprocess lo
 ### Next Steps
 
 - None - task complete
+
+
+## Session 37: Add live status command
+
+**Date**: 2026-06-02
+**Task**: Add live status command
+**Branch**: `main`
+
+### Summary
+
+Added a live-status CLI command that probes configured Douyin and Bilibili rooms without writing agent events, outputs text or JSON, defaults Douyin Playwright probing to headless Chromium, and accepts comma-separated legacy room URL env vars as multi-room configuration.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f0e3f5a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
