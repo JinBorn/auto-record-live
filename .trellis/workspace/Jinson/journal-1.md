@@ -1593,3 +1593,36 @@ Added a live-status CLI command that probes configured Douyin and Bilibili rooms
 ### Next Steps
 
 - None - task complete
+
+
+## Session 38: Direct stream MP4 resilience
+
+**Date**: 2026-06-02
+**Task**: Direct stream MP4 resilience
+**Branch**: `main`
+
+### Summary
+
+Added fragmented MP4 movflags to direct-stream recorder output, covered it with regression tests, updated backend orchestration contract, and verified the active long Bilibili run is producing a probeable MP4.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d52c9cf` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

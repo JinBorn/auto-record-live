@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 37
+- **Total Sessions**: 38
 - **Last Active**: 2026-06-02
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1595 | Active |
+| `journal-1.md` | ~1628 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 38 | 2026-06-02 | Direct stream MP4 resilience | `d52c9cf` | `main` |
 | 37 | 2026-06-02 | Add live status command | `f0e3f5a` | `main` |
 | 36 | 2026-06-02 | Production unattended hardening completed | `2bbc5a8` | `main` |
 | 35 | 2026-06-02 | Production unattended hardening daily progress | - | `main` |
