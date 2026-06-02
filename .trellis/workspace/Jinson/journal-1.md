@@ -1527,3 +1527,36 @@ Recorded daily progress for production unattended hardening; task remains in pro
 - Commit the production-unattended-hardening changes.
 - Resolve or fail the 9 pending recovery jobs after operator review.
 - Archive the Trellis task only after the implementation is committed and final acceptance is complete.
+
+
+## Session 36: Production unattended hardening completed
+
+**Date**: 2026-06-02
+**Task**: Production unattended hardening completed
+**Branch**: `main`
+
+### Summary
+
+Completed and archived the production unattended hardening slice: postprocess loop, local status, ASR CPU fallback, multi-room monitoring, Windows supervisor/autostart, maintenance, soak checks, and recovery handoff. Final verification passed before archive: pytest, npm probe tests, git diff check, and PowerShell syntax checks.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2bbc5a8` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
