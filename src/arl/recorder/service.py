@@ -489,6 +489,8 @@ class RecorderService:
                 str(self.settings.recording.direct_stream_timeout_seconds),
                 "-c",
                 "copy",
+                "-movflags",
+                "+frag_keyframe+empty_moov+default_base_moof",
                 str(output_path),
             ]
         )

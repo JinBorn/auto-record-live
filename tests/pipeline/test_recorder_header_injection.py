@@ -157,6 +157,12 @@ class RecorderFfmpegHeaderInjectionTests(unittest.TestCase):
         self.assertIn("-i", command)
         self.assertIn("-c", command)
         self.assertIn("copy", command)
+        self.assertIn("-movflags", command)
+        movflags_index = command.index("-movflags")
+        self.assertEqual(
+            command[movflags_index + 1],
+            "+frag_keyframe+empty_moov+default_base_moof",
+        )
 
     def test_user_agent_lookup_is_case_insensitive(self) -> None:
         # If a future probe writes lowercase keys, -user_agent should still

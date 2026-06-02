@@ -171,6 +171,7 @@ class RecordingJobRecord(BaseModel):
     - `RecordingJobRecord.stream_headers` (with `SessionRecord.stream_headers` as fallback) must reach ffmpeg before `-i` as: `-user_agent <value>` for the `User-Agent` entry (case-insensitive lookup) plus `-headers "K1: V1\r\nK2: V2\r\n..."` for every other entry joined with CRLF
     - empty `stream_headers` produces a byte-identical command to the pre-PR2 path, so Douyin recordings keep the same ffmpeg invocation
     - the User-Agent header rides on the dedicated `-user_agent` flag (not duplicated in `-headers`) to avoid quoting/escaping ambiguity at the shell layer
+    - direct-stream MP4 recording must pass `-movflags +frag_keyframe+empty_moov+default_base_moof` with `-c copy`; unattended runs may be stopped at the process boundary, so the file must not depend on a final `moov` atom written only during graceful muxer close
   - Availability-over-fallback contract:
     - For quality-gate failures (`quality_below_min_qn:*`, `quality_below_min_bitrate:*`, `quality_below_min_tier:*`, `quality_tier_unknown:*`), probes must emit `state=offline` instead of degrading to lower-quality direct-stream or browser-capture output.
   - orchestrator audit log must include recovery action routing:
@@ -709,6 +710,7 @@ class ExportAsset(BaseModel):
 | A stage receives an unknown asset format or status | Reject or audit explicitly; do not guess |
 | `ARL_RECORDING_ENABLE_FFMPEG=1` but `stream_url` missing | Recorder logs skip reason and writes placeholder recording artifact |
 | `ARL_RECORDING_ENABLE_FFMPEG=1`, source is `browser_capture`, and resolved capture input is empty/unavailable | Recorder logs skip reason and writes placeholder recording artifact |
+| Recorder invokes ffmpeg for a direct-stream MP4 | Command includes `-c copy -movflags +frag_keyframe+empty_moov+default_base_moof <output.mp4>` so partially completed long recordings remain probeable/playable if the supervising process terminates near the timeout boundary |
 | ffmpeg fails with retryable reason and retry budget remains | Recorder emits one `ffmpeg_record_failed` (decision `attempt_failed_yield_to_next_probe`) plus `recording_retry_scheduled`, writes `next_eligible_at_by_job_id[job]` per backoff schedule, and defers placeholder/asset emission until eligibility lapses |
 | ffmpeg retry budget exhausted | Recorder emits `recording_retry_exhausted`, writes placeholder artifact, and emits recording asset |
 | ffmpeg fails with clear HTTP 4xx input-side errors (`401/403/404/410`, `server returned 4xx`) | Treat as non-recoverable input/configuration failure (decision `attempt_failed`); do not schedule cross-run retry; emit placeholder/manual path |
@@ -798,6 +800,7 @@ class ExportAsset(BaseModel):
 - Unit test: subtitle service auto-triggered stage-signal ingest inherits subtitles filter scope (`session_id`/`match_index`) and avoids unrelated subtitle scans.
 - Unit test: exporter refuses to burn subtitles when the declared subtitle file is missing.
 - Unit test: recorder with `enable_ffmpeg=True` but missing `stream_url` still emits one placeholder asset.
+- Unit test: recorder direct-stream ffmpeg command includes fragmented MP4 `-movflags` next to stream-copy output.
 - Unit test: recorder treats ffmpeg HTTP 4xx failures as non-recoverable and skips cross-run retry scheduling.
 - Unit test: recorder stops in-run ffmpeg retries early when a non-recoverable reason is detected.
 - Unit test: recorder infers actionable manual-recovery action mapping from `stop_reason` when `failure_category` is missing, and keeps inspect fallback only for opaque reasons.
