@@ -1626,3 +1626,36 @@ Added fragmented MP4 movflags to direct-stream recorder output, covered it with 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 39: Harden post-live media pipeline
+
+**Date**: 2026-06-03
+**Task**: Harden post-live media pipeline
+**Branch**: `main`
+
+### Summary
+
+Hardened long direct-stream recording finalization and exporter subtitle burn-in on Windows, added deterministic copywriter stage with manifest/status contracts, verified the recorded video through subtitles, export, and copy generation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d66584d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
