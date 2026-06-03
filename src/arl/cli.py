@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from arl.config import load_settings
+from arl.copywriter.service import CopywriterService
 from arl.exporter.service import ExporterService
 from arl.maintenance.service import MaintenanceService
 from arl.orchestrator.service import OrchestratorService
@@ -378,6 +379,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only process comma-separated match indices from boundaries.",
     )
     subparsers.add_parser("exporter", help="Run the exporter worker.")
+    subparsers.add_parser("copywriter", help="Run the title/copy generation worker.")
 
     return parser
 
@@ -598,6 +600,10 @@ def main() -> int:
 
     if args.command == "exporter":
         ExporterService(settings).run()
+        return 0
+
+    if args.command == "copywriter":
+        CopywriterService(settings).run()
         return 0
 
     parser.error(f"unsupported command: {args.command}")

@@ -16,7 +16,7 @@
 - **Orchestrator**：消费 agent 事件，维护会话与录制任务状态，写 `data/tmp/orchestrator-state.json`
 - **Recorder**：拉起 ffmpeg 录制并写入 `data/raw/<session>/recording-source.mp4`；流不可用时优雅降级为 placeholder 资产。Probe 在 `AgentSnapshot.stream_headers` 提供的平台特定 HTTP header（如 B 站要求的 `Referer`）会自动透传到 ffmpeg `-user_agent` / `-headers` 参数，recorder 自身保持平台中立。
 
-录制完成后再依次跑离线后处理：对局切分（segmenter）、字幕（faster-whisper）、导出（exporter）。所有数据停留在原生 NTFS，无跨文件系统 IO 瓶颈。
+录制完成后再依次跑离线后处理：对局切分（segmenter）、字幕（faster-whisper）、导出（exporter）、标题文案（copywriter）。所有数据停留在原生 NTFS，无跨文件系统 IO 瓶颈。
 
 ## 仓库结构
 
@@ -30,6 +30,7 @@ src/arl/
   segmenter/
   subtitles/
   exporter/
+  copywriter/
   shared/
 ```
 
@@ -235,6 +236,15 @@ orchestrator/recorder launcher 不重复跑这个启动门；recorder 路径的 
 > 说明：`windows-agent-loop.ps1` 默认会在启动轮询前跑一次 cookie 健康检查；可用 `$env:ARL_COOKIE_HEALTH_GATE = "fatal"` 改成失败即退出，或设为 `"skip"` 跳过。
 > 说明：`ARL_RECORDER_INTERVAL_SECONDS` 控制 recorder 轮询间隔（默认 5 秒），也可用 `-IntervalSeconds` 参数覆盖。
 
+> Long direct-stream recordings reserve finalization headroom by default:
+> `ARL_DIRECT_STREAM_TIMEOUT_SECONDS` is the recorder's total budget, and
+> `ARL_RECORDING_FINALIZE_HEADROOM_SECONDS` (default `60`) is subtracted from
+> ffmpeg's capture `-t` only for long recordings. For example, a `7200` second
+> budget records `7140` seconds, leaving time for success audit, asset/state
+> persistence, and MP4 remux before an external unattended wrapper stops at the
+> same budget boundary. Set `ARL_RECORDING_FINALIZE_HEADROOM_SECONDS=0` only
+> when the outer wrapper already provides extra shutdown grace.
+
 **Window 4 (postprocess loop):**
 
 ```powershell
@@ -242,7 +252,7 @@ orchestrator/recorder launcher 不重复跑这个启动门；recorder 路径的 
 ```
 
 The postprocess loop runs `arl postprocess --once` repeatedly. One pass runs
-semantic stage hints, segmenter, subtitles, and exporter in order. Use
+semantic stage hints, segmenter, subtitles, exporter, and copywriter in order. Use
 `ARL_POSTPROCESS_INTERVAL_SECONDS` or `-IntervalSeconds` to change the default
 30 second interval.
 
@@ -342,7 +352,10 @@ or transcript text.
 # 3. 导出
 .\.venv\Scripts\python.exe -m arl.cli exporter
 
-# 或：一键跑一轮后处理（语义提示 -> 分段 -> 字幕 -> 导出）
+# 4. 标题文案
+.\.venv\Scripts\python.exe -m arl.cli copywriter
+
+# 或：一键跑一轮后处理（语义提示 -> 分段 -> 字幕 -> 导出 -> 标题文案）
 .\.venv\Scripts\python.exe -m arl.cli postprocess --once
 
 # 查看本地管线健康摘要

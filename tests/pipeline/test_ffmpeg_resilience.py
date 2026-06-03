@@ -1505,6 +1505,22 @@ class RecorderHardeningTest(unittest.TestCase):
 
     # ----- R1: yield-on-transient -----
 
+    def test_long_direct_stream_capture_reserves_finalize_headroom(self) -> None:
+        self._seed_state(job_id="job-headroom")
+        self.settings.recording.direct_stream_timeout_seconds = 7200
+        self.settings.recording.direct_stream_finalize_headroom_seconds = 60
+        self.settings.recording.validate_actual_resolution = False
+
+        with patch("arl.recorder.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+            "arl.recorder.service.subprocess.run",
+            return_value=subprocess.CompletedProcess(args=["ffmpeg"], returncode=0),
+        ) as mocked_run:
+            RecorderService(self.settings).run()
+
+        self.assertEqual(mocked_run.call_count, 1)
+        command = list(mocked_run.call_args[0][0])
+        self.assertEqual(command[command.index("-t") + 1], "7140")
+
     def test_r1_yield_on_http_5xx_runs_ffmpeg_once_with_yield_decision(self) -> None:
         self._seed_state(job_id="job-5xx")
         error = subprocess.CalledProcessError(
@@ -1708,6 +1724,113 @@ class RecorderHardeningTest(unittest.TestCase):
         self.assertTrue(any(item["event_type"] == "ffmpeg_record_succeeded" for item in events))
         self.assertFalse(
             any(item["event_type"] == "quality_below_actual_resolution" for item in events)
+        )
+
+    def test_direct_stream_success_remuxes_fragmented_mp4_to_faststart(self) -> None:
+        self._seed_state(job_id="job-remux")
+        commands: list[list[str]] = []
+        remux_saw_durable_success = False
+
+        def _which(binary: str) -> str | None:
+            if binary in {"ffmpeg", "ffprobe"}:
+                return f"/usr/bin/{binary}"
+            return None
+
+        def _fake_run(command, **kwargs):
+            nonlocal remux_saw_durable_success
+            commands.append(list(command))
+            if command[0].endswith("ffprobe"):
+                return subprocess.CompletedProcess(
+                    args=command,
+                    returncode=0,
+                    stdout=json.dumps({"streams": [{"width": 1920, "height": 1080}]}),
+                )
+            output_path = Path(command[-1])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            if output_path.name == "recording-source.mp4":
+                output_path.write_text("fragmented", encoding="utf-8")
+            elif output_path.name == "recording-source.remux.mp4":
+                asset_rows = (self.temp_root / "recording-assets.jsonl").read_text(
+                    encoding="utf-8"
+                ).splitlines()
+                self.assertEqual(len(asset_rows), 1)
+                asset_payload = json.loads(asset_rows[0])
+                self.assertTrue(asset_payload["path"].endswith("recording-source.mp4"))
+                recorder_state = json.loads(
+                    (self.temp_root / "recorder-state.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(recorder_state["processed_job_ids"], ["job-remux"])
+                remux_saw_durable_success = True
+                output_path.write_text("faststart", encoding="utf-8")
+            else:
+                raise AssertionError(f"unexpected output path: {output_path}")
+            return subprocess.CompletedProcess(args=command, returncode=0)
+
+        with patch("arl.recorder.service.shutil.which", side_effect=_which), patch(
+            "arl.recorder.service.subprocess.run", side_effect=_fake_run
+        ):
+            RecorderService(self.settings).run()
+
+        recording_file = self.raw_root / "session-hd" / "recording-source.mp4"
+        self.assertEqual(recording_file.read_text(encoding="utf-8"), "faststart")
+        self.assertFalse((self.raw_root / "session-hd" / "recording-source.remux.mp4").exists())
+        self.assertTrue(remux_saw_durable_success)
+        remux_commands = [
+            command
+            for command in commands
+            if command[0].endswith("ffmpeg")
+            and command[-1].endswith("recording-source.remux.mp4")
+        ]
+        self.assertEqual(len(remux_commands), 1)
+        remux_command = remux_commands[0]
+        self.assertIn("-map", remux_command)
+        self.assertIn("0", remux_command)
+        self.assertIn("-c", remux_command)
+        self.assertIn("copy", remux_command)
+        self.assertIn("-movflags", remux_command)
+        self.assertEqual(remux_command[remux_command.index("-movflags") + 1], "+faststart")
+        self.assertTrue(
+            any(item["event_type"] == "ffmpeg_record_succeeded" for item in self._audit_payloads())
+        )
+
+    def test_direct_stream_remux_failure_keeps_original_recording(self) -> None:
+        self._seed_state(job_id="job-remux-fail")
+
+        def _which(binary: str) -> str | None:
+            if binary in {"ffmpeg", "ffprobe"}:
+                return f"/usr/bin/{binary}"
+            return None
+
+        def _fake_run(command, **kwargs):
+            if command[0].endswith("ffprobe"):
+                return subprocess.CompletedProcess(
+                    args=command,
+                    returncode=0,
+                    stdout=json.dumps({"streams": [{"width": 1920, "height": 1080}]}),
+                )
+            output_path = Path(command[-1])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            if output_path.name == "recording-source.mp4":
+                output_path.write_text("fragmented", encoding="utf-8")
+                return subprocess.CompletedProcess(args=command, returncode=0)
+            if output_path.name == "recording-source.remux.mp4":
+                raise subprocess.CalledProcessError(
+                    1,
+                    command,
+                    stderr="muxer failed",
+                )
+            raise AssertionError(f"unexpected output path: {output_path}")
+
+        with patch("arl.recorder.service.shutil.which", side_effect=_which), patch(
+            "arl.recorder.service.subprocess.run", side_effect=_fake_run
+        ):
+            RecorderService(self.settings).run()
+
+        recording_file = self.raw_root / "session-hd" / "recording-source.mp4"
+        self.assertEqual(recording_file.read_text(encoding="utf-8"), "fragmented")
+        self.assertFalse((self.raw_root / "session-hd" / "recording-source.remux.mp4").exists())
+        self.assertTrue(
+            any(item["event_type"] == "ffmpeg_record_succeeded" for item in self._audit_payloads())
         )
 
     def test_r3_stderr_log_rotation_keeps_only_retain_count_newest(self) -> None:
@@ -2379,9 +2502,15 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         # is returned by the exporter without actually muxing anything.
         with patch("arl.exporter.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
             "arl.exporter.service.subprocess.run", return_value=None
-        ):
+        ) as mocked_run:
             ExporterService(self.settings).run()
 
+        command = list(mocked_run.call_args[0][0])
+        subtitle_path = (
+            self.processed_root / "session-e" / "match-01.srt"
+        ).resolve().as_posix().replace(":", "\\:")
+        self.assertIn("-vf", command)
+        self.assertEqual(command[command.index("-vf") + 1], f"subtitles='{subtitle_path}'")
         payloads = self._audit_payloads()
         self.assertEqual(len(payloads), 1)
         self.assertEqual(payloads[0]["event_type"], "ffmpeg_export_succeeded")

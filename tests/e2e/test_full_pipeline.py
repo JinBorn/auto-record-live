@@ -6,6 +6,8 @@ from subprocess import CalledProcessError
 from pathlib import Path
 from unittest.mock import patch
 
+from arl.copywriter.models import CopywriterStateFile
+from arl.copywriter.service import CopywriterService
 from arl.exporter.service import ExporterService
 from arl.exporter.models import ExporterStateFile
 from arl.orchestrator.models import OrchestratorStateFile
@@ -99,12 +101,23 @@ class GoldenPathTest(unittest.TestCase):
         exporter_events = jsonl_payloads(self.settings.storage.temp_dir / "exporter-events.jsonl")
         self.assertIn("ffmpeg_export_succeeded", [row["event_type"] for row in exporter_events])
 
+        CopywriterService(self.settings).run()
+        copies = jsonl_payloads(self.settings.storage.temp_dir / "copy-assets.jsonl")
+        self.assertEqual(len(copies), 1)
+        self.assertTrue(Path(copies[0]["path"]).exists())
+
         exporter_state = ExporterStateFile.model_validate_json(
             (self.settings.storage.temp_dir / "exporter-state.json").read_text(
                 encoding="utf-8"
             )
         )
         self.assertEqual(exporter_state.processed_match_keys, [f"{exports[0]['session_id']}:1"])
+        copywriter_state = CopywriterStateFile.model_validate_json(
+            (self.settings.storage.temp_dir / "copywriter-state.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(copywriter_state.processed_match_keys, [f"{exports[0]['session_id']}:1"])
 
 
 class CookieExpiredProbeTest(unittest.TestCase):

@@ -299,8 +299,8 @@ class ExporterService:
         return min(initial * (2 ** (attempt - 1)), maximum)
 
     def _subtitle_filter_arg(self, subtitle_path: Path) -> str:
-        escaped = str(subtitle_path).replace("\\", "\\\\").replace(":", "\\:")
-        return f"subtitles={escaped}"
+        escaped = subtitle_path.as_posix().replace(":", "\\:")
+        return f"subtitles='{escaped}'"
 
     def _load_state(self) -> ExporterStateFile:
         if not self.state_path.exists():

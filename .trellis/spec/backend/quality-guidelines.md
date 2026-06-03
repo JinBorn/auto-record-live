@@ -207,6 +207,16 @@ The current MVP backend is a local pipeline with file-backed contracts and typed
 
 **Prevention**: Keep regression tests for isolated fallback, success-between-fallbacks reset, and intentional-placeholder paths so only consecutive match-level ffmpeg fallbacks trip `ffmpeg_export_batch_aborted`.
 
+### Common Mistake: Adding a postprocess stage without a manifest/status contract
+
+**Symptom**: A new stage writes files that look correct on disk, but `arl status` still cannot report whether the stage is complete, reruns can duplicate outputs, and downstream tooling has to infer filenames.
+
+**Cause**: Treating the stage output as an ad hoc artifact instead of adding the full local-pipeline contract: typed shared asset model, append-only `*-assets.jsonl` manifest, stage-owned `*-state.json`, CLI parser entry, `PostProcessService` order, status counts, and tests.
+
+**Fix**: Follow the copywriter pattern: add a `CopyAsset`-style typed model, append one manifest row per `(session_id, match_index)`, persist processed keys in a stage state file, wire a dedicated CLI command, add the stage to `postprocess`, and extend `StatusService` with present/missing counts.
+
+**Prevention**: For every new post-recording stage, update `.trellis/spec/backend/orchestration-contracts.md` first with signatures, file paths, validation/error rows, and required tests. Add unit tests for generation, idempotency, missing-input retry behavior, CLI parsing, postprocess order, and status counts.
+
 ### Common Mistake: Burning the in-run retry budget on transient stream-URL failures
 
 **Symptom**: Recorder runs ffmpeg back-to-back against the same stale (token-expired) `stream_url`, producing duplicate 5xx/timeout/process_error failures before the orchestrator can refresh the URL. Audit log balloons with redundant `ffmpeg_record_failed` rows and recovery is delayed by `ffmpeg_max_retries * timeout` per run.

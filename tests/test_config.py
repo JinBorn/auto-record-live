@@ -219,6 +219,13 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             3,
         )
 
+    def test_recording_finalize_headroom_env_loads(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_RECORDING_FINALIZE_HEADROOM_SECONDS"] = "90"
+            settings = load_settings()
+
+        self.assertEqual(settings.recording.direct_stream_finalize_headroom_seconds, 90)
+
     def test_exporter_backoff_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             os.environ["ARL_EXPORTER_BACKOFF_INITIAL_SECONDS"] = "1.5"

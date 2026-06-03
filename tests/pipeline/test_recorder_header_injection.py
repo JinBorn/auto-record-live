@@ -157,6 +157,8 @@ class RecorderFfmpegHeaderInjectionTests(unittest.TestCase):
         self.assertIn("-i", command)
         self.assertIn("-c", command)
         self.assertIn("copy", command)
+        self.assertIn("-t", command)
+        self.assertEqual(command[command.index("-t") + 1], "5")
         self.assertIn("-movflags", command)
         movflags_index = command.index("-movflags")
         self.assertEqual(

@@ -6,12 +6,13 @@ from pathlib import Path
 from typing import Any
 
 from arl.config import Settings
+from arl.copywriter.models import CopywriterStateFile
 from arl.exporter.models import ExporterAuditEvent, ExporterStateFile
 from arl.orchestrator.models import OrchestratorStateFile, RecordingJobStatus
 from arl.orchestrator.state_store import load_orchestrator_state
 from arl.recorder.models import RecorderAuditEvent, RecorderStateFile
 from arl.recovery.service import RecoveryService
-from arl.shared.contracts import ExportAsset, MatchBoundary, RecordingAsset, SubtitleAsset
+from arl.shared.contracts import CopyAsset, ExportAsset, MatchBoundary, RecordingAsset, SubtitleAsset
 from arl.shared.jsonl_store import load_models
 from arl.subtitles.models import SubtitleAuditEvent, SubtitleStateFile
 
@@ -26,6 +27,7 @@ class StatusService:
         recorder_state = self._load_recorder_state()
         subtitle_state = self._load_subtitle_state()
         exporter_state = self._load_exporter_state()
+        copywriter_state = self._load_copywriter_state()
 
         recording_assets = load_models(
             self.temp_dir / "recording-assets.jsonl",
@@ -37,6 +39,7 @@ class StatusService:
             SubtitleAsset,
         )
         export_assets = load_models(self.temp_dir / "export-assets.jsonl", ExportAsset)
+        copy_assets = load_models(self.temp_dir / "copy-assets.jsonl", CopyAsset)
         recorder_events = load_models(
             self.settings.orchestrator.recorder_event_log_path,
             RecorderAuditEvent,
@@ -53,6 +56,7 @@ class StatusService:
 
         missing_subtitles = self._count_missing_subtitles(boundaries, subtitle_assets)
         missing_exports = self._count_missing_exports(boundaries, export_assets)
+        missing_copies = self._count_missing_copies(boundaries, copy_assets)
         subtitle_fallback_reasons = self._subtitle_fallback_reasons(subtitle_events)
         recorder_failure_events = self._recorder_failure_events(recorder_events)
         exporter_fallback_events = [
@@ -84,6 +88,7 @@ class StatusService:
             exporter_fallback_events=exporter_fallback_events,
             missing_subtitles=missing_subtitles,
             missing_exports=missing_exports,
+            missing_copies=missing_copies,
             recorder_failure_events=recorder_failure_events,
         )
         action_required = bool(action_required_reasons)
@@ -123,8 +128,10 @@ class StatusService:
                 "match_boundaries": len(boundaries),
                 "subtitle_assets": len(subtitle_assets),
                 "export_assets": len(export_assets),
+                "copy_assets": len(copy_assets),
                 "missing_subtitles": missing_subtitles,
                 "missing_exports": missing_exports,
+                "missing_copies": missing_copies,
             },
             "subtitles": {
                 "processed_matches": len(subtitle_state.processed_match_keys),
@@ -136,6 +143,9 @@ class StatusService:
                 "processed_matches": len(exporter_state.processed_match_keys),
                 "fallback_events": len(exporter_fallback_events),
                 "batch_aborted_events": len(exporter_batch_aborted_events),
+            },
+            "copywriter": {
+                "processed_matches": len(copywriter_state.processed_match_keys),
             },
             "recovery": {
                 "pending_actions": recovery_summary.get("actions_pending", 0),
@@ -165,6 +175,12 @@ class StatusService:
             return ExporterStateFile()
         return ExporterStateFile.model_validate_json(path.read_text(encoding="utf-8"))
 
+    def _load_copywriter_state(self) -> CopywriterStateFile:
+        path = self.temp_dir / "copywriter-state.json"
+        if not path.exists():
+            return CopywriterStateFile()
+        return CopywriterStateFile.model_validate_json(path.read_text(encoding="utf-8"))
+
     def _count_missing_subtitles(
         self,
         boundaries: list[MatchBoundary],
@@ -189,6 +205,22 @@ class StatusService:
         available = {
             (asset.session_id, asset.match_index)
             for asset in export_assets
+            if Path(asset.path).exists()
+        }
+        return sum(
+            1
+            for boundary in boundaries
+            if (boundary.session_id, boundary.match_index) not in available
+        )
+
+    def _count_missing_copies(
+        self,
+        boundaries: list[MatchBoundary],
+        copy_assets: list[CopyAsset],
+    ) -> int:
+        available = {
+            (asset.session_id, asset.match_index)
+            for asset in copy_assets
             if Path(asset.path).exists()
         }
         return sum(
@@ -314,6 +346,7 @@ class StatusService:
         exporter_fallback_events: list[ExporterAuditEvent],
         missing_subtitles: int,
         missing_exports: int,
+        missing_copies: int,
         recorder_failure_events: list[RecorderAuditEvent],
     ) -> list[dict[str, object]]:
         reasons: list[dict[str, object]] = []
@@ -339,6 +372,8 @@ class StatusService:
             reasons.append({"code": "missing_subtitles", "count": missing_subtitles})
         if missing_exports > 0:
             reasons.append({"code": "missing_exports", "count": missing_exports})
+        if missing_copies > 0:
+            reasons.append({"code": "missing_copies", "count": missing_copies})
         if recorder_failure_events:
             reasons.append(
                 {

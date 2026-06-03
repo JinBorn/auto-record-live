@@ -17,6 +17,11 @@ class CliUnattendedTest(unittest.TestCase):
 
         self.assertEqual(args.command, "status")
 
+    def test_copywriter_command_parses(self) -> None:
+        args = build_parser().parse_args(["copywriter"])
+
+        self.assertEqual(args.command, "copywriter")
+
     def test_maintenance_command_parses(self) -> None:
         args = build_parser().parse_args(["maintenance", "--once"])
 

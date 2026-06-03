@@ -10,6 +10,7 @@ from arl.config import (
     Settings,
     StorageSettings,
 )
+from arl.copywriter.models import CopywriterStateFile
 from arl.exporter.models import ExporterStateFile
 from arl.orchestrator.models import (
     OrchestratorStateFile,
@@ -20,6 +21,7 @@ from arl.orchestrator.models import (
 )
 from arl.recorder.models import RecorderStateFile
 from arl.shared.contracts import (
+    CopyAsset,
     ExportAsset,
     MatchBoundary,
     RecordingAsset,
@@ -70,6 +72,7 @@ class StatusServiceTest(unittest.TestCase):
         recording_path = self._write_file("raw", session_id, "recording.mp4")
         subtitle_path = self._write_file("processed", session_id, "match-01.srt")
         export_path = self._write_file("exports", session_id, "match-01.mp4")
+        copy_path = self._write_file("processed", session_id, "match-01-copy.json")
         append_model(
             self.temp_root / "recording-assets.jsonl",
             RecordingAsset(
@@ -109,6 +112,20 @@ class StatusServiceTest(unittest.TestCase):
                 created_at=self._now(),
             ),
         )
+        append_model(
+            self.temp_root / "copy-assets.jsonl",
+            CopyAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(copy_path),
+                title="fixture title",
+                description="fixture description",
+                tags=["fixture"],
+                subtitle_path=str(subtitle_path),
+                export_path=str(export_path),
+                created_at=self._now(),
+            ),
+        )
         self._write_json_state(
             self.temp_root / "subtitles-state.json",
             SubtitleStateFile(processed_match_keys=[f"{session_id}:1"]),
@@ -117,6 +134,10 @@ class StatusServiceTest(unittest.TestCase):
             self.temp_root / "exporter-state.json",
             ExporterStateFile(processed_match_keys=[f"{session_id}:1"]),
         )
+        self._write_json_state(
+            self.temp_root / "copywriter-state.json",
+            CopywriterStateFile(processed_match_keys=[f"{session_id}:1"]),
+        )
 
         status = StatusService(self.settings).build()
 
@@ -124,6 +145,9 @@ class StatusServiceTest(unittest.TestCase):
         self.assertEqual(status["postprocess"]["match_boundaries"], 1)
         self.assertEqual(status["postprocess"]["subtitle_assets"], 1)
         self.assertEqual(status["postprocess"]["export_assets"], 1)
+        self.assertEqual(status["postprocess"]["copy_assets"], 1)
+        self.assertEqual(status["postprocess"]["missing_copies"], 0)
+        self.assertEqual(status["copywriter"]["processed_matches"], 1)
 
     def test_subtitle_fallback_and_missing_outputs_are_degraded(self) -> None:
         session_id = "session-status-degraded"
@@ -161,6 +185,7 @@ class StatusServiceTest(unittest.TestCase):
         self.assertEqual(status["subtitles"]["fallback_devices"], {"cpu": 1})
         self.assertEqual(status["postprocess"]["missing_subtitles"], 1)
         self.assertEqual(status["postprocess"]["missing_exports"], 1)
+        self.assertEqual(status["postprocess"]["missing_copies"], 1)
         self.assertEqual(
             status["summary"]["degraded_reasons"],
             [
@@ -171,6 +196,7 @@ class StatusServiceTest(unittest.TestCase):
                 },
                 {"code": "missing_subtitles", "count": 1},
                 {"code": "missing_exports", "count": 1},
+                {"code": "missing_copies", "count": 1},
             ],
         )
 

@@ -242,7 +242,14 @@ class RecorderService:
             recorder_state.next_eligible_at_by_job_id.pop(job.job_id, None)
             recorder_state.retries_by_session_id.pop(session.session_id, None)
             processed += 1
+            self._save_state(recorder_state)
             log("recorder", f"recording asset written session_id={session.session_id}")
+            if source_type == SourceType.DIRECT_STREAM and output_path.suffix.lower() == ".mp4":
+                self._remux_direct_stream_recording(
+                    session_id=session.session_id,
+                    job_id=job.job_id,
+                    output_path=output_path,
+                )
 
         self._save_state(recorder_state)
         log("recorder", f"processed_jobs={processed}")
@@ -471,6 +478,7 @@ class RecorderService:
         output_dir = self.settings.storage.raw_dir / session_id
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / "recording-source.mp4"
+        capture_seconds = self._direct_stream_capture_seconds()
 
         command = [
             "ffmpeg",
@@ -486,7 +494,7 @@ class RecorderService:
                 "-i",
                 stream_url,
                 "-t",
-                str(self.settings.recording.direct_stream_timeout_seconds),
+                str(capture_seconds),
                 "-c",
                 "copy",
                 "-movflags",
@@ -564,6 +572,88 @@ class RecorderService:
             break
 
         return None, last_failure_reason
+
+    def _direct_stream_capture_seconds(self) -> int:
+        budget = max(1, self.settings.recording.direct_stream_timeout_seconds)
+        headroom = max(0, self.settings.recording.direct_stream_finalize_headroom_seconds)
+        if headroom <= 0:
+            return budget
+        if budget <= headroom * 2:
+            return budget
+        return max(1, budget - headroom)
+
+    def _remux_direct_stream_recording(
+        self,
+        *,
+        session_id: str,
+        job_id: str,
+        output_path: Path,
+    ) -> None:
+        if not output_path.exists():
+            return
+
+        remux_path = output_path.with_name(f"{output_path.stem}.remux{output_path.suffix}")
+        command = [
+            "ffmpeg",
+            "-y",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(output_path),
+            "-map",
+            "0",
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            str(remux_path),
+        ]
+        outcome = run_ffmpeg_attempt(
+            command,
+            timeout=self._remux_timeout_seconds(),
+            stderr_log_dir=self._recorder_stderr_dir,
+            stderr_log_basename=f"{job_id}-remux",
+            attempt=1,
+        )
+        if not outcome.success:
+            log(
+                "recorder",
+                "ffmpeg remux skipped "
+                f"session_id={session_id} job_id={job_id} reason={outcome.reason}",
+            )
+            self._remove_file_if_exists(remux_path)
+            return
+        if not remux_path.exists():
+            log(
+                "recorder",
+                "ffmpeg remux output missing "
+                f"session_id={session_id} job_id={job_id} path={remux_path}",
+            )
+            return
+        try:
+            remux_path.replace(output_path)
+        except OSError as error:
+            log(
+                "recorder",
+                "ffmpeg remux replace failed "
+                f"session_id={session_id} job_id={job_id} error={error.__class__.__name__}",
+            )
+            self._remove_file_if_exists(remux_path)
+            return
+        log("recorder", f"ffmpeg remuxed recording session_id={session_id}")
+
+    def _remux_timeout_seconds(self) -> float:
+        return max(60.0, min(float(self.settings.recording.direct_stream_timeout_seconds), 600.0))
+
+    @staticmethod
+    def _remove_file_if_exists(path: Path) -> None:
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            return
 
     def _validate_actual_resolution(
         self,

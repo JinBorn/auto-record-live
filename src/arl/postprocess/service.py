@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from arl.config import Settings
+from arl.copywriter.service import CopywriterService
 from arl.exporter.service import ExporterService
 from arl.segmenter.semantic_hints import SemanticStageHintService
 from arl.segmenter.service import SegmenterService
@@ -31,5 +32,5 @@ class PostProcessService:
             ("segmenter", lambda: SegmenterService(self.settings).run()),
             ("subtitles", lambda: SubtitleService(self.settings).run()),
             ("exporter", lambda: ExporterService(self.settings).run()),
+            ("copywriter", lambda: CopywriterService(self.settings).run()),
         ]
-

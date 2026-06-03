@@ -33,15 +33,17 @@ class PostProcessServiceTest(unittest.TestCase):
         ), patch(
             "arl.postprocess.service.ExporterService",
             side_effect=lambda _: _StageStub(calls, "exporter"),
+        ), patch(
+            "arl.postprocess.service.CopywriterService",
+            side_effect=lambda _: _StageStub(calls, "copywriter"),
         ):
             PostProcessService(settings).run_once()
 
         self.assertEqual(
             calls,
-            ["stage-hints-semantic", "segmenter", "subtitles", "exporter"],
+            ["stage-hints-semantic", "segmenter", "subtitles", "exporter", "copywriter"],
         )
 
 
 if __name__ == "__main__":
     unittest.main()
-

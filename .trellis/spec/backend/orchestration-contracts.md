@@ -171,7 +171,10 @@ class RecordingJobRecord(BaseModel):
     - `RecordingJobRecord.stream_headers` (with `SessionRecord.stream_headers` as fallback) must reach ffmpeg before `-i` as: `-user_agent <value>` for the `User-Agent` entry (case-insensitive lookup) plus `-headers "K1: V1\r\nK2: V2\r\n..."` for every other entry joined with CRLF
     - empty `stream_headers` produces a byte-identical command to the pre-PR2 path, so Douyin recordings keep the same ffmpeg invocation
     - the User-Agent header rides on the dedicated `-user_agent` flag (not duplicated in `-headers`) to avoid quoting/escaping ambiguity at the shell layer
-    - direct-stream MP4 recording must pass `-movflags +frag_keyframe+empty_moov+default_base_moof` with `-c copy`; unattended runs may be stopped at the process boundary, so the file must not depend on a final `moov` atom written only during graceful muxer close
+    - direct-stream MP4 recording must pass `-movflags +frag_keyframe+empty_moov+default_base_moof` with `-c copy`; unattended runs may be stopped at the process boundary, so the in-progress file must not depend on a final `moov` atom written only during graceful muxer close
+    - after a direct-stream ffmpeg attempt exits successfully and passes actual-resolution validation, recorder must append the recording asset and persist `recorder-state.json` before attempting post-success remux; this keeps the successful recording durable even if an external wrapper stops the process during remux
+    - after the asset/state durability point, recorder should remux the fragmented MP4 in place with `-map 0 -c copy -movflags +faststart` via a temporary `recording-source.remux.mp4`; this preserves crash resilience while making normally completed recordings compatible with players that reject fragmented MP4
+    - remux failure is non-terminal: keep the original fragmented recording, still emit the normal success event/asset, remove any failed `.remux.mp4`, and expose the issue through recorder logs/stderr capture rather than discarding a valid recording
   - Availability-over-fallback contract:
     - For quality-gate failures (`quality_below_min_qn:*`, `quality_below_min_bitrate:*`, `quality_below_min_tier:*`, `quality_tier_unknown:*`), probes must emit `state=offline` instead of degrading to lower-quality direct-stream or browser-capture output.
   - orchestrator audit log must include recovery action routing:
@@ -393,6 +396,17 @@ class ExportAsset(BaseModel):
     path: str
     subtitle_path: str
     created_at: datetime
+
+class CopyAsset(BaseModel):
+    session_id: str
+    match_index: int
+    path: str
+    title: str
+    description: str
+    tags: list[str]
+    subtitle_path: str
+    export_path: str | None = None
+    created_at: datetime
 ```
 
 - Current file-backed manifests:
@@ -408,7 +422,8 @@ class ExportAsset(BaseModel):
   - Subtitle audit events: `data/tmp/subtitles-events.jsonl`
   - Export assets: `data/tmp/export-assets.jsonl`
   - Exporter audit events: `data/tmp/exporter-events.jsonl`
-  - Stage idempotency states: `data/tmp/recorder-state.json`, `data/tmp/recovery-state.json`, `data/tmp/segmenter-state.json`, `data/tmp/subtitles-state.json`, `data/tmp/exporter-state.json`, `data/tmp/stage-signal-ingest-state.json`
+  - Copy assets: `data/tmp/copy-assets.jsonl`
+  - Stage idempotency states: `data/tmp/recorder-state.json`, `data/tmp/recovery-state.json`, `data/tmp/segmenter-state.json`, `data/tmp/subtitles-state.json`, `data/tmp/exporter-state.json`, `data/tmp/copywriter-state.json`, `data/tmp/stage-signal-ingest-state.json`
 - Environment keys for live-room monitoring:
   - `ARL_PLATFORMS` (comma-separated registered platform keys, default single `douyin`)
   - `ARL_DOUYIN_ROOM_URL` / `ARL_STREAMER_NAME` configure one Douyin room for backward compatibility
@@ -423,6 +438,7 @@ class ExportAsset(BaseModel):
 - Environment keys for ffmpeg-enabled paths:
   - `ARL_RECORDING_ENABLE_FFMPEG` (`0`/`1`, default `0`)
   - `ARL_DIRECT_STREAM_TIMEOUT_SECONDS` (int seconds, default `20`)
+  - `ARL_RECORDING_FINALIZE_HEADROOM_SECONDS` (int seconds >= 0, default `60`) — for long direct-stream recordings, recorder subtracts this from the ffmpeg `-t` capture duration when the configured timeout is more than twice the headroom. This reserves process time for success audit/asset/state persistence and optional remux when an external unattended wrapper stops at the configured timeout boundary.
   - `ARL_RECORDING_FFMPEG_MAX_RETRIES` (int >= 0, default `1`)
   - `ARL_RECORDING_AUTO_RETRY_MAX_ATTEMPTS` (int >= 0, default `2`)
   - `ARL_RECORDER_SESSION_RETRY_BUDGET` (int >= 1, default `8`) — per-session cap on transient ffmpeg yields; once hit, all non-FAILED jobs in the session are escalated to manual via `recording_session_retry_budget_exceeded`
@@ -468,6 +484,8 @@ class ExportAsset(BaseModel):
   - `arl stage-signals-from-subtitles [--stage-keywords-path <json_path>] [--force-reprocess] [--session-id <id>] [--session-ids <csv>] [--subtitle-path <path>] [--subtitle-paths <csv>] [--match-index <n>] [--match-indices <csv>]`
 - CLI helper signature for subtitle generation (with best-effort signal ingest):
   - `arl subtitles [--stage-keywords-path <json_path>] [--session-id <id>] [--session-ids <csv>] [--match-index <n>] [--match-indices <csv>]`
+- CLI helper signature for title/copy generation:
+  - `arl copywriter`
 - CLI helper signature for post-live unattended processing:
   - `arl postprocess [--once]`
 - CLI helper signature for local operator status:
@@ -502,7 +520,7 @@ class ExportAsset(BaseModel):
   - command prints one local-only JSON object and must not include cookies, auth headers, raw stream URLs, or transcript text.
   - `summary.health` is `ok`, `degraded`, or `action_required`.
   - `summary.action_required_reasons` lists stable reason objects for manual-required recorder jobs, failed orchestrator jobs, pending/undispatched/failed recovery actions, and exporter batch aborts.
-  - `summary.degraded_reasons` lists stable reason objects for subtitle fallbacks, exporter fallbacks, missing subtitle/export outputs, and recorder failure audit events.
+  - `summary.degraded_reasons` lists stable reason objects for subtitle fallbacks, exporter fallbacks, missing subtitle/export/copy outputs, and recorder failure audit events.
   - reason objects may include bounded local identifiers such as `job_ids` or `session_ids`, but must not include platform stream URLs or secret-bearing media URLs.
 - CLI `stage-hints-semantic` ingestion contract:
   - supports optional `--stage-keywords-path` override; when provided, this CLI value takes precedence over `ARL_STAGE_KEYWORDS_PATH`.
@@ -541,7 +559,7 @@ class ExportAsset(BaseModel):
   - post-generation best-effort `stage-signals-from-subtitles` ingest should inherit the same `session_id/match_index` filter scope used by the subtitles run, so targeted generation does not trigger unrelated subtitle-asset scans.
 - CLI `postprocess` contract:
   - command is single-pass and exits; looping belongs to `scripts/windows-postprocess-loop.ps1`.
-  - command runs existing idempotent post-live stages in this order: `stage-hints-semantic`, `segmenter`, `subtitles`, `exporter`.
+  - command runs existing idempotent post-live stages in this order: `stage-hints-semantic`, `segmenter`, `subtitles`, `exporter`, `copywriter`.
   - command must not create a second global processed-state file; it relies on each stage's own idempotency state.
 - CLI `status` contract:
   - command is read-only and emits one JSON object to stdout.
@@ -556,7 +574,7 @@ class ExportAsset(BaseModel):
   - on read/parse/schema issues, stage modules should emit explicit fallback logs and continue with built-in defaults.
   - precedence rule for commands that accept `--stage-keywords-path`: CLI arg > `ARL_STAGE_KEYWORDS_PATH` > built-in defaults.
 - `SubtitleAsset.format` must be an explicit file format such as `srt` or `ass`, not a provider name.
-- Recorder, segmenter, subtitles, and exporter must communicate through typed records and JSONL manifests, not inferred filenames alone.
+- Recorder, segmenter, subtitles, exporter, and copywriter must communicate through typed records and JSONL manifests, not inferred filenames alone.
 - If a stage is not yet able to finish its real work, it may emit a stub or no-op result only if the status is explicit and downstream stages can detect it safely.
 - Subtitle generation contract:
   - when `subtitles.provider == "faster-whisper"` and recording input is a transcribable media path, subtitles may be generated from ASR segments within each `MatchBoundary`
@@ -578,6 +596,14 @@ class ExportAsset(BaseModel):
 - Transient ffmpeg failures (HTTP 5xx, network timeout, ffmpeg process error) must yield to the next probe after a single in-run attempt rather than burning the in-run retry budget against the same (likely stale) stream URL. The corresponding `ffmpeg_record_failed` audit row carries `decision="attempt_failed_yield_to_next_probe"` to distinguish a transient yield from a non-retryable `decision="attempt_failed"` short-circuit.
 - Recorder should append structured audit rows for ffmpeg control flow (`ffmpeg_skipped`, `ffmpeg_record_failed`, `ffmpeg_record_succeeded`, `ffmpeg_fallback_placeholder`, `recording_session_retry_budget_exceeded`) and actual quality rejection (`quality_below_actual_resolution`) so retry and quality decisions are observable.
 - Exporter mirrors the same observability discipline through `data/tmp/exporter-events.jsonl` (writer = `ExporterService`; **reader = grep / future recovery tooling only — orchestrator does NOT consume this file**, no state machine transitions depend on it). Registered event types: `ffmpeg_export_failed`, `ffmpeg_export_succeeded`, `ffmpeg_export_fallback_placeholder`, `ffmpeg_export_batch_aborted`. Per-row identity uses `session_id` + `match_index` (no `job_id` because exporter is not job-scoped). `ffmpeg_export_failed`, `ffmpeg_export_fallback_placeholder`, and `ffmpeg_export_batch_aborted` rows must carry the same canonical decision tuple (`decision` / `failure_category` / `is_retryable` / `reason_code` / `reason_detail`) as recorder; `ffmpeg_export_succeeded` rows omit those fields (mirrors `ffmpeg_record_succeeded`). Exporter does NOT do yield-on-transient — `decision` on a failed exporter row is always `attempt_failed` (placeholder row uses `decision="fallback_placeholder"`). The placeholder row inherits the last-attempt classification so operators can grep one row to learn what root-caused exhaustion. `ffmpeg_export_batch_aborted` uses `decision="batch_aborted"`, inherits the last fallback classification, and adds `consecutive_fallbacks` plus `remaining_matches`.
+- Exporter subtitle burn-in must build ffmpeg's `subtitles` filter path from the resolved subtitle path using forward slashes, escape any drive colon, and wrap the path in single quotes (for example `subtitles='D\:/code/auto-record-live/data/processed/session/match-01.srt'`). Windows backslash paths or unquoted `D:/...` filter values can be parsed by ffmpeg as filter options instead of a subtitle filename.
+- Copywriter generation contract:
+  - `CopywriterService` reads typed `SubtitleAsset` rows and optional matching `ExportAsset` rows keyed by `(session_id, match_index)`.
+  - for each subtitle asset with an existing SRT file, it writes `data/processed/<session_id>/match-<idx>-copy.json` and appends one `CopyAsset` row to `data/tmp/copy-assets.jsonl`.
+  - copy JSON must include `transcript_excerpt`, `title_candidates`, `recommended_title`, `description`, `tags`, source subtitle/export paths, `status`, and `created_at`.
+  - `copywriter-state.json` owns idempotency via the same `<session_id>:<match_index>` key shape used by subtitle/export stages; repeated runs must not append duplicate `CopyAsset` rows for already processed matches.
+  - missing subtitle files are skipped without marking the key processed, so later reruns can generate copy after the SRT arrives.
+  - the current provider is deterministic local template generation. Future LLM-backed copy must keep the same `CopyAsset` manifest contract and make fallback status explicit rather than blocking downstream status checks.
 - ffmpeg failure audit rows must include the canonical `decision` / `failure_category` / `is_retryable` / `reason_code` / `reason_detail` tuple and, when stderr is available, also `stderr_excerpt` (first 5 + last 15 lines, each <=240 chars, total <=4 KB) and `stderr_log_path` (relative path of the full stderr dump at `data/tmp/recorder-stderr/<job_id>-<attempt>.log` for recorder rows, `data/tmp/exporter-stderr/<session_id>_match<idx>-<attempt>.log` for exporter rows).
 - `quality_below_actual_resolution` rows must include canonical decision fields with `decision="quality_rejected"`, `failure_category="quality_unusable_non_retryable"`, `reason_code="quality_below_actual_resolution"`, `is_retryable=false`, plus observed width/height, optional bitrate, and the configured minimum height.
 - When ffmpeg fails with retryable reasons, recorder may defer placeholder emission and schedule cross-run retries:
@@ -707,10 +733,17 @@ class ExportAsset(BaseModel):
 | faster-whisper runs successfully but returns no text segments inside the match boundary | Emit deterministic placeholder SRT and one `subtitle_fallback_placeholder reason=no_transcript_segments` with device/compute fields |
 | faster-whisper returns accepted transcription segments | Emit real SRT cues and one `subtitle_transcribe_succeeded` row with language/probability fields |
 | Export input references a missing subtitle file | Fail the export step deterministically instead of silently skipping subtitle burn-in |
+| Exporter ffmpeg command burns in a subtitle file from a Windows absolute path | The `-vf` value uses forward slashes, escapes the drive colon (`D\:/...`), and wraps the filename in single quotes as `subtitles='...'` |
+| `arl copywriter` sees an existing subtitle asset and optional export asset | Write one per-match copy JSON under `data/processed/<session>/`, append one `CopyAsset`, and mark the match key processed |
+| `arl copywriter` sees a subtitle asset whose path does not exist | Log skip, do not append `CopyAsset`, and do not mark the match key processed |
+| `arl copywriter` runs repeatedly on unchanged manifests/state | Do not duplicate copy JSON manifest rows |
 | A stage receives an unknown asset format or status | Reject or audit explicitly; do not guess |
 | `ARL_RECORDING_ENABLE_FFMPEG=1` but `stream_url` missing | Recorder logs skip reason and writes placeholder recording artifact |
 | `ARL_RECORDING_ENABLE_FFMPEG=1`, source is `browser_capture`, and resolved capture input is empty/unavailable | Recorder logs skip reason and writes placeholder recording artifact |
-| Recorder invokes ffmpeg for a direct-stream MP4 | Command includes `-c copy -movflags +frag_keyframe+empty_moov+default_base_moof <output.mp4>` so partially completed long recordings remain probeable/playable if the supervising process terminates near the timeout boundary |
+| Recorder invokes ffmpeg for a long direct-stream MP4 with `ARL_DIRECT_STREAM_TIMEOUT_SECONDS=7200` and default `ARL_RECORDING_FINALIZE_HEADROOM_SECONDS=60` | Initial recording command uses `-t 7140` and includes `-c copy -movflags +frag_keyframe+empty_moov+default_base_moof <output.mp4>` so ffmpeg can exit before an external 7200s wrapper deadline and the in-progress file remains probeable/playable if the supervisor still terminates near the boundary |
+| Recorder invokes ffmpeg with timeout <= twice the finalize headroom, or `ARL_RECORDING_FINALIZE_HEADROOM_SECONDS=0` | Initial recording command uses the full configured `ARL_DIRECT_STREAM_TIMEOUT_SECONDS` as `-t` |
+| Direct-stream ffmpeg exits successfully and actual-resolution validation passes | Recorder emits `ffmpeg_record_succeeded`, appends the recording asset, saves `recorder-state.json` with the job id in `processed_job_ids`, then attempts a second copy-only remux command `-i <output.mp4> -map 0 -c copy -movflags +faststart <output.remux.mp4>` and atomically replaces `<output.mp4>` with the remuxed file when it exists |
+| Direct-stream post-success remux fails or writes no remux output | Recorder keeps the original fragmented `<output.mp4>`, removes any failed `<output.remux.mp4>`, emits `ffmpeg_record_succeeded`, and writes the normal recording asset |
 | ffmpeg fails with retryable reason and retry budget remains | Recorder emits one `ffmpeg_record_failed` (decision `attempt_failed_yield_to_next_probe`) plus `recording_retry_scheduled`, writes `next_eligible_at_by_job_id[job]` per backoff schedule, and defers placeholder/asset emission until eligibility lapses |
 | ffmpeg retry budget exhausted | Recorder emits `recording_retry_exhausted`, writes placeholder artifact, and emits recording asset |
 | ffmpeg fails with clear HTTP 4xx input-side errors (`401/403/404/410`, `server returned 4xx`) | Treat as non-recoverable input/configuration failure (decision `attempt_failed`); do not schedule cross-run retry; emit placeholder/manual path |
@@ -743,7 +776,7 @@ class ExportAsset(BaseModel):
 ### 5. Good / Base / Bad Cases
 
 - Good:
-  - Recorder emits one `RecordingAsset`, segmenter emits two `MatchBoundary` rows, subtitles emits one `SubtitleAsset` per match, exporter writes final output with stable naming.
+  - Recorder emits one `RecordingAsset`, segmenter emits two `MatchBoundary` rows, subtitles emits one `SubtitleAsset` per match, exporter writes final output with stable naming, and copywriter emits one publishable copy JSON per match.
 - Base:
   - Recorder succeeds, segmenter emits one low-confidence match boundary, export is deferred pending operator review.
 - Bad:
@@ -799,8 +832,17 @@ class ExportAsset(BaseModel):
 - Unit test: CLI `subtitles` end-to-end run supports combined `session-id/session-ids` + `match-index/match-indices` filters and only emits targeted subtitle assets.
 - Unit test: subtitle service auto-triggered stage-signal ingest inherits subtitles filter scope (`session_id`/`match_index`) and avoids unrelated subtitle scans.
 - Unit test: exporter refuses to burn subtitles when the declared subtitle file is missing.
+- Unit test: exporter ffmpeg command escapes Windows subtitle filter paths with forward slashes, escaped drive colon, and single quotes.
+- Unit test: copywriter emits deterministic title/copy JSON plus one `CopyAsset` from an existing subtitle asset and optional export asset.
+- Unit test: copywriter remains idempotent across repeated runs.
+- Unit test: copywriter skips missing subtitle paths without marking the match processed.
+- Unit test: postprocess invokes `copywriter` after `exporter`.
+- Unit test: CLI parser includes `copywriter`.
 - Unit test: recorder with `enable_ffmpeg=True` but missing `stream_url` still emits one placeholder asset.
 - Unit test: recorder direct-stream ffmpeg command includes fragmented MP4 `-movflags` next to stream-copy output.
+- Unit test: recorder subtracts finalize headroom from long direct-stream ffmpeg `-t` values and leaves short captures unchanged.
+- Unit test: recorder remuxes successful direct-stream recordings to `+faststart` with `-map 0 -c copy`, replacing the original path only after the remux output exists and only after the recording asset plus `processed_job_ids` state are durable.
+- Unit test: recorder remux failure keeps the original recording and still emits `ffmpeg_record_succeeded`.
 - Unit test: recorder treats ffmpeg HTTP 4xx failures as non-recoverable and skips cross-run retry scheduling.
 - Unit test: recorder stops in-run ffmpeg retries early when a non-recoverable reason is detected.
 - Unit test: recorder infers actionable manual-recovery action mapping from `stop_reason` when `failure_category` is missing, and keeps inspect fallback only for opaque reasons.
@@ -845,3 +887,39 @@ else:
     write_placeholder_artifact(...)
 append_manifest_record(...)
 ```
+
+#### Wrong
+
+```python
+copy_path.write_text(json.dumps(copy_payload), encoding="utf-8")
+```
+
+- Creates an orphan per-match JSON file with no manifest row
+- Leaves `arl status` unable to count missing/present copy outputs
+- Allows repeated `arl copywriter` or `arl postprocess` runs to append divergent manual samples
+
+#### Correct
+
+```python
+draft = build_copy_draft(subtitle_asset, export_asset)
+copy_path = write_copy_json(draft)
+append_model(
+    temp_dir / "copy-assets.jsonl",
+    CopyAsset(
+        session_id=draft.session_id,
+        match_index=draft.match_index,
+        path=str(copy_path),
+        title=draft.recommended_title,
+        description=draft.description,
+        tags=draft.tags,
+        subtitle_path=draft.source_subtitle_path,
+        export_path=draft.source_export_path,
+        created_at=draft.created_at,
+    ),
+)
+copywriter_state.processed_match_keys.append(f"{draft.session_id}:{draft.match_index}")
+```
+
+- Keeps the JSON artifact discoverable through the typed `CopyAsset` manifest
+- Preserves stage idempotency through `copywriter-state.json`
+- Lets `arl status` compute `missing_copies` from the manifest contract

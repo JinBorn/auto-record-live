@@ -62,3 +62,15 @@ class ExportAsset(BaseModel):
     path: str
     subtitle_path: str
     created_at: datetime
+
+
+class CopyAsset(BaseModel):
+    session_id: str
+    match_index: int
+    path: str
+    title: str
+    description: str
+    tags: list[str]
+    subtitle_path: str
+    export_path: str | None = None
+    created_at: datetime
