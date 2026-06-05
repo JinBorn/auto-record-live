@@ -107,6 +107,7 @@ class RecordingSettings(BaseModel):
     segment_minutes: int = 30
     direct_stream_timeout_seconds: int = 20
     direct_stream_finalize_headroom_seconds: int = 60
+    max_concurrent_jobs: int = 1
     enable_ffmpeg: bool = False
     ffmpeg_max_retries: int = 1
     auto_retry_max_attempts: int = 2
@@ -456,6 +457,10 @@ def load_settings() -> Settings:
             direct_stream_finalize_headroom_seconds=max(
                 0,
                 int(os.getenv("ARL_RECORDING_FINALIZE_HEADROOM_SECONDS", "60")),
+            ),
+            max_concurrent_jobs=max(
+                1,
+                _env_int("ARL_RECORDER_MAX_CONCURRENT_JOBS", 1),
             ),
             enable_ffmpeg=os.getenv("ARL_RECORDING_ENABLE_FFMPEG", "0") == "1",
             ffmpeg_max_retries=max(

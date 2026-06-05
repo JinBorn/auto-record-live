@@ -157,7 +157,26 @@ def jsonl_payloads(path: Path) -> list[dict]:
     ]
 
 
-def fake_successful_subprocess(command: list[str], **kwargs) -> None:
+def fake_successful_subprocess(command: list[str], **kwargs) -> object | None:
+    if "-show_entries" in command:
+        import subprocess
+
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "streams": [
+                        {
+                            "codec_type": "video",
+                            "width": 1920,
+                            "height": 1080,
+                        }
+                    ],
+                    "format": {"duration": "60.0", "size": "12345"},
+                }
+            ),
+        )
     output_path = Path(command[-1])
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("fake media artifact\n", encoding="utf-8")

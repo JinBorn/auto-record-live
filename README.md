@@ -244,6 +244,9 @@ orchestrator/recorder launcher 不重复跑这个启动门；recorder 路径的 
 > persistence, and MP4 remux before an external unattended wrapper stops at the
 > same budget boundary. Set `ARL_RECORDING_FINALIZE_HEADROOM_SECONDS=0` only
 > when the outer wrapper already provides extra shutdown grace.
+> Multi-room recorder concurrency is bounded by
+> `ARL_RECORDER_MAX_CONCURRENT_JOBS` (default `1`). Set it to the number of
+> live rooms you want the recorder to run at once, within host/network capacity.
 
 **Window 4 (postprocess loop):**
 

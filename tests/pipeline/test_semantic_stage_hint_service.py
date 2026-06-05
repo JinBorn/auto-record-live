@@ -161,6 +161,21 @@ class SemanticStageHintServiceTest(unittest.TestCase):
         self.assertIsNotNone(in_game_hints[0].at_seconds)
         self.assertLess(in_game_hints[0].at_seconds, 60.0)
 
+    def test_semantic_stage_hints_preserve_sub_minute_recording_duration(self) -> None:
+        self._append_asset(
+            "session-semantic-011",
+            datetime(2026, 4, 26, 21, 0, tzinfo=timezone.utc),
+            datetime(2026, 4, 26, 21, 0, 30, tzinfo=timezone.utc),
+        )
+
+        SemanticStageHintService(self.settings).run()
+        hints = self._load_hints("session-semantic-011")
+        in_game_hints = [hint for hint in hints if hint.stage == MatchStage.IN_GAME]
+
+        self.assertEqual(len(in_game_hints), 1)
+        self.assertIsNotNone(in_game_hints[0].at_seconds)
+        self.assertLess(in_game_hints[0].at_seconds, 30.0)
+
     def test_semantic_stage_hints_prefer_signal_driven_sequence_when_available(self) -> None:
         self._append_asset(
             "session-semantic-005",

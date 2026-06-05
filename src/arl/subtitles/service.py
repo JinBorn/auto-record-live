@@ -311,6 +311,7 @@ class SubtitleService:
             segments, info = model.transcribe(
                 str(source_path),
                 language=self.settings.subtitles.language or None,
+                word_timestamps=True,
             )
         except Exception as exc:
             log(
@@ -374,15 +375,15 @@ class SubtitleService:
                 raw_text = str(getattr(segment, "text", "")).strip()
                 if not raw_text:
                     continue
-                seg_start = float(getattr(segment, "start", 0.0))
-                seg_end = float(getattr(segment, "end", seg_start))
-                if seg_end <= boundary_start or seg_start >= boundary_end:
+                entry = self._entry_from_segment(
+                    segment,
+                    raw_text,
+                    boundary_start,
+                    boundary_end,
+                )
+                if entry is None:
                     continue
-                rel_start = max(seg_start, boundary_start) - boundary_start
-                rel_end = min(seg_end, boundary_end) - boundary_start
-                if rel_end <= rel_start:
-                    continue
-                entries.append((rel_start, rel_end, raw_text))
+                entries.append(entry)
         except Exception as exc:
             log(
                 "subtitles",
@@ -427,6 +428,96 @@ class SubtitleService:
             device=model_config.device,
             compute_type=model_config.compute_type,
         )
+
+    def _entry_from_segment(
+        self,
+        segment: Any,
+        raw_text: str,
+        boundary_start: float,
+        boundary_end: float,
+    ) -> tuple[float, float, str] | None:
+        has_word_timestamps, word_entry = self._entry_from_word_timestamps(
+            segment,
+            raw_text,
+            boundary_start,
+            boundary_end,
+        )
+        if has_word_timestamps:
+            return word_entry
+
+        seg_start = self._optional_seconds(getattr(segment, "start", None))
+        if seg_start is None:
+            seg_start = 0.0
+        seg_end = self._optional_seconds(getattr(segment, "end", None))
+        if seg_end is None:
+            seg_end = seg_start
+        if seg_end <= boundary_start or seg_start >= boundary_end:
+            return None
+
+        rel_start = max(seg_start, boundary_start) - boundary_start
+        rel_end = min(seg_end, boundary_end) - boundary_start
+        if rel_end <= rel_start:
+            return None
+        return rel_start, rel_end, raw_text
+
+    def _entry_from_word_timestamps(
+        self,
+        segment: Any,
+        raw_text: str,
+        boundary_start: float,
+        boundary_end: float,
+    ) -> tuple[bool, tuple[float, float, str] | None]:
+        words = getattr(segment, "words", None)
+        if not words:
+            return False, None
+
+        has_timed_words = False
+        first_start: float | None = None
+        last_end: float | None = None
+        text_parts: list[str] = []
+        for word in words:
+            word_start = self._optional_seconds(getattr(word, "start", None))
+            word_end = self._optional_seconds(getattr(word, "end", None))
+            if word_start is None or word_end is None or word_end <= word_start:
+                continue
+
+            has_timed_words = True
+            if word_end <= boundary_start or word_start >= boundary_end:
+                continue
+
+            clamped_start = max(word_start, boundary_start)
+            clamped_end = min(word_end, boundary_end)
+            if clamped_end <= clamped_start:
+                continue
+
+            first_start = (
+                clamped_start if first_start is None else min(first_start, clamped_start)
+            )
+            last_end = clamped_end if last_end is None else max(last_end, clamped_end)
+            word_text = str(getattr(word, "word", ""))
+            if word_text:
+                text_parts.append(word_text)
+
+        if not has_timed_words:
+            return False, None
+        if first_start is None or last_end is None:
+            return True, None
+
+        text = "".join(text_parts).strip() or raw_text
+        rel_start = first_start - boundary_start
+        rel_end = last_end - boundary_start
+        if rel_end <= rel_start or not text:
+            return True, None
+        return True, (rel_start, rel_end, text)
+
+    @staticmethod
+    def _optional_seconds(value: object) -> float | None:
+        try:
+            if value is None:
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     def _whisper_model_candidates(self) -> list[WhisperModelConfig]:
         device = self.settings.subtitles.device

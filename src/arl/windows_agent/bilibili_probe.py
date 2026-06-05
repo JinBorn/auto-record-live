@@ -62,7 +62,9 @@ class BilibiliRoomProbe(PlatformProbe):
         if not self.settings.sessdata:
             return CookieState.NOT_CONFIGURED
         reason = snapshot.reason or ""
-        if reason.startswith("api_error:code=-101"):
+        if reason.startswith("api_error:code=-101") or reason.startswith(
+            "playinfo_error:api_error:code=-101"
+        ):
             return CookieState.EXPIRED
         return CookieState.FRESH
 

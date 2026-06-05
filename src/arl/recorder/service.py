@@ -1,19 +1,23 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import json
 import os
 import shutil
 import subprocess
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from arl.config import Settings
+from arl.config import BilibiliSettings, Settings
 from arl.orchestrator.models import (
     OrchestratorStateFile,
     RecordingJobRecord,
     RecordingJobStatus,
+    SessionRecord,
 )
 from arl.orchestrator.state_store import load_orchestrator_state
 from arl.recorder.models import (
@@ -21,7 +25,7 @@ from arl.recorder.models import (
     RecorderRecoveryAction,
     RecorderStateFile,
 )
-from arl.shared.contracts import RecordingAsset, SourceType
+from arl.shared.contracts import LiveState, RecordingAsset, SourceType
 from arl.shared.failure_contracts import (
     FAILURE_CATEGORY_FFMPEG_PROCESS_ERROR_RETRYABLE,
     FAILURE_CATEGORY_QUALITY_UNUSABLE_NON_RETRYABLE,
@@ -39,6 +43,8 @@ from arl.shared.ffmpeg_runner import (
 )
 from arl.shared.jsonl_store import append_model
 from arl.shared.logging import log
+from arl.windows_agent.bilibili_probe import BilibiliRoomProbe
+from arl.windows_agent.platform_probe import CookieState
 
 
 # Maps a recording job's platform to the field name on the matching
@@ -55,6 +61,36 @@ _PLATFORM_COOKIE_FIELD = {
 class RecordingBuildOutcome:
     output_path: Path | None
     retryable_failure_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class Bilibili403RefreshOutcome:
+    stream_url: str | None = None
+    stream_headers: dict[str, str] | None = None
+
+
+@dataclass(frozen=True)
+class RecordingWorkItem:
+    session: SessionRecord
+    job: RecordingJobRecord
+    source_type: SourceType
+    room_url: str
+    stream_url: str | None
+    stream_headers: dict[str, str]
+    recording_started_at: datetime
+    retry_attempt_count: int
+
+
+@dataclass(frozen=True)
+class RecordingWorkResult:
+    item: RecordingWorkItem
+    outcome: RecordingBuildOutcome
+
+
+@dataclass(frozen=True)
+class PartialRecordingSalvageOutcome:
+    output_path: Path | None = None
+    failure_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -75,11 +111,16 @@ class RecorderService:
             settings.storage.temp_dir / "recorder-recovery-actions.jsonl"
         )
         self._x11_probe_cache: dict[str, tuple[bool, str]] = {}
+        self._audit_lock = threading.Lock()
 
     def run(self) -> None:
         log("recorder", "starting")
         log("recorder", f"preferred_resolution={self.settings.recording.preferred_resolution}")
         log("recorder", f"ffmpeg_enabled={self.settings.recording.enable_ffmpeg}")
+        log(
+            "recorder",
+            f"max_concurrent_jobs={self.settings.recording.max_concurrent_jobs}",
+        )
         rotate_stderr_logs(
             self._recorder_stderr_dir,
             self.settings.recording.stderr_retain_count,
@@ -88,8 +129,7 @@ class RecorderService:
         orchestrator_state = self._load_orchestrator_state()
         recorder_state = self._load_state()
 
-        processed = 0
-        retries_scheduled = 0
+        work_items: list[RecordingWorkItem] = []
         manual_recovery_marked = 0
         for job in orchestrator_state.recording_jobs:
             session = next(
@@ -169,87 +209,31 @@ class RecorderService:
                 )
                 continue
 
+            recording_started_at = datetime.now(timezone.utc)
             retry_attempt_count = recorder_state.retry_attempts_by_job_id.get(job.job_id, 0)
-            outcome = self._build_recording(
-                session_id=session.session_id,
-                job_id=job.job_id,
-                platform=job.platform,
-                source_type=source_type,
-                stream_url=stream_url,
-                stream_headers=stream_headers,
-                retry_attempt_count=retry_attempt_count,
-            )
-            if outcome.retryable_failure_reason is not None:
-                retry_decision = classify_failure_reason(outcome.retryable_failure_reason)
-                next_retry_attempt = retry_attempt_count + 1
-                recorder_state.retry_attempts_by_job_id[job.job_id] = next_retry_attempt
-
-                session_retries = (
-                    recorder_state.retries_by_session_id.get(session.session_id, 0) + 1
-                )
-                recorder_state.retries_by_session_id[session.session_id] = session_retries
-                budget = self.settings.recording.session_retry_budget
-                if session_retries >= budget:
-                    self._emit_session_budget_exceeded(
-                        recorder_state=recorder_state,
-                        orchestrator_state=orchestrator_state,
-                        session_id=session.session_id,
-                        budget=budget,
-                    )
-                    recorder_state.retries_by_session_id[session.session_id] = 0
-                    continue
-
-                eligible_at_next = now + self._next_eligible_after_yield(next_retry_attempt)
-                recorder_state.next_eligible_at_by_job_id[job.job_id] = eligible_at_next
-                retries_scheduled += 1
-                self._append_audit(
-                    "recording_retry_scheduled",
-                    session_id=session.session_id,
-                    job_id=job.job_id,
+            work_items.append(
+                RecordingWorkItem(
+                    session=session,
+                    job=job,
                     source_type=source_type,
-                    reason=outcome.retryable_failure_reason,
-                    decision="retry_scheduled",
-                    failure_category=retry_decision.failure_category,
-                    is_retryable=retry_decision.is_retryable,
-                    reason_code=retry_decision.reason_code,
-                    reason_detail=outcome.retryable_failure_reason,
-                    attempt=next_retry_attempt,
-                    max_attempts=self.settings.recording.auto_retry_max_attempts,
+                    room_url=session.room_url,
+                    stream_url=stream_url,
+                    stream_headers=stream_headers,
+                    recording_started_at=recording_started_at,
+                    retry_attempt_count=retry_attempt_count,
                 )
-                log(
-                    "recorder",
-                    "recording retry scheduled "
-                    f"session_id={session.session_id} job_id={job.job_id} "
-                    f"attempt={next_retry_attempt}/{self.settings.recording.auto_retry_max_attempts} "
-                    f"eligible_at={eligible_at_next.isoformat()}",
-                )
-                continue
-
-            output_path = outcome.output_path
-            if output_path is None:
-                continue
-            asset = RecordingAsset(
-                session_id=session.session_id,
-                source_type=source_type,
-                path=str(output_path),
-                started_at=session.started_at,
-                ended_at=session.ended_at,
             )
-            append_model(self.assets_path, asset)
-            if job.job_id not in recorder_state.processed_job_ids:
-                recorder_state.processed_job_ids.append(job.job_id)
-            recorder_state.retry_attempts_by_job_id.pop(job.job_id, None)
-            recorder_state.next_eligible_at_by_job_id.pop(job.job_id, None)
-            recorder_state.retries_by_session_id.pop(session.session_id, None)
-            processed += 1
-            self._save_state(recorder_state)
-            log("recorder", f"recording asset written session_id={session.session_id}")
-            if source_type == SourceType.DIRECT_STREAM and output_path.suffix.lower() == ".mp4":
-                self._remux_direct_stream_recording(
-                    session_id=session.session_id,
-                    job_id=job.job_id,
-                    output_path=output_path,
-                )
+
+        processed = 0
+        retries_scheduled = 0
+        for result in self._run_recording_work_items(work_items):
+            processed_delta, retries_delta = self._apply_recording_outcome(
+                recorder_state=recorder_state,
+                orchestrator_state=orchestrator_state,
+                result=result,
+            )
+            processed += processed_delta
+            retries_scheduled += retries_delta
 
         self._save_state(recorder_state)
         log("recorder", f"processed_jobs={processed}")
@@ -257,6 +241,141 @@ class RecorderService:
             log("recorder", f"scheduled_retries={retries_scheduled}")
         if manual_recovery_marked > 0:
             log("recorder", f"manual_recovery_required={manual_recovery_marked}")
+
+    def _run_recording_work_items(
+        self,
+        work_items: list[RecordingWorkItem],
+    ) -> Iterator[RecordingWorkResult]:
+        if not work_items:
+            return
+
+        worker_count = min(
+            max(1, self.settings.recording.max_concurrent_jobs),
+            len(work_items),
+        )
+        if worker_count <= 1:
+            for item in work_items:
+                yield self._build_recording_work_item(item)
+            return
+
+        log(
+            "recorder",
+            f"recording_workers={worker_count} runnable_jobs={len(work_items)}",
+        )
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [
+                executor.submit(self._build_recording_work_item, item)
+                for item in work_items
+            ]
+            for future in as_completed(futures):
+                yield future.result()
+
+    def _build_recording_work_item(self, item: RecordingWorkItem) -> RecordingWorkResult:
+        outcome = self._build_recording(
+            session_id=item.session.session_id,
+            job_id=item.job.job_id,
+            platform=item.job.platform,
+            source_type=item.source_type,
+            room_url=item.room_url,
+            stream_url=item.stream_url,
+            stream_headers=item.stream_headers,
+            retry_attempt_count=item.retry_attempt_count,
+        )
+        return RecordingWorkResult(item=item, outcome=outcome)
+
+    def _apply_recording_outcome(
+        self,
+        *,
+        recorder_state: RecorderStateFile,
+        orchestrator_state: OrchestratorStateFile,
+        result: RecordingWorkResult,
+    ) -> tuple[int, int]:
+        item = result.item
+        session = item.session
+        job = item.job
+        source_type = item.source_type
+        outcome = result.outcome
+        if outcome.retryable_failure_reason is not None:
+            retry_decision = classify_failure_reason(outcome.retryable_failure_reason)
+            next_retry_attempt = item.retry_attempt_count + 1
+            recorder_state.retry_attempts_by_job_id[job.job_id] = next_retry_attempt
+
+            session_retries = (
+                recorder_state.retries_by_session_id.get(session.session_id, 0) + 1
+            )
+            recorder_state.retries_by_session_id[session.session_id] = session_retries
+            budget = self.settings.recording.session_retry_budget
+            if session_retries >= budget:
+                self._emit_session_budget_exceeded(
+                    recorder_state=recorder_state,
+                    orchestrator_state=orchestrator_state,
+                    session_id=session.session_id,
+                    budget=budget,
+                )
+                recorder_state.retries_by_session_id[session.session_id] = 0
+                self._save_state(recorder_state)
+                return 0, 0
+
+            eligible_at_next = (
+                datetime.now(timezone.utc)
+                + self._next_eligible_after_yield(next_retry_attempt)
+            )
+            recorder_state.next_eligible_at_by_job_id[job.job_id] = eligible_at_next
+            self._append_audit(
+                "recording_retry_scheduled",
+                session_id=session.session_id,
+                job_id=job.job_id,
+                source_type=source_type,
+                reason=outcome.retryable_failure_reason,
+                decision="retry_scheduled",
+                failure_category=retry_decision.failure_category,
+                is_retryable=retry_decision.is_retryable,
+                reason_code=retry_decision.reason_code,
+                reason_detail=outcome.retryable_failure_reason,
+                attempt=next_retry_attempt,
+                max_attempts=self.settings.recording.auto_retry_max_attempts,
+            )
+            log(
+                "recorder",
+                "recording retry scheduled "
+                f"session_id={session.session_id} job_id={job.job_id} "
+                f"attempt={next_retry_attempt}/{self.settings.recording.auto_retry_max_attempts} "
+                f"eligible_at={eligible_at_next.isoformat()}",
+            )
+            self._save_state(recorder_state)
+            return 0, 1
+
+        output_path = outcome.output_path
+        if output_path is None:
+            return 0, 0
+
+        asset_started_at = session.started_at
+        asset_ended_at = session.ended_at
+        if asset_ended_at is None:
+            asset_started_at = item.recording_started_at
+            asset_ended_at = datetime.now(timezone.utc)
+        asset = RecordingAsset(
+            session_id=session.session_id,
+            source_type=source_type,
+            path=str(output_path),
+            started_at=asset_started_at,
+            ended_at=asset_ended_at,
+        )
+        append_model(self.assets_path, asset)
+        if job.job_id not in recorder_state.processed_job_ids:
+            recorder_state.processed_job_ids.append(job.job_id)
+        recorder_state.retry_attempts_by_job_id.pop(job.job_id, None)
+        recorder_state.next_eligible_at_by_job_id.pop(job.job_id, None)
+        recorder_state.retries_by_session_id.pop(session.session_id, None)
+        self._save_state(recorder_state)
+        log("recorder", f"recording asset written session_id={session.session_id}")
+        if source_type == SourceType.DIRECT_STREAM and output_path.suffix.lower() == ".mp4":
+            self._remux_direct_stream_recording(
+                session_id=session.session_id,
+                job_id=job.job_id,
+                output_path=output_path,
+            )
+        return 1, 0
 
     def _load_orchestrator_state(self) -> OrchestratorStateFile:
         return load_orchestrator_state(self.settings.orchestrator.state_file)
@@ -291,6 +410,7 @@ class RecorderService:
         job_id: str,
         platform: str,
         source_type: SourceType,
+        room_url: str,
         stream_url: str | None,
         stream_headers: dict[str, str],
         retry_attempt_count: int,
@@ -305,6 +425,7 @@ class RecorderService:
                     session_id=session_id,
                     job_id=job_id,
                     platform=platform,
+                    room_url=room_url,
                     stream_url=stream_url,
                     stream_headers=stream_headers,
                 )
@@ -472,39 +593,23 @@ class RecorderService:
         session_id: str,
         job_id: str,
         platform: str,
+        room_url: str,
         stream_url: str,
         stream_headers: dict[str, str],
     ) -> tuple[Path | None, str | None]:
         output_dir = self.settings.storage.raw_dir / session_id
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / "recording-source.mp4"
-        capture_seconds = self._direct_stream_capture_seconds()
-
-        command = [
-            "ffmpeg",
-            "-y",
-            "-nostdin",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-        ]
-        command.extend(self._build_ffmpeg_header_args(stream_headers))
-        command.extend(
-            [
-                "-i",
-                stream_url,
-                "-t",
-                str(capture_seconds),
-                "-c",
-                "copy",
-                "-movflags",
-                "+frag_keyframe+empty_moov+default_base_moof",
-                str(output_path),
-            ]
+        command = self._build_direct_stream_ffmpeg_command(
+            stream_url=stream_url,
+            stream_headers=stream_headers,
+            output_path=output_path,
         )
         attempts = self.settings.recording.ffmpeg_max_retries + 1
         last_failure_reason = None
-        for attempt in range(1, attempts + 1):
+        bilibili_refresh_attempted = False
+        attempt = 1
+        while attempt <= attempts + 1:
             outcome = run_ffmpeg_attempt(
                 command,
                 timeout=self.settings.recording.direct_stream_timeout_seconds + 10,
@@ -530,6 +635,7 @@ class RecorderService:
             failure_reason = outcome.reason
             failure_decision = outcome.classification
             last_failure_reason = failure_reason
+            audit_max_attempts = max(attempts, attempt)
             yield_on_transient = failure_decision.is_retryable
             decision = (
                 "attempt_failed_yield_to_next_probe"
@@ -553,18 +659,51 @@ class RecorderService:
                 reason_code=failure_decision.reason_code,
                 reason_detail=failure_reason,
                 attempt=attempt,
-                max_attempts=attempts,
+                max_attempts=audit_max_attempts,
                 stderr_excerpt=outcome.stderr_excerpt,
                 stderr_log_path=outcome.stderr_log_path,
             )
-            self._maybe_emit_cookie_expired(
-                platform=platform,
+            salvage = self._salvage_direct_stream_partial_recording(
                 session_id=session_id,
                 job_id=job_id,
-                source_type=SourceType.DIRECT_STREAM,
-                reason=failure_reason,
-                reason_code=failure_decision.reason_code,
+                output_path=output_path,
             )
+            if salvage.output_path is not None:
+                return salvage.output_path, None
+            if salvage.failure_reason is not None:
+                return None, salvage.failure_reason
+            if (
+                platform == "bilibili"
+                and not bilibili_refresh_attempted
+                and failure_decision.reason_code == REASON_CODE_HTTP_403_FORBIDDEN
+            ):
+                bilibili_refresh_attempted = True
+                refresh = self._diagnose_bilibili_403_and_refresh_stream(
+                    session_id=session_id,
+                    job_id=job_id,
+                    source_type=SourceType.DIRECT_STREAM,
+                    room_url=room_url,
+                    reason=failure_reason,
+                )
+                if refresh.stream_url is not None:
+                    stream_url = refresh.stream_url
+                    stream_headers = refresh.stream_headers or {}
+                    command = self._build_direct_stream_ffmpeg_command(
+                        stream_url=stream_url,
+                        stream_headers=stream_headers,
+                        output_path=output_path,
+                    )
+                    attempt += 1
+                    continue
+            elif platform != "bilibili":
+                self._maybe_emit_cookie_expired(
+                    platform=platform,
+                    session_id=session_id,
+                    job_id=job_id,
+                    source_type=SourceType.DIRECT_STREAM,
+                    reason=failure_reason,
+                    reason_code=failure_decision.reason_code,
+                )
             # Both transient and non-retryable yield after a single ffmpeg
             # invocation: transient yields to the next probe (orchestrator
             # can refresh a stale stream URL); non-retryable stops in-run
@@ -572,6 +711,186 @@ class RecorderService:
             break
 
         return None, last_failure_reason
+
+    def _build_direct_stream_ffmpeg_command(
+        self,
+        *,
+        stream_url: str,
+        stream_headers: dict[str, str],
+        output_path: Path,
+    ) -> list[str]:
+        command = [
+            "ffmpeg",
+            "-y",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+        ]
+        command.extend(self._build_ffmpeg_header_args(stream_headers))
+        command.extend(
+            [
+                "-i",
+                stream_url,
+                "-t",
+                str(self._direct_stream_capture_seconds()),
+                "-c",
+                "copy",
+            ]
+        )
+        if self._direct_stream_needs_aac_adtstoasc(stream_url):
+            command.extend(["-bsf:a", "aac_adtstoasc"])
+        command.extend(
+            [
+                "-movflags",
+                "+frag_keyframe+empty_moov+default_base_moof",
+                str(output_path),
+            ]
+        )
+        return command
+
+    def _diagnose_bilibili_403_and_refresh_stream(
+        self,
+        *,
+        session_id: str,
+        job_id: str,
+        source_type: SourceType,
+        room_url: str,
+        reason: str,
+    ) -> Bilibili403RefreshOutcome:
+        settings = self._bilibili_settings_for_room(room_url)
+        if settings is None:
+            reason_detail = "refresh_failed:bilibili_room_url_missing"
+            self._emit_bilibili_stream_url_expired(
+                session_id=session_id,
+                job_id=job_id,
+                source_type=source_type,
+                reason=reason_detail,
+            )
+            log(
+                "recorder",
+                "bilibili 403 diagnosis failed "
+                f"session_id={session_id} job_id={job_id} reason={reason_detail}",
+            )
+            return Bilibili403RefreshOutcome()
+
+        try:
+            probe = BilibiliRoomProbe(settings)
+            snapshot = probe.detect()
+            cookie_state = probe.classify_cookie_state(snapshot)
+        except Exception as error:
+            reason_detail = f"refresh_probe_error:{error.__class__.__name__}"
+            self._emit_bilibili_stream_url_expired(
+                session_id=session_id,
+                job_id=job_id,
+                source_type=source_type,
+                reason=reason_detail,
+            )
+            log(
+                "recorder",
+                "bilibili 403 diagnosis failed "
+                f"session_id={session_id} job_id={job_id} reason={reason_detail}",
+            )
+            return Bilibili403RefreshOutcome()
+
+        if cookie_state == CookieState.EXPIRED:
+            reason_detail = f"sessdata_expired:{snapshot.reason or reason}"
+            self._append_audit(
+                "cookie_expired_for_bilibili",
+                session_id=session_id,
+                job_id=job_id,
+                source_type=source_type,
+                reason=reason_detail,
+            )
+            log(
+                "recorder",
+                "bilibili sessdata expired "
+                f"session_id={session_id} job_id={job_id}",
+            )
+            return Bilibili403RefreshOutcome()
+
+        if (
+            snapshot.state == LiveState.LIVE
+            and snapshot.source_type == SourceType.DIRECT_STREAM
+            and snapshot.stream_url
+        ):
+            self._emit_bilibili_stream_url_expired(
+                session_id=session_id,
+                job_id=job_id,
+                source_type=source_type,
+                reason="refreshed_stream_url_after_403",
+            )
+            log(
+                "recorder",
+                "bilibili stream url refreshed after 403 "
+                f"session_id={session_id} job_id={job_id}",
+            )
+            return Bilibili403RefreshOutcome(
+                stream_url=snapshot.stream_url,
+                stream_headers=dict(snapshot.stream_headers),
+            )
+
+        reason_detail = f"refresh_failed:{snapshot.reason or 'no_direct_stream'}"
+        self._emit_bilibili_stream_url_expired(
+            session_id=session_id,
+            job_id=job_id,
+            source_type=source_type,
+            reason=reason_detail,
+        )
+        log(
+            "recorder",
+            "bilibili stream url refresh unavailable "
+            f"session_id={session_id} job_id={job_id} reason={reason_detail}",
+        )
+        return Bilibili403RefreshOutcome()
+
+    def _emit_bilibili_stream_url_expired(
+        self,
+        *,
+        session_id: str,
+        job_id: str,
+        source_type: SourceType,
+        reason: str,
+    ) -> None:
+        self._append_audit(
+            "stream_url_expired_for_bilibili",
+            session_id=session_id,
+            job_id=job_id,
+            source_type=source_type,
+            reason=reason,
+        )
+
+    def _bilibili_settings_for_room(self, room_url: str) -> BilibiliSettings | None:
+        candidates: list[BilibiliSettings] = []
+        for entry in self.settings.platforms:
+            if entry.type != "bilibili":
+                continue
+            if isinstance(entry, BilibiliSettings):
+                settings = entry
+            else:
+                settings = BilibiliSettings(
+                    room_url=entry.room_url,
+                    streamer_name=entry.streamer_name,
+                    sessdata=getattr(entry, "sessdata", ""),
+                    min_stream_qn=getattr(entry, "min_stream_qn", 400),
+                    min_stream_bitrate_kbps=getattr(
+                        entry,
+                        "min_stream_bitrate_kbps",
+                        4500,
+                    ),
+                )
+            if settings.room_url == room_url:
+                return settings
+            candidates.append(settings)
+
+        if candidates:
+            fallback = candidates[0]
+            if fallback.room_url == room_url:
+                return fallback
+            return fallback.model_copy(update={"room_url": room_url})
+        if room_url:
+            return BilibiliSettings(room_url=room_url)
+        return None
 
     def _direct_stream_capture_seconds(self) -> int:
         budget = max(1, self.settings.recording.direct_stream_timeout_seconds)
@@ -581,6 +900,10 @@ class RecorderService:
         if budget <= headroom * 2:
             return budget
         return max(1, budget - headroom)
+
+    @staticmethod
+    def _direct_stream_needs_aac_adtstoasc(stream_url: str) -> bool:
+        return ".m3u8" in stream_url.lower()
 
     def _remux_direct_stream_recording(
         self,
@@ -655,6 +978,63 @@ class RecorderService:
         except OSError:
             return
 
+    def _salvage_direct_stream_partial_recording(
+        self,
+        *,
+        session_id: str,
+        job_id: str,
+        output_path: Path,
+    ) -> PartialRecordingSalvageOutcome:
+        try:
+            if not output_path.exists() or output_path.stat().st_size <= 0:
+                return PartialRecordingSalvageOutcome()
+        except OSError:
+            return PartialRecordingSalvageOutcome()
+
+        ffprobe_path = shutil.which("ffprobe")
+        if ffprobe_path is None:
+            log(
+                "recorder",
+                f"partial recording salvage skipped missing_ffprobe session_id={session_id}",
+            )
+            return PartialRecordingSalvageOutcome()
+
+        probe = self._probe_actual_quality(output_path, ffprobe_path=ffprobe_path)
+        if probe.height is None:
+            log(
+                "recorder",
+                "partial recording salvage rejected "
+                f"session_id={session_id} reason={probe.reason or 'missing_video_stream'}",
+            )
+            return PartialRecordingSalvageOutcome()
+
+        min_height = self.settings.recording.min_actual_resolution_height
+        if (
+            self.settings.recording.validate_actual_resolution
+            and probe.height < min_height
+        ):
+            reason_detail = self._reject_actual_resolution(
+                session_id=session_id,
+                job_id=job_id,
+                output_path=output_path,
+                probe=probe,
+                min_height=min_height,
+            )
+            return PartialRecordingSalvageOutcome(failure_reason=reason_detail)
+
+        self._append_audit(
+            "ffmpeg_record_succeeded",
+            session_id=session_id,
+            job_id=job_id,
+            source_type=SourceType.DIRECT_STREAM,
+        )
+        log(
+            "recorder",
+            "partial recording salvaged "
+            f"session_id={session_id} job_id={job_id} path={output_path}",
+        )
+        return PartialRecordingSalvageOutcome(output_path=output_path)
+
     def _validate_actual_resolution(
         self,
         *,
@@ -687,6 +1067,23 @@ class RecorderService:
         if probe.height >= min_height:
             return None
 
+        return self._reject_actual_resolution(
+            session_id=session_id,
+            job_id=job_id,
+            output_path=output_path,
+            probe=probe,
+            min_height=min_height,
+        )
+
+    def _reject_actual_resolution(
+        self,
+        *,
+        session_id: str,
+        job_id: str,
+        output_path: Path,
+        probe: ActualQualityProbeResult,
+        min_height: int,
+    ) -> str:
         reason_detail = (
             "quality_below_actual_resolution:"
             f"{probe.width or 0}x{probe.height}<0x{min_height}"
@@ -1177,30 +1574,29 @@ class RecorderService:
         observed_bitrate_kbps: int | None = None,
         min_required_height: int | None = None,
     ) -> None:
-        append_model(
-            self.audit_path,
-            RecorderAuditEvent(
-                event_type=event_type,
-                session_id=session_id,
-                job_id=job_id,
-                source_type=source_type,
-                decision=decision,
-                failure_category=failure_category,
-                is_retryable=is_retryable,
-                reason_code=reason_code,
-                reason_detail=reason_detail,
-                reason=reason,
-                attempt=attempt,
-                max_attempts=max_attempts,
-                stderr_excerpt=stderr_excerpt,
-                stderr_log_path=stderr_log_path,
-                observed_width=observed_width,
-                observed_height=observed_height,
-                observed_bitrate_kbps=observed_bitrate_kbps,
-                min_required_height=min_required_height,
-                created_at=datetime.now(timezone.utc),
-            ),
+        event = RecorderAuditEvent(
+            event_type=event_type,
+            session_id=session_id,
+            job_id=job_id,
+            source_type=source_type,
+            decision=decision,
+            failure_category=failure_category,
+            is_retryable=is_retryable,
+            reason_code=reason_code,
+            reason_detail=reason_detail,
+            reason=reason,
+            attempt=attempt,
+            max_attempts=max_attempts,
+            stderr_excerpt=stderr_excerpt,
+            stderr_log_path=stderr_log_path,
+            observed_width=observed_width,
+            observed_height=observed_height,
+            observed_bitrate_kbps=observed_bitrate_kbps,
+            min_required_height=min_required_height,
+            created_at=datetime.now(timezone.utc),
         )
+        with self._audit_lock:
+            append_model(self.audit_path, event)
 
     def _maybe_emit_cookie_expired(
         self,

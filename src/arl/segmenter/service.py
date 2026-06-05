@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from arl.config import Settings
+from arl.segmenter.durations import recording_duration_seconds
 from arl.segmenter.models import MatchStageHint, SegmenterStateFile
 from arl.shared.contracts import MatchBoundary, MatchStage, RecordingAsset
 from arl.shared.jsonl_store import append_model, load_models
@@ -47,10 +48,7 @@ class SegmenterService:
         log("segmenter", f"processed_assets={processed}")
 
     def _duration_seconds(self, asset: RecordingAsset) -> float:
-        if asset.ended_at is None:
-            return 1800.0
-        duration = (asset.ended_at - asset.started_at).total_seconds()
-        return max(60.0, duration)
+        return recording_duration_seconds(asset)
 
     def _build_boundaries(
         self,

@@ -68,7 +68,13 @@ class RecorderFfmpegHeaderInjectionTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    def _write_state(self, *, stream_headers: dict[str, str], platform: str) -> None:
+    def _write_state(
+        self,
+        *,
+        stream_headers: dict[str, str],
+        platform: str,
+        stream_url: str = "https://cn-pull.example.com/live/abc.flv?token=xyz",
+    ) -> None:
         started_at = datetime(2026, 5, 6, 1, 0, tzinfo=timezone.utc)
         state = OrchestratorStateFile(
             sessions=[
@@ -78,7 +84,7 @@ class RecorderFfmpegHeaderInjectionTests(unittest.TestCase):
                     room_url="https://live.bilibili.com/12345",
                     platform=platform,
                     source_type=SourceType.DIRECT_STREAM,
-                    stream_url="https://cn-pull.example.com/live/abc.flv?token=xyz",
+                    stream_url=stream_url,
                     stream_headers=stream_headers,
                     status=SessionStatus.LIVE,
                     started_at=started_at,
@@ -90,7 +96,7 @@ class RecorderFfmpegHeaderInjectionTests(unittest.TestCase):
                     session_id="session-h",
                     platform=platform,
                     source_type=SourceType.DIRECT_STREAM,
-                    stream_url="https://cn-pull.example.com/live/abc.flv?token=xyz",
+                    stream_url=stream_url,
                     stream_headers=stream_headers,
                     status=RecordingJobStatus.QUEUED,
                     created_at=started_at,
@@ -165,6 +171,26 @@ class RecorderFfmpegHeaderInjectionTests(unittest.TestCase):
             command[movflags_index + 1],
             "+frag_keyframe+empty_moov+default_base_moof",
         )
+
+    def test_hls_direct_stream_adds_aac_bitstream_filter(self) -> None:
+        self._write_state(
+            stream_headers={},
+            platform="douyin",
+            stream_url="https://pull.example.com/live/stream_uhd.m3u8?token=abc",
+        )
+
+        with patch("arl.recorder.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+            "arl.recorder.service.subprocess.run",
+            return_value=subprocess.CompletedProcess(args=["ffmpeg"], returncode=0),
+        ) as mocked_run:
+            RecorderService(self.settings).run()
+
+        command = self._captured_command(mocked_run)
+        self.assertIn("-bsf:a", command)
+        bsf_index = command.index("-bsf:a")
+        self.assertEqual(command[bsf_index + 1], "aac_adtstoasc")
+        self.assertLess(command.index("-c"), bsf_index)
+        self.assertLess(bsf_index, command.index("-movflags"))
 
     def test_user_agent_lookup_is_case_insensitive(self) -> None:
         # If a future probe writes lowercase keys, -user_agent should still

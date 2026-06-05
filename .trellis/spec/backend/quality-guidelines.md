@@ -147,6 +147,16 @@ The current MVP backend is a local pipeline with file-backed contracts and typed
 
 **Prevention**: Add tests for unsupported provider, missing ASR dependency path, and SRT output formatting from transcription entries. For `faster-whisper`, also test failures raised while iterating returned `segments`; model execution is lazy and CUDA/runtime dependency errors may appear after `model.transcribe(...)` returns. In `ARL_WHISPER_DEVICE=auto`, retry the same boundary once on CPU and disable CUDA for the rest of the batch so later boundaries do not repeatedly enter the broken CUDA path. In explicit `cuda` mode, keep the failure visible as a placeholder instead of silently changing device policy.
 
+### Common Mistake: Subtitle cues use coarse segment timestamps
+
+**Symptom**: Burned-in subtitles appear several seconds before anyone speaks, blocking the video during leading silence.
+
+**Cause**: `faster-whisper` segment-level `start` / `end` values can cover pre-speech silence or span a match boundary. Building SRT cues from those coarse segment timestamps makes text visible before the first spoken word.
+
+**Fix**: Call `model.transcribe(..., word_timestamps=True)` and build SRT cue windows from the first/last timed word inside the match boundary. Fall back to segment timestamps only when no usable word timestamps are present.
+
+**Prevention**: Keep a regression test where a segment starts at `0.0` but its first word starts later, and assert the generated SRT begins at the first word time rather than `00:00:00,000`.
+
 ### Common Mistake: Adding subtitle failures to `CORE_DECISION_EVENT_TYPES`
 
 **Symptom**: `subtitles-events.jsonl` rows start carrying recorder/exporter fields such as `decision`, `failure_category`, `is_retryable`, and `reason_code`, or validation failures appear because subtitle reasons like `model_unavailable` are not in the ffmpeg taxonomy.
@@ -236,6 +246,16 @@ The current MVP backend is a local pipeline with file-backed contracts and typed
 **Fix**: Dual-track on every ffmpeg failure: (a) inline `stderr_excerpt` field in the audit row carrying the first 5 + last 15 lines (each line truncated to 240 chars, total ≤ 4 KB), and (b) full stderr written atomically to `data/tmp/recorder-stderr/<job_id>-<attempt>.log` with the path also recorded on the audit row as `stderr_log_path`. Recorder rotates that directory at startup, keeping only the newest `ARL_RECORDER_STDERR_RETAIN_COUNT` files (default 200).
 
 **Prevention**: Tests asserting (1) failure audits carry both `stderr_excerpt` and `stderr_log_path`, (2) success audits carry neither, (3) rotation honors the retain count. Pattern applies to any future stage that wraps a noisy external process (exporter ffmpeg, whisper) — reuse the same excerpt/log-path schema rather than inventing a new one.
+
+### Common Mistake: Discarding a valid partial recording after ffmpeg exits non-zero
+
+**Symptom**: A long unattended run leaves a playable `recording-source.mp4` on disk, but `recording-assets.jsonl` points to a tiny `recording-source.txt` fallback, so downstream segment/subtitle/export stages ignore the real recording.
+
+**Cause**: Treating any non-zero ffmpeg exit as total recording failure even though fragmented direct-stream MP4 output may already be valid and probeable.
+
+**Fix**: After a direct-stream ffmpeg failure, check for a non-empty partial mp4 and verify it with ffprobe. If it has a video stream and satisfies the actual-resolution gate, emit `ffmpeg_record_succeeded`, append the mp4 `RecordingAsset`, and skip txt fallback. If ffprobe is missing/inconclusive or the partial fails the quality gate, keep the existing retry/fallback path.
+
+**Prevention**: Keep regression coverage where ffmpeg raises an HTTP read-reset error after writing a probeable mp4, and assert the manifest points to `recording-source.mp4` with no `ffmpeg_fallback_placeholder`.
 
 ### Common Mistake: Missing failure category leads to generic inspect-only action
 
@@ -445,7 +465,17 @@ The current MVP backend is a local pipeline with file-backed contracts and typed
 
 **Fix**: Split 403 out as a distinct `reason_code="http_403_forbidden"` (still under the same non-retryable category — retry semantics are unchanged) and have the recorder emit a `cookie_expired_for_<platform>` audit row alongside `ffmpeg_record_failed` when the classifier returns the 403 sub-code AND the operator opted into cookie-based auth for that platform (`DouyinSettings.cookie` or matching `BilibiliSettings.sessdata` non-empty). Orchestrator routes the recorder-side cookie row to the audit log without advancing the per-job monotonic watermark so the accompanying ffmpeg failure event is still applied.
 
-**Prevention**: When a single category (`http_4xx_non_retryable`) covers heterogeneous causes (auth/cookie vs gone vs server config), split the reason_code rather than the category. Test the classifier on every status code marker independently and assert that the high-confidence cookie-suspicion signal only fires when the operator actually configured a cookie env var — a 403 with no cookie configured is a server denial, not an expiration. Known false positive: Bilibili short-lived `getRoomPlayInfo` stream URL tokens can 403 even with fresh SESSDATA; recorder still emits the signal in that case, and operators confirm with `arl cookie-health` before refreshing.
+**Prevention**: When a single category (`http_4xx_non_retryable`) covers heterogeneous causes (auth/cookie vs gone vs server config), split the reason_code rather than the category. Test the classifier on every status code marker independently and assert that the high-confidence cookie-suspicion signal only fires when the operator actually configured a cookie env var — a 403 with no cookie configured is a server denial, not an expiration. For Bilibili, never emit the cookie-expiration signal from ffmpeg 403 alone; run a same-room probe and require `code=-101` classification first.
+
+### Common Mistake: Treating Bilibili ffmpeg 403 as SESSDATA expiry without probing
+
+**Symptom**: A Bilibili recording job fails with HTTP 403, operators are told to replace `ARL_BILIBILI_SESSDATA`, but rerunning `getRoomPlayInfo` with the same SESSDATA still returns a fresh direct-stream URL.
+
+**Cause**: Bilibili direct stream URLs are short-lived signed URLs. The signed CDN URL can expire independently of the account cookie, so ffmpeg 403 is ambiguous until the room API is probed again.
+
+**Fix**: On Bilibili direct-stream ffmpeg 403, run a same-room `BilibiliRoomProbe`. Emit `cookie_expired_for_bilibili` only when `classify_cookie_state(snapshot) == expired` (`api_error:code=-101` or `playinfo_error:api_error:code=-101`). If the probe is fresh and returns a direct stream URL, emit `stream_url_expired_for_bilibili` and retry ffmpeg once with the refreshed URL and headers. If the probe is fresh but cannot return a direct stream URL, emit `stream_url_expired_for_bilibili` with `reason=refresh_failed:*` and continue the normal fallback/manual path.
+
+**Prevention**: Keep recorder tests for all three branches: fresh probe refreshes and retries once, expired SESSDATA emits only the cookie event, and fresh/no-direct-stream emits only the stream URL diagnostic. Status should surface `cookie_expired_for_bilibili` as action-required and `stream_url_expired_for_bilibili` as a degraded diagnostic.
 
 ### Common Mistake: Extracting a `subprocess.run` call to a helper breaks tests that patch it at the original module
 

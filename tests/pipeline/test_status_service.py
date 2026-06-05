@@ -19,7 +19,7 @@ from arl.orchestrator.models import (
     SessionRecord,
     SessionStatus,
 )
-from arl.recorder.models import RecorderStateFile
+from arl.recorder.models import RecorderAuditEvent, RecorderStateFile
 from arl.shared.contracts import (
     CopyAsset,
     ExportAsset,
@@ -229,6 +229,61 @@ class StatusServiceTest(unittest.TestCase):
                     "count": 1,
                     "job_ids": ["recording-status-action"],
                 },
+            ],
+        )
+
+    def test_bilibili_cookie_expired_event_requires_action(self) -> None:
+        append_model(
+            self.settings.orchestrator.recorder_event_log_path,
+            RecorderAuditEvent(
+                event_type="cookie_expired_for_bilibili",
+                session_id="session-bili",
+                job_id="job-bili",
+                source_type=SourceType.DIRECT_STREAM,
+                reason="sessdata_expired:api_error:code=-101:account_not_logged_in",
+                created_at=self._now(),
+            ),
+        )
+
+        status = StatusService(self.settings).build()
+
+        self.assertEqual(status["summary"]["health"], "action_required")
+        self.assertEqual(
+            status["summary"]["action_required_reasons"],
+            [
+                {
+                    "code": "bilibili_sessdata_expired",
+                    "count": 1,
+                    "job_ids": ["job-bili"],
+                }
+            ],
+        )
+
+    def test_bilibili_stream_url_event_is_degraded_diagnostic(self) -> None:
+        append_model(
+            self.settings.orchestrator.recorder_event_log_path,
+            RecorderAuditEvent(
+                event_type="stream_url_expired_for_bilibili",
+                session_id="session-bili",
+                job_id="job-bili",
+                source_type=SourceType.DIRECT_STREAM,
+                reason="refresh_failed:stream_url_missing",
+                created_at=self._now(),
+            ),
+        )
+
+        status = StatusService(self.settings).build()
+
+        self.assertEqual(status["summary"]["health"], "degraded")
+        self.assertEqual(
+            status["summary"]["degraded_reasons"],
+            [
+                {
+                    "code": "bilibili_stream_url_expired",
+                    "count": 1,
+                    "reasons": {"refresh_failed:stream_url_missing": 1},
+                    "job_ids": ["job-bili"],
+                }
             ],
         )
 

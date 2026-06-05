@@ -133,6 +133,41 @@ class OrchestratorRecorderCookieExpiredEventTest(unittest.TestCase):
         # Must NOT be treated as an unknown event (no recorder_event_ignored).
         self.assertNotIn("recorder_event_ignored", event_types)
 
+    def test_stream_url_expired_recorder_event_writes_audit_only(self) -> None:
+        self._seed_state(platform="bilibili")
+        created_at = datetime(2026, 5, 12, 2, 7, tzinfo=timezone.utc)
+        self._write_recorder_events(
+            [
+                {
+                    "event_type": "stream_url_expired_for_bilibili",
+                    "session_id": "session-rec",
+                    "job_id": "job-rec",
+                    "source_type": "direct_stream",
+                    "reason": "refresh_failed:stream_url_missing",
+                    "created_at": created_at.isoformat(),
+                }
+            ]
+        )
+
+        OrchestratorService(self.settings).run_once()
+
+        audits = self._orch_audits()
+        event_types = [item["event_type"] for item in audits]
+        self.assertIn("stream_url_expired_for_bilibili", event_types)
+        stream_audit = next(
+            item
+            for item in audits
+            if item["event_type"] == "stream_url_expired_for_bilibili"
+        )
+        self.assertEqual(stream_audit["session_id"], "session-rec")
+        self.assertEqual(stream_audit["job_id"], "job-rec")
+        self.assertIn("platform=bilibili", stream_audit["message"])
+        self.assertIn("refresh_failed", stream_audit["message"])
+
+        result = json.loads(self.state_path.read_text(encoding="utf-8"))
+        self.assertEqual(result["recording_jobs"][0]["status"], "queued")
+        self.assertNotIn("recorder_event_ignored", event_types)
+
     def test_cookie_expired_does_not_advance_watermark(self) -> None:
         # Watermark advance would block a later ffmpeg_record_failed at the
         # same created_at as stale. The cookie_expired branch must early-return

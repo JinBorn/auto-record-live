@@ -12,6 +12,7 @@ from arl.exporter.service import ExporterService
 from arl.exporter.models import ExporterStateFile
 from arl.orchestrator.models import OrchestratorStateFile
 from arl.orchestrator.service import OrchestratorService
+from arl.postprocess.service import PostProcessService
 from arl.recorder.models import RecorderStateFile
 from arl.recorder.service import RecorderService
 from arl.segmenter.service import SegmenterService
@@ -316,6 +317,62 @@ class DualPlatformConcurrencyTest(unittest.TestCase):
             {"douyin", "bilibili"},
         )
         self.assertEqual(len({session.session_id for session in state.sessions}), 2)
+
+    def test_dual_platform_full_pipeline_unattended_idempotent(self) -> None:
+        agent = WindowsAgentService(self.settings)
+        agent.probes = [
+            FakeProbe(
+                "douyin",
+                [
+                    make_live_snapshot("douyin"),
+                    make_offline_snapshot("douyin"),
+                ],
+            ),
+            FakeProbe(
+                "bilibili",
+                [
+                    make_live_snapshot("bilibili"),
+                    make_offline_snapshot("bilibili"),
+                ],
+            ),
+        ]
+
+        agent.run_once()
+        orchestrator = OrchestratorService(self.settings)
+        orchestrator.run(once=True)
+        agent.run_once()
+        orchestrator.run(once=True)
+
+        with patch("arl.recorder.service.shutil.which", return_value="ffmpeg"), patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=lambda binary: "ffmpeg" if binary in {"ffmpeg", "ffprobe"} else None,
+        ), patch(
+            "arl.shared.ffmpeg_runner.subprocess.run",
+            side_effect=fake_successful_subprocess,
+        ):
+            RecorderService(self.settings).run()
+            PostProcessService(self.settings).run_once()
+            RecorderService(self.settings).run()
+            PostProcessService(self.settings).run_once()
+
+        recording_assets = jsonl_payloads(self.settings.storage.temp_dir / "recording-assets.jsonl")
+        boundaries = jsonl_payloads(self.settings.storage.temp_dir / "match-boundaries.jsonl")
+        subtitles = jsonl_payloads(self.settings.storage.temp_dir / "subtitle-assets.jsonl")
+        exports = jsonl_payloads(self.settings.storage.temp_dir / "export-assets.jsonl")
+        copies = jsonl_payloads(self.settings.storage.temp_dir / "copy-assets.jsonl")
+
+        self.assertEqual(len(recording_assets), 2)
+        self.assertEqual(len(boundaries), 2)
+        self.assertEqual(len(subtitles), 2)
+        self.assertEqual(len(exports), 2)
+        self.assertEqual(len(copies), 2)
+        self.assertEqual(
+            {Path(row["path"]).parent.name for row in exports},
+            {"douyin", "bilibili"},
+        )
+        self.assertTrue(all(Path(row["path"]).exists() for row in recording_assets))
+        self.assertTrue(all(Path(row["path"]).exists() for row in exports))
+        self.assertTrue(all(Path(row["path"]).exists() for row in copies))
 
 
 if __name__ == "__main__":

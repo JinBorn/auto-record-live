@@ -59,6 +59,16 @@ class StatusService:
         missing_copies = self._count_missing_copies(boundaries, copy_assets)
         subtitle_fallback_reasons = self._subtitle_fallback_reasons(subtitle_events)
         recorder_failure_events = self._recorder_failure_events(recorder_events)
+        bilibili_cookie_expired_events = [
+            event
+            for event in recorder_events
+            if event.event_type == "cookie_expired_for_bilibili"
+        ]
+        bilibili_stream_url_events = [
+            event
+            for event in recorder_events
+            if event.event_type == "stream_url_expired_for_bilibili"
+        ]
         exporter_fallback_events = [
             event
             for event in exporter_events
@@ -82,6 +92,7 @@ class StatusService:
             failed_actions=int(recovery_summary.get("actions_failed", 0)),
             undispatched_actions=int(recovery_summary.get("actions_undispatched", 0)),
             exporter_batch_aborted_events=exporter_batch_aborted_events,
+            bilibili_cookie_expired_events=bilibili_cookie_expired_events,
         )
         degraded_reasons = self._degraded_reasons(
             subtitle_fallback_reasons=subtitle_fallback_reasons,
@@ -90,6 +101,7 @@ class StatusService:
             missing_exports=missing_exports,
             missing_copies=missing_copies,
             recorder_failure_events=recorder_failure_events,
+            bilibili_stream_url_events=bilibili_stream_url_events,
         )
         action_required = bool(action_required_reasons)
         degraded = bool(degraded_reasons)
@@ -286,8 +298,21 @@ class StatusService:
         failed_actions: int,
         undispatched_actions: int,
         exporter_batch_aborted_events: list[ExporterAuditEvent],
+        bilibili_cookie_expired_events: list[RecorderAuditEvent],
     ) -> list[dict[str, object]]:
         reasons: list[dict[str, object]] = []
+        if bilibili_cookie_expired_events:
+            reasons.append(
+                {
+                    "code": "bilibili_sessdata_expired",
+                    "count": len(bilibili_cookie_expired_events),
+                    "job_ids": self._sample_strings(
+                        event.job_id
+                        for event in bilibili_cookie_expired_events
+                        if event.job_id
+                    ),
+                }
+            )
         if recorder_state.manual_required_job_ids:
             reasons.append(
                 {
@@ -348,8 +373,25 @@ class StatusService:
         missing_exports: int,
         missing_copies: int,
         recorder_failure_events: list[RecorderAuditEvent],
+        bilibili_stream_url_events: list[RecorderAuditEvent],
     ) -> list[dict[str, object]]:
         reasons: list[dict[str, object]] = []
+        if bilibili_stream_url_events:
+            reasons.append(
+                {
+                    "code": "bilibili_stream_url_expired",
+                    "count": len(bilibili_stream_url_events),
+                    "reasons": self._counter_dict(
+                        event.reason or "unknown"
+                        for event in bilibili_stream_url_events
+                    ),
+                    "job_ids": self._sample_strings(
+                        event.job_id
+                        for event in bilibili_stream_url_events
+                        if event.job_id
+                    ),
+                }
+            )
         if subtitle_fallback_reasons:
             reasons.append(
                 {

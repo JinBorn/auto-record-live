@@ -219,6 +219,19 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             3,
         )
 
+    def test_recorder_max_concurrent_jobs_env_loads_with_minimum_one(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_RECORDER_MAX_CONCURRENT_JOBS"] = "4"
+            settings = load_settings()
+
+        self.assertEqual(settings.recording.max_concurrent_jobs, 4)
+
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_RECORDER_MAX_CONCURRENT_JOBS"] = "0"
+            settings = load_settings()
+
+        self.assertEqual(settings.recording.max_concurrent_jobs, 1)
+
     def test_recording_finalize_headroom_env_loads(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             os.environ["ARL_RECORDING_FINALIZE_HEADROOM_SECONDS"] = "90"

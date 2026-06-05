@@ -78,6 +78,14 @@ class BilibiliCookieStateTests(unittest.TestCase):
         )
         self.assertEqual(probe.classify_cookie_state(snapshot), CookieState.EXPIRED)
 
+    def test_sessdata_set_and_playinfo_code_minus_101_returns_expired(self) -> None:
+        probe = self._probe(sessdata="abc")
+        snapshot = _live_snapshot(
+            "bilibili",
+            reason="playinfo_error:api_error:code=-101:account_not_logged_in",
+        )
+        self.assertEqual(probe.classify_cookie_state(snapshot), CookieState.EXPIRED)
+
     def test_sessdata_set_and_live_returns_fresh(self) -> None:
         probe = self._probe(sessdata="abc")
         snapshot = _live_snapshot("bilibili", reason="api_live_with_stream_url")

@@ -4,12 +4,14 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 from arl.config import (
+    BilibiliSettings,
     DouyinSettings,
     ExportSettings,
     OrchestratorSettings,
@@ -30,8 +32,10 @@ from arl.orchestrator.service import OrchestratorService
 from arl.recorder.models import RecorderStateFile
 from arl.recovery.service import RecoveryService
 from arl.recorder.service import RecorderService
-from arl.shared.contracts import MatchBoundary, RecordingAsset, SourceType, SubtitleAsset
+from arl.shared.contracts import LiveState, MatchBoundary, RecordingAsset, SourceType, SubtitleAsset
 from arl.shared.jsonl_store import append_model
+from arl.windows_agent.models import AgentSnapshot
+from arl.windows_agent.platform_probe import CookieState
 
 
 class FfmpegResilienceTest(unittest.TestCase):
@@ -1521,6 +1525,119 @@ class RecorderHardeningTest(unittest.TestCase):
         command = list(mocked_run.call_args[0][0])
         self.assertEqual(command[command.index("-t") + 1], "7140")
 
+    def test_recorder_runs_multiple_jobs_with_bounded_parallelism(self) -> None:
+        self._seed_state(
+            job_id="job-parallel-a",
+            extra_jobs=[
+                ("session-parallel-b", "job-parallel-b", RecordingJobStatus.STOPPED),
+            ],
+        )
+        self.settings.recording.max_concurrent_jobs = 2
+        self.settings.recording.validate_actual_resolution = False
+
+        lock = threading.Lock()
+        direct_started = 0
+        both_started = threading.Event()
+
+        def _fake_run(command, **kwargs):
+            nonlocal direct_started
+            output_path = Path(command[-1])
+            if output_path.name == "recording-source.mp4":
+                with lock:
+                    direct_started += 1
+                    if direct_started == 2:
+                        both_started.set()
+                self.assertTrue(
+                    both_started.wait(timeout=2),
+                    "expected two ffmpeg recording commands to overlap",
+                )
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text("fake recording", encoding="utf-8")
+                return subprocess.CompletedProcess(args=command, returncode=0)
+            if output_path.name == "recording-source.remux.mp4":
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text("fake remux", encoding="utf-8")
+                return subprocess.CompletedProcess(args=command, returncode=0)
+            raise AssertionError(f"unexpected command: {command}")
+
+        with patch("arl.recorder.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+            "arl.recorder.service.subprocess.run", side_effect=_fake_run
+        ):
+            RecorderService(self.settings).run()
+
+        self.assertEqual(direct_started, 2)
+        assets = [
+            json.loads(line)
+            for line in (self.temp_root / "recording-assets.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        self.assertEqual(len(assets), 2)
+        self.assertEqual(
+            {Path(asset["path"]).name for asset in assets},
+            {"recording-source.mp4"},
+        )
+
+    def test_direct_stream_failure_salvages_probeable_partial_mp4_as_asset(self) -> None:
+        self._seed_state(job_id="job-partial-salvage")
+
+        def _which(binary: str) -> str | None:
+            if binary in {"ffmpeg", "ffprobe"}:
+                return f"/usr/bin/{binary}"
+            return None
+
+        def _fake_run(command, **kwargs):
+            if command[0].endswith("ffmpeg"):
+                output_path = Path(command[-1])
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                if output_path.name == "recording-source.mp4":
+                    output_path.write_text("probeable partial mp4", encoding="utf-8")
+                    raise subprocess.CalledProcessError(
+                        1,
+                        command,
+                        stderr="[http] Error reading HTTP response: Error number -10054 occurred",
+                    )
+                if output_path.name == "recording-source.remux.mp4":
+                    output_path.write_text("remuxed mp4", encoding="utf-8")
+                    return subprocess.CompletedProcess(args=command, returncode=0)
+            if command[0].endswith("ffprobe"):
+                return subprocess.CompletedProcess(
+                    args=command,
+                    returncode=0,
+                    stdout=json.dumps(
+                        {
+                            "streams": [
+                                {
+                                    "width": 1920,
+                                    "height": 1080,
+                                    "bit_rate": "6000000",
+                                }
+                            ]
+                        }
+                    ),
+                )
+            raise AssertionError(f"unexpected command: {command}")
+
+        with patch("arl.recorder.service.shutil.which", side_effect=_which), patch(
+            "arl.recorder.service.subprocess.run", side_effect=_fake_run
+        ):
+            RecorderService(self.settings).run()
+
+        assets = [
+            json.loads(line)
+            for line in (self.temp_root / "recording-assets.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        self.assertEqual(len(assets), 1)
+        self.assertEqual(Path(assets[0]["path"]).name, "recording-source.mp4")
+        self.assertFalse((self.raw_root / "session-hd" / "recording-source.txt").exists())
+
+        event_types = [item["event_type"] for item in self._audit_payloads()]
+        self.assertIn("ffmpeg_record_failed", event_types)
+        self.assertIn("ffmpeg_record_succeeded", event_types)
+        self.assertNotIn("ffmpeg_fallback_placeholder", event_types)
+
     def test_r1_yield_on_http_5xx_runs_ffmpeg_once_with_yield_decision(self) -> None:
         self._seed_state(job_id="job-5xx")
         error = subprocess.CalledProcessError(
@@ -1725,6 +1842,58 @@ class RecorderHardeningTest(unittest.TestCase):
         self.assertFalse(
             any(item["event_type"] == "quality_below_actual_resolution" for item in events)
         )
+
+    def test_live_session_recording_asset_uses_attempt_window(self) -> None:
+        started_at = datetime(2026, 5, 11, 1, 0, tzinfo=timezone.utc)
+        state = OrchestratorStateFile(
+            sessions=[
+                SessionRecord(
+                    session_id="session-live-asset",
+                    streamer_name="streamer-live",
+                    room_url="https://live.douyin.com/live",
+                    source_type=SourceType.DIRECT_STREAM,
+                    stream_url="https://example.invalid/live.m3u8",
+                    status=SessionStatus.LIVE,
+                    started_at=started_at,
+                    ended_at=None,
+                )
+            ],
+            recording_jobs=[
+                RecordingJobRecord(
+                    job_id="job-live-asset",
+                    session_id="session-live-asset",
+                    source_type=SourceType.DIRECT_STREAM,
+                    stream_url="https://example.invalid/live.m3u8",
+                    status=RecordingJobStatus.QUEUED,
+                    created_at=started_at,
+                )
+            ],
+        )
+        self.orchestrator_state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.orchestrator_state_path.write_text(
+            state.model_dump_json(indent=2) + "\n",
+            encoding="utf-8",
+        )
+        self.settings.recording.validate_actual_resolution = False
+
+        def _fake_run(command, **kwargs):
+            output_path = Path(command[-1])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("fake video", encoding="utf-8")
+            return subprocess.CompletedProcess(args=command, returncode=0)
+
+        with patch("arl.recorder.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+            "arl.recorder.service.subprocess.run", side_effect=_fake_run
+        ):
+            RecorderService(self.settings).run()
+
+        payload = json.loads(
+            (self.temp_root / "recording-assets.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()[0]
+        )
+        self.assertNotEqual(payload["started_at"], started_at.isoformat())
+        self.assertIsNotNone(payload["ended_at"])
 
     def test_direct_stream_success_remuxes_fragmented_mp4_to_faststart(self) -> None:
         self._seed_state(job_id="job-remux")
@@ -2112,14 +2281,19 @@ class RecorderCookieExpiredEmitTest(unittest.TestCase):
         *,
         douyin_cookie: str = "",
         bilibili_sessdata: str = "",
+        bilibili_room_url: str = "https://live.bilibili.com/12345",
         include_bilibili: bool = False,
     ) -> Settings:
-        from arl.config import BilibiliSettings
-
         douyin = DouyinSettings(cookie=douyin_cookie)
         platforms: list = [douyin]
         if include_bilibili:
-            platforms.append(BilibiliSettings(sessdata=bilibili_sessdata))
+            platforms.append(
+                BilibiliSettings(
+                    room_url=bilibili_room_url,
+                    streamer_name="bili-streamer",
+                    sessdata=bilibili_sessdata,
+                )
+            )
         return Settings(
             douyin=douyin,
             platforms=platforms,
@@ -2154,14 +2328,16 @@ class RecorderCookieExpiredEmitTest(unittest.TestCase):
         session_id: str,
         job_id: str,
         source_type: SourceType = SourceType.DIRECT_STREAM,
+        room_url: str | None = None,
     ) -> None:
         started_at = datetime(2026, 5, 12, 1, 0, tzinfo=timezone.utc)
+        resolved_room_url = room_url or f"https://live.{platform}.example/room"
         state = OrchestratorStateFile(
             sessions=[
                 SessionRecord(
                     session_id=session_id,
                     streamer_name="streamer-x",
-                    room_url=f"https://live.{platform}.example/room",
+                    room_url=resolved_room_url,
                     platform=platform,
                     source_type=source_type,
                     stream_url="https://example.invalid/live.m3u8",
@@ -2244,18 +2420,163 @@ class RecorderCookieExpiredEmitTest(unittest.TestCase):
         self.assertIn("ffmpeg_record_failed", event_types)
         self.assertNotIn("cookie_expired_for_douyin", event_types)
 
-    def test_403_with_bilibili_sessdata_configured_emits_cookie_expired(self) -> None:
+    def test_403_with_bilibili_fresh_probe_refreshes_stream_url(self) -> None:
         settings = self._settings(
             bilibili_sessdata="sessdata-token", include_bilibili=True
         )
-        self._seed_state(platform="bilibili", session_id="s-3", job_id="j-3")
+        self._seed_state(
+            platform="bilibili",
+            session_id="s-3",
+            job_id="j-3",
+            room_url="https://live.bilibili.com/12345",
+        )
         error = subprocess.CalledProcessError(
             1, ["ffmpeg"], stderr="HTTP 403 Forbidden"
         )
-        self._run_with_ffmpeg_error(settings, error)
+        refreshed_snapshot = AgentSnapshot(
+            state=LiveState.LIVE,
+            streamer_name="bili-streamer",
+            room_url="https://live.bilibili.com/12345",
+            source_type=SourceType.DIRECT_STREAM,
+            stream_url="https://refreshed.example/live.m3u8?token=new",
+            stream_headers={"Referer": "https://live.bilibili.com"},
+            reason="api_live_with_stream_url",
+            detected_at=datetime(2026, 5, 12, 1, 1, tzinfo=timezone.utc),
+            platform="bilibili",
+        )
+        with patch(
+            "arl.recorder.service.shutil.which", return_value="/usr/bin/ffmpeg"
+        ), patch(
+            "arl.recorder.service.BilibiliRoomProbe"
+        ) as mocked_probe_class, patch(
+            "arl.recorder.service.subprocess.run",
+            side_effect=[
+                error,
+                subprocess.CompletedProcess(args=["ffmpeg"], returncode=0),
+            ],
+        ) as mocked_run:
+            probe = mocked_probe_class.return_value
+            probe.detect.return_value = refreshed_snapshot
+            probe.classify_cookie_state.return_value = CookieState.FRESH
+            RecorderService(settings).run()
+
+        self.assertEqual(mocked_run.call_count, 2)
+        second_command = list(mocked_run.call_args_list[1].args[0])
+        self.assertEqual(
+            second_command[second_command.index("-i") + 1],
+            "https://refreshed.example/live.m3u8?token=new",
+        )
         events = self._audit_payloads()
         event_types = [item["event_type"] for item in events]
+        self.assertEqual(
+            event_types,
+            [
+                "ffmpeg_record_failed",
+                "stream_url_expired_for_bilibili",
+                "ffmpeg_record_succeeded",
+            ],
+        )
+        self.assertNotIn("cookie_expired_for_bilibili", event_types)
+        stream_event = next(
+            item
+            for item in events
+            if item["event_type"] == "stream_url_expired_for_bilibili"
+        )
+        self.assertEqual(stream_event["reason"], "refreshed_stream_url_after_403")
+
+    def test_403_with_bilibili_sessdata_expired_emits_cookie_expired(self) -> None:
+        settings = self._settings(
+            bilibili_sessdata="sessdata-token", include_bilibili=True
+        )
+        self._seed_state(
+            platform="bilibili",
+            session_id="s-3-expired",
+            job_id="j-3-expired",
+            room_url="https://live.bilibili.com/12345",
+        )
+        error = subprocess.CalledProcessError(
+            1, ["ffmpeg"], stderr="HTTP 403 Forbidden"
+        )
+        expired_snapshot = AgentSnapshot(
+            state=LiveState.OFFLINE,
+            streamer_name="bili-streamer",
+            room_url="https://live.bilibili.com/12345",
+            reason="api_error:code=-101:account_not_logged_in",
+            detected_at=datetime(2026, 5, 12, 1, 1, tzinfo=timezone.utc),
+            platform="bilibili",
+        )
+        with patch(
+            "arl.recorder.service.shutil.which", return_value="/usr/bin/ffmpeg"
+        ), patch(
+            "arl.recorder.service.BilibiliRoomProbe"
+        ) as mocked_probe_class, patch(
+            "arl.recorder.service.subprocess.run", side_effect=error
+        ) as mocked_run:
+            probe = mocked_probe_class.return_value
+            probe.detect.return_value = expired_snapshot
+            probe.classify_cookie_state.return_value = CookieState.EXPIRED
+            RecorderService(settings).run()
+
+        self.assertEqual(mocked_run.call_count, 1)
+        events = self._audit_payloads()
+        event_types = [item["event_type"] for item in events]
+        self.assertIn("ffmpeg_record_failed", event_types)
         self.assertIn("cookie_expired_for_bilibili", event_types)
+        self.assertNotIn("stream_url_expired_for_bilibili", event_types)
+        cookie_event = next(
+            item
+            for item in events
+            if item["event_type"] == "cookie_expired_for_bilibili"
+        )
+        self.assertIn("sessdata_expired", cookie_event["reason"])
+
+    def test_403_with_bilibili_refresh_failure_emits_stream_url_event(self) -> None:
+        settings = self._settings(
+            bilibili_sessdata="sessdata-token", include_bilibili=True
+        )
+        self._seed_state(
+            platform="bilibili",
+            session_id="s-3-refresh-failed",
+            job_id="j-3-refresh-failed",
+            room_url="https://live.bilibili.com/12345",
+        )
+        error = subprocess.CalledProcessError(
+            1, ["ffmpeg"], stderr="HTTP 403 Forbidden"
+        )
+        no_direct_snapshot = AgentSnapshot(
+            state=LiveState.LIVE,
+            streamer_name="bili-streamer",
+            room_url="https://live.bilibili.com/12345",
+            source_type=SourceType.BROWSER_CAPTURE,
+            stream_url=None,
+            reason="stream_url_missing",
+            detected_at=datetime(2026, 5, 12, 1, 1, tzinfo=timezone.utc),
+            platform="bilibili",
+        )
+        with patch(
+            "arl.recorder.service.shutil.which", return_value="/usr/bin/ffmpeg"
+        ), patch(
+            "arl.recorder.service.BilibiliRoomProbe"
+        ) as mocked_probe_class, patch(
+            "arl.recorder.service.subprocess.run", side_effect=error
+        ) as mocked_run:
+            probe = mocked_probe_class.return_value
+            probe.detect.return_value = no_direct_snapshot
+            probe.classify_cookie_state.return_value = CookieState.FRESH
+            RecorderService(settings).run()
+
+        self.assertEqual(mocked_run.call_count, 1)
+        events = self._audit_payloads()
+        event_types = [item["event_type"] for item in events]
+        self.assertIn("ffmpeg_record_failed", event_types)
+        self.assertIn("stream_url_expired_for_bilibili", event_types)
+        self.assertNotIn("cookie_expired_for_bilibili", event_types)
+        stream_event = next(
+            item
+            for item in events
+            if item["event_type"] == "stream_url_expired_for_bilibili"
+        )
+        self.assertEqual(stream_event["reason"], "refresh_failed:stream_url_missing")
 
     def test_403_with_bilibili_sessdata_empty_skips_cookie_expired(self) -> None:
         settings = self._settings(bilibili_sessdata="", include_bilibili=True)
@@ -2345,6 +2666,12 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
                 export_dir=self.export_root,
                 temp_dir=self.temp_root,
             ),
+            orchestrator=OrchestratorSettings(
+                state_file=self.temp_root / "orchestrator-state.json",
+                agent_event_log_path=self.temp_root / "windows-agent-events.jsonl",
+                recorder_event_log_path=self.temp_root / "recorder-events.jsonl",
+                audit_log_path=self.temp_root / "orchestrator-events.jsonl",
+            ),
             recording=RecordingSettings(enable_ffmpeg=False),
             subtitles=SubtitleSettings(enabled=True),
             export=ExportSettings(
@@ -2365,7 +2692,10 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         *,
         session_id: str = "session-e",
         match_index: int = 1,
+        platform: str = "douyin",
     ) -> None:
+        started_at = datetime(2026, 5, 12, 1, 0, tzinfo=timezone.utc)
+        ended_at = datetime(2026, 5, 12, 1, 10, tzinfo=timezone.utc)
         boundary = MatchBoundary(
             session_id=session_id,
             match_index=match_index,
@@ -2392,12 +2722,44 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
             session_id=session_id,
             source_type=SourceType.DIRECT_STREAM,
             path=str(recording_file),
-            started_at=datetime(2026, 5, 12, 1, 0, tzinfo=timezone.utc),
-            ended_at=datetime(2026, 5, 12, 1, 10, tzinfo=timezone.utc),
+            started_at=started_at,
+            ended_at=ended_at,
         )
         append_model(self.temp_root / "match-boundaries.jsonl", boundary)
         append_model(self.temp_root / "subtitle-assets.jsonl", subtitle)
         append_model(self.temp_root / "recording-assets.jsonl", recording)
+        self.settings.orchestrator.state_file.parent.mkdir(parents=True, exist_ok=True)
+        self.settings.orchestrator.state_file.write_text(
+            OrchestratorStateFile(
+                sessions=[
+                    SessionRecord(
+                        session_id=session_id,
+                        streamer_name=f"{platform}-streamer",
+                        room_url=f"https://live.example/{platform}",
+                        platform=platform,
+                        source_type=SourceType.DIRECT_STREAM,
+                        stream_url=f"https://media.example/{platform}.m3u8",
+                        status=SessionStatus.STOPPED,
+                        started_at=started_at,
+                        ended_at=ended_at,
+                    )
+                ],
+                recording_jobs=[
+                    RecordingJobRecord(
+                        job_id=f"job-{session_id}",
+                        session_id=session_id,
+                        platform=platform,
+                        source_type=SourceType.DIRECT_STREAM,
+                        stream_url=f"https://media.example/{platform}.m3u8",
+                        status=RecordingJobStatus.STOPPED,
+                        created_at=started_at,
+                        ended_at=ended_at,
+                    )
+                ],
+            ).model_dump_json(indent=2)
+            + "\n",
+            encoding="utf-8",
+        )
 
     def _audit_payloads(self) -> list[dict]:
         path = self.temp_root / "exporter-events.jsonl"
@@ -2498,14 +2860,44 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
 
     def test_success_emits_succeeded_audit_without_stderr_fields(self) -> None:
         self._seed_export_inputs()
-        # subprocess.run returns None → success path. The placeholder .mp4 path
-        # is returned by the exporter without actually muxing anything.
-        with patch("arl.exporter.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
-            "arl.exporter.service.subprocess.run", return_value=None
+        def _which(binary: str) -> str | None:
+            if binary in {"ffmpeg", "ffprobe"}:
+                return f"/usr/bin/{binary}"
+            return None
+
+        def _fake_run(command, **kwargs):
+            if command[0].endswith("ffprobe"):
+                return subprocess.CompletedProcess(
+                    args=command,
+                    returncode=0,
+                    stdout=json.dumps(
+                        {
+                            "streams": [
+                                {
+                                    "codec_type": "video",
+                                    "width": 1920,
+                                    "height": 1080,
+                                }
+                            ],
+                            "format": {"duration": "60.0", "size": "12345"},
+                        }
+                    ),
+                )
+            output_path = Path(command[-1])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("fake exported video", encoding="utf-8")
+            return subprocess.CompletedProcess(args=command, returncode=0)
+
+        with patch("arl.exporter.service.shutil.which", side_effect=_which), patch(
+            "arl.exporter.service.subprocess.run", side_effect=_fake_run
         ) as mocked_run:
             ExporterService(self.settings).run()
 
-        command = list(mocked_run.call_args[0][0])
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
         subtitle_path = (
             self.processed_root / "session-e" / "match-01.srt"
         ).resolve().as_posix().replace(":", "\\:")
@@ -2521,6 +2913,95 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         # Success row carries no canonical decision fields (mirrors ffmpeg_record_succeeded).
         self.assertIsNone(payloads[0]["decision"])
         self.assertIsNone(payloads[0]["failure_category"])
+
+    def test_export_path_uses_platform_subdirectory(self) -> None:
+        self._seed_export_inputs(platform="bilibili")
+
+        def _which(binary: str) -> str | None:
+            if binary in {"ffmpeg", "ffprobe"}:
+                return f"/usr/bin/{binary}"
+            return None
+
+        def _fake_run(command, **kwargs):
+            if command[0].endswith("ffprobe"):
+                return subprocess.CompletedProcess(
+                    args=command,
+                    returncode=0,
+                    stdout=json.dumps(
+                        {
+                            "streams": [
+                                {
+                                    "codec_type": "video",
+                                    "width": 1920,
+                                    "height": 1080,
+                                }
+                            ],
+                            "format": {"duration": "60.0", "size": "12345"},
+                        }
+                    ),
+                )
+            output_path = Path(command[-1])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("fake exported video", encoding="utf-8")
+            return subprocess.CompletedProcess(args=command, returncode=0)
+
+        with patch("arl.exporter.service.shutil.which", side_effect=_which), patch(
+            "arl.exporter.service.subprocess.run", side_effect=_fake_run
+        ):
+            ExporterService(self.settings).run()
+
+        export_row = json.loads(
+            (self.temp_root / "export-assets.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()[0]
+        )
+        expected_path = self.export_root / "bilibili" / "session-e_match01.mp4"
+        self.assertEqual(Path(export_row["path"]), expected_path)
+        self.assertTrue(expected_path.exists())
+        self.assertFalse((self.export_root / "session-e_match01.mp4").exists())
+
+    def test_success_exit_with_empty_video_output_falls_back(self) -> None:
+        self._seed_export_inputs()
+
+        def _which(binary: str) -> str | None:
+            if binary in {"ffmpeg", "ffprobe"}:
+                return f"/usr/bin/{binary}"
+            return None
+
+        def _fake_run(command, **kwargs):
+            if command[0].endswith("ffprobe"):
+                return subprocess.CompletedProcess(
+                    args=command,
+                    returncode=0,
+                    stdout=json.dumps({"streams": [], "format": {"size": "262"}}),
+                )
+            output_path = Path(command[-1])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("empty mp4 shell", encoding="utf-8")
+            return subprocess.CompletedProcess(args=command, returncode=0)
+
+        with patch("arl.exporter.service.shutil.which", side_effect=_which), patch(
+            "arl.exporter.service.subprocess.run", side_effect=_fake_run
+        ):
+            ExporterService(self.settings).run()
+
+        payloads = self._audit_payloads()
+        self.assertEqual(
+            [item["event_type"] for item in payloads],
+            ["ffmpeg_export_failed", "ffmpeg_export_fallback_placeholder"],
+        )
+        self.assertEqual(
+            payloads[0]["reason_detail"],
+            "ffmpeg_output_missing_video_stream",
+        )
+        self.assertEqual(payloads[0]["reason_code"], "unknown_unclassified")
+        export_row = json.loads(
+            (self.temp_root / "export-assets.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()[0]
+        )
+        self.assertTrue(export_row["path"].endswith("_match01.txt"))
+        self.assertFalse((self.export_root / "douyin" / "session-e_match01.mp4").exists())
 
     def test_oserror_failure_audit_handles_missing_stderr_gracefully(self) -> None:
         self._seed_export_inputs()
@@ -2601,6 +3082,12 @@ class ExporterAttemptBackoffTest(unittest.TestCase):
                 processed_dir=self.processed_root,
                 export_dir=self.export_root,
                 temp_dir=self.temp_root,
+            ),
+            orchestrator=OrchestratorSettings(
+                state_file=self.temp_root / "orchestrator-state.json",
+                agent_event_log_path=self.temp_root / "windows-agent-events.jsonl",
+                recorder_event_log_path=self.temp_root / "recorder-events.jsonl",
+                audit_log_path=self.temp_root / "orchestrator-events.jsonl",
             ),
             recording=RecordingSettings(enable_ffmpeg=False),
             subtitles=SubtitleSettings(enabled=True),
@@ -2731,6 +3218,12 @@ class ExporterBatchBudgetTest(unittest.TestCase):
                 export_dir=self.export_root,
                 temp_dir=self.temp_root,
             ),
+            orchestrator=OrchestratorSettings(
+                state_file=self.temp_root / "orchestrator-state.json",
+                agent_event_log_path=self.temp_root / "windows-agent-events.jsonl",
+                recorder_event_log_path=self.temp_root / "recorder-events.jsonl",
+                audit_log_path=self.temp_root / "orchestrator-events.jsonl",
+            ),
             recording=RecordingSettings(enable_ffmpeg=False),
             subtitles=SubtitleSettings(enabled=True),
             export=ExportSettings(
@@ -2810,6 +3303,23 @@ class ExporterBatchBudgetTest(unittest.TestCase):
         self._seed_export_inputs(count)
 
         def _fake_run(command, **kwargs):
+            if "-show_entries" in command:
+                return subprocess.CompletedProcess(
+                    args=command,
+                    returncode=0,
+                    stdout=json.dumps(
+                        {
+                            "streams": [
+                                {
+                                    "codec_type": "video",
+                                    "width": 1920,
+                                    "height": 1080,
+                                }
+                            ],
+                            "format": {"duration": "60.0", "size": "12345"},
+                        }
+                    ),
+                )
             output_name = Path(command[-1]).name
             match_index = int(output_name.split("_match", 1)[1].split(".", 1)[0])
             if match_index in failing_matches:
@@ -2818,9 +3328,17 @@ class ExporterBatchBudgetTest(unittest.TestCase):
                     ["ffmpeg"],
                     stderr="exit_status:1",
                 )
+            output_path = Path(command[-1])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("fake exported video", encoding="utf-8")
             return subprocess.CompletedProcess(args=command, returncode=0)
 
-        with patch("arl.exporter.service.shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+        def _which(binary: str) -> str | None:
+            if binary in {"ffmpeg", "ffprobe"}:
+                return f"/usr/bin/{binary}"
+            return None
+
+        with patch("arl.exporter.service.shutil.which", side_effect=_which), patch(
             "arl.exporter.service.subprocess.run",
             side_effect=_fake_run,
         ), patch("arl.exporter.service.time.sleep", return_value=None):

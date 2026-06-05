@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from arl.config import Settings
+from arl.segmenter.durations import recording_duration_seconds
 from arl.segmenter.models import MatchStageHint
 from arl.shared.contracts import MatchStage, RecordingAsset
 from arl.shared.jsonl_store import append_model, load_models
@@ -51,10 +52,7 @@ class AutoStageHintService:
         )
 
     def _duration_seconds(self, asset: RecordingAsset) -> float:
-        if asset.ended_at is None:
-            return 1800.0
-        duration = (asset.ended_at - asset.started_at).total_seconds()
-        return max(60.0, duration)
+        return recording_duration_seconds(asset)
 
     def _build_in_game_starts(self, duration: float) -> list[float]:
         interval_seconds = max(60, int(self.settings.recording.segment_minutes) * 60)

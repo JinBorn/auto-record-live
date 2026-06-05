@@ -115,6 +115,7 @@ class RecordingJobRecord(BaseModel):
   - `live_started`
   - `live_stopped`
   - `cookie_expired_for_<platform>` (informational; one of the registered platforms in `PROBE_REGISTRY`, e.g. `cookie_expired_for_bilibili`, `cookie_expired_for_douyin`). Two writers share this event type: windows-agent probes (probe-time detection) and recorder (record-time 403 detection). Both end up on `orchestrator-events.jsonl` so consumers can grep both sources with one pattern.
+  - `stream_url_expired_for_<platform>` (recorder-side informational; currently emitted by the Bilibili direct-stream 403 path when the signed stream URL is stale or could not be refreshed)
 - `live_started` contract:
   - `snapshot.state` must be `live`
   - `snapshot.streamer_name`, `snapshot.room_url`, and `snapshot.detected_at` are required
@@ -142,14 +143,20 @@ class RecordingJobRecord(BaseModel):
   - `snapshot.reason` should be populated when the stop cause is known
 - `cookie_expired_for_<platform>` contract:
   - Emitted by the windows agent in addition to (not instead of) the underlying `live_started`/`live_stopped` event when `PlatformProbe.classify_cookie_state(snapshot)` returns `expired` AND the snapshot has just transitioned (`_has_changed` returned True). High-confidence detection only:
-    - Bilibili: `BilibiliSettings.sessdata` is non-empty AND `snapshot.reason` starts with `api_error:code=-101`
+    - Bilibili: `BilibiliSettings.sessdata` is non-empty AND `snapshot.reason` starts with `api_error:code=-101` or `playinfo_error:api_error:code=-101`
     - Douyin: `DouyinSettings.cookie` is non-empty AND `snapshot.reason` starts with `quality_below_min_tier:hd<` (the anonymous baseline tier)
-  - Also emitted by the recorder, alongside (not instead of) the underlying `ffmpeg_record_failed` audit row, when the failure classifier returns `reason_code="http_403_forbidden"` AND the operator opted into cookie-based auth for that platform (`DouyinSettings.cookie != ""` or the configured `BilibiliSettings.sessdata != ""`). Recorder writes the row to `data/tmp/recorder-events.jsonl`; orchestrator picks it up via `_handle_recorder_event` and re-emits to `orchestrator-events.jsonl` audit log. `reason` on the recorder row carries the ffmpeg failure stderr excerpt (same string as on the matching `ffmpeg_record_failed` row).
-    - Bilibili note: the stream URL token returned by `getRoomPlayInfo` is short-lived and SESSDATA-independent. A 403 on a stale token will trip this signal even when SESSDATA is still fresh. Operators should confirm with `arl cookie-health` before refreshing SESSDATA — the probe-side classifier is the authoritative check.
+  - Also emitted by the recorder, alongside (not instead of) the underlying `ffmpeg_record_failed` audit row, when the failure classifier returns `reason_code="http_403_forbidden"` AND the operator opted into cookie-based auth for that platform. Douyin recorder-side 403 uses the existing cookie-config gate (`DouyinSettings.cookie != ""`). Bilibili recorder-side 403 MUST first run a same-room `BilibiliRoomProbe`; only when `classify_cookie_state(snapshot) == expired` may it emit `cookie_expired_for_bilibili` with `reason` beginning `sessdata_expired:`.
+    - Bilibili note: the stream URL token returned by `getRoomPlayInfo` is short-lived and SESSDATA-independent. A 403 on a stale token MUST NOT be treated as SESSDATA expiry when the follow-up probe still classifies the cookie as fresh.
   - `<platform>` MUST equal a registered `PROBE_REGISTRY` key. Unknown platforms must not produce this event.
   - The probe MUST NOT emit this event when the relevant cookie env var is unset, regardless of the snapshot's reason — there is no cookie to call expired. The recorder MUST apply the same gate before emitting from the 403 path.
   - The accompanying snapshot (probe path) is the same payload emitted with the underlying event; no extra fields are required. The recorder-path row carries `session_id`, `job_id`, `source_type`, and `reason` only — all canonical decision fields (`decision`, `failure_category`, `is_retryable`, `reason_code`, `reason_detail`) MUST be omitted/`null` since this row is informational, not a core decision event.
   - Orchestrator: `_handle_event` MUST route any agent-side `cookie_expired_for_<platform>` event to the audit log; `_handle_recorder_event` MUST route any recorder-side `cookie_expired_for_<platform>` event to the audit log without classifying it as `recorder_event_ignored` and without advancing the per-job monotonic watermark (so the accompanying `ffmpeg_record_failed` at the same `created_at` is not skipped as stale). Neither path mutates session/job state.
+- `stream_url_expired_for_<platform>` contract:
+  - Emitted by the recorder after a direct-stream Bilibili ffmpeg 403 when the follow-up Bilibili probe does not classify SESSDATA as expired.
+  - If the follow-up probe returns `state=live`, `source_type=direct_stream`, and a non-empty `stream_url`, recorder emits `stream_url_expired_for_bilibili` with `reason="refreshed_stream_url_after_403"`, rebuilds the ffmpeg command with the refreshed URL and headers, and retries once in the same recorder run.
+  - If the follow-up probe cannot provide a direct stream URL, recorder emits `stream_url_expired_for_bilibili` with `reason` beginning `refresh_failed:` and continues the normal failure/fallback path.
+  - The row carries `session_id`, `job_id`, `source_type`, and `reason` only; all canonical decision fields MUST be omitted/`null` because this is diagnostic telemetry, not a core decision event.
+  - Orchestrator MUST route recorder-side `stream_url_expired_for_<platform>` rows to audit only, without classifying them as `recorder_event_ignored`, without advancing the per-job monotonic watermark, and without mutating session/job state.
 - State lifecycle contract:
   - one active live session per monitored stream key (`active_session_id_by_platform["<platform>:<room_url>"]`); cross-platform and same-platform multi-room sessions coexist
   - one active recording job per monitored stream key (`active_recording_job_id_by_platform["<platform>:<room_url>"]`); cross-platform and same-platform multi-room jobs coexist
@@ -169,9 +176,10 @@ class RecordingJobRecord(BaseModel):
   - successful recorder completion (`ffmpeg_record_succeeded`) must clear failure metadata fields
 - Recorder header injection contract:
     - `RecordingJobRecord.stream_headers` (with `SessionRecord.stream_headers` as fallback) must reach ffmpeg before `-i` as: `-user_agent <value>` for the `User-Agent` entry (case-insensitive lookup) plus `-headers "K1: V1\r\nK2: V2\r\n..."` for every other entry joined with CRLF
-    - empty `stream_headers` produces a byte-identical command to the pre-PR2 path, so Douyin recordings keep the same ffmpeg invocation
+    - empty `stream_headers` produces no `-user_agent` / `-headers` flags; platform-neutral media-output options may still be present
     - the User-Agent header rides on the dedicated `-user_agent` flag (not duplicated in `-headers`) to avoid quoting/escaping ambiguity at the shell layer
     - direct-stream MP4 recording must pass `-movflags +frag_keyframe+empty_moov+default_base_moof` with `-c copy`; unattended runs may be stopped at the process boundary, so the in-progress file must not depend on a final `moov` atom written only during graceful muxer close
+    - HLS direct-stream URLs (`.m3u8`) must add `-bsf:a aac_adtstoasc` before the MP4 output so ADTS AAC from transport streams is converted instead of failing at trailer/mux time
     - after a direct-stream ffmpeg attempt exits successfully and passes actual-resolution validation, recorder must append the recording asset and persist `recorder-state.json` before attempting post-success remux; this keeps the successful recording durable even if an external wrapper stops the process during remux
     - after the asset/state durability point, recorder should remux the fragmented MP4 in place with `-map 0 -c copy -movflags +faststart` via a temporary `recording-source.remux.mp4`; this preserves crash resilience while making normally completed recordings compatible with players that reject fragmented MP4
     - remux failure is non-terminal: keep the original fragmented recording, still emit the normal success event/asset, remove any failed `.remux.mp4`, and expose the issue through recorder logs/stderr capture rather than discarding a valid recording
@@ -194,13 +202,17 @@ class RecordingJobRecord(BaseModel):
 | JSONL line is invalid JSON or fails Pydantic validation | Count as invalid line; continue processing later lines |
 | Unknown `event_type` | Append audit event `ignored_unknown_event_type`; do not mutate active session/job |
 | `event_type` starts with `cookie_expired_for_` | Append one audit row whose name is the same `event_type`, with `platform`, `streamer_name`, and `reason` in the message; do NOT classify as `ignored_unknown_event_type`; do NOT mutate session/job state |
-| Probe-side: cookie env var unset and snapshot carries cookie-expiration shape (`api_error:code=-101` for Bilibili, `quality_below_min_tier:hd<*` for Douyin) | Do NOT emit `cookie_expired_for_<platform>`; the user never authenticated, so there is no cookie to declare expired |
+| Probe-side: cookie env var unset and snapshot carries cookie-expiration shape (`api_error:code=-101` / `playinfo_error:api_error:code=-101` for Bilibili, `quality_below_min_tier:hd<*` for Douyin) | Do NOT emit `cookie_expired_for_<platform>`; the user never authenticated, so there is no cookie to declare expired |
 | Probe-side: cookie env var set and snapshot does not match the platform's expiration shape | Do NOT emit `cookie_expired_for_<platform>`; classify only on high-confidence reasons |
 | Recorder-side: ffmpeg failure stderr contains "403 forbidden" or "server returned 403" | Classifier returns `reason_code="http_403_forbidden"` under `failure_category="http_4xx_non_retryable"` (retry semantics unchanged) |
-| Recorder-side: classifier returned `reason_code="http_403_forbidden"` AND that platform's cookie env var is non-empty | Recorder appends one `cookie_expired_for_<platform>` row to `recorder-events.jsonl` alongside the `ffmpeg_record_failed` row; decision/failure_category/is_retryable/reason_code/reason_detail MUST be omitted on the cookie row |
+| Recorder-side Douyin: classifier returned `reason_code="http_403_forbidden"` AND `DouyinSettings.cookie` is non-empty | Recorder appends one `cookie_expired_for_douyin` row to `recorder-events.jsonl` alongside the `ffmpeg_record_failed` row; decision/failure_category/is_retryable/reason_code/reason_detail MUST be omitted on the cookie row |
+| Recorder-side Bilibili: classifier returned `reason_code="http_403_forbidden"` AND follow-up `BilibiliRoomProbe.classify_cookie_state(snapshot) == expired` | Recorder appends one `cookie_expired_for_bilibili` row with `reason` beginning `sessdata_expired:`; do not retry the stale stream URL |
+| Recorder-side Bilibili: classifier returned `reason_code="http_403_forbidden"` AND follow-up probe is fresh with a direct stream URL | Recorder appends `stream_url_expired_for_bilibili` with `reason="refreshed_stream_url_after_403"`, rebuilds headers/input URL, and retries ffmpeg once in the same recorder run |
+| Recorder-side Bilibili: classifier returned `reason_code="http_403_forbidden"` AND follow-up probe is fresh but has no direct stream URL | Recorder appends `stream_url_expired_for_bilibili` with `reason` beginning `refresh_failed:` and continues fallback/manual recovery behavior |
 | Recorder-side: classifier returned `reason_code="http_403_forbidden"` AND that platform's cookie env var is empty | Recorder does NOT emit `cookie_expired_for_<platform>`; only the `ffmpeg_record_failed` row appears |
 | Recorder-side: classifier returned `reason_code="http_4xx"` (401/404/410/other 4xx) regardless of cookie env state | Recorder does NOT emit `cookie_expired_for_<platform>`; only the `ffmpeg_record_failed` row appears |
 | Orchestrator receives recorder-side `cookie_expired_for_<platform>` event | Append one audit row to `orchestrator-events.jsonl` with `platform=<job.platform>` and the recorder `reason` in the message; do NOT advance per-job monotonic watermark; do NOT mutate job state |
+| Orchestrator receives recorder-side `stream_url_expired_for_<platform>` event | Append one audit row to `orchestrator-events.jsonl` with `platform=<job.platform>` and the recorder `reason` in the message; do NOT advance per-job monotonic watermark; do NOT mutate job state |
 | Recorder-side: direct-stream recording succeeds but ffprobe reports actual video height below 1080 | Recorder deletes the partial `recording-source.mp4`, emits `quality_below_actual_resolution` with observed width/height and bitrate diagnostics, and does not emit a `RecordingAsset` |
 | Orchestrator receives `quality_below_actual_resolution` | Mark the job `failed`, persist quality failure metadata, clear active job linkage, and append manual recovery audit |
 | `live_started` arrives while an active session is open | Do not create a new session/job; append duplicate audit event |
@@ -209,7 +221,7 @@ class RecordingJobRecord(BaseModel):
 | Duplicate `live_started` arrives with a refreshed `stream_headers` dict | Replace `active_session.stream_headers` with the latest snapshot value (so probe-side token rotation reaches the recorder without a restart) |
 | `live_started` arrives for the SAME platform with a different `room_url` | Supersede that platform's active session with `stop_reason="superseded_by_new_live_started"`; create a new session/job for the same platform with the new `room_url`, `stream_url`, and `stream_headers` |
 | `live_started` arrives for a DIFFERENT platform than any current active session | Create a new session/job for that platform; do NOT touch any other platform's active session |
-| Snapshot carries default `platform="douyin"` with empty `stream_headers` | Recorder ffmpeg command is byte-identical to the pre-PR2 path; no `-user_agent` / `-headers` flags emitted |
+| Snapshot carries default `platform="douyin"` with empty `stream_headers` | Recorder ffmpeg command emits no `-user_agent` / `-headers` flags |
 | Snapshot carries `platform="bilibili"` with non-empty `stream_headers` | Recorder ffmpeg command emits `-user_agent <UA>` + `-headers "K: V\r\n..."` before `-i`; orchestrator session and job records preserve both fields for retry runs |
 | `live_started` carries `source_type=direct_stream` but `stream_url` is empty | Treat as producer contract violation in tests; producer must emit browser-capture fallback shape instead |
 | `live_stopped` arrives with no active session | Append audit event `live_stopped_without_active_session`; do not fail |
@@ -439,6 +451,7 @@ class CopyAsset(BaseModel):
   - `ARL_RECORDING_ENABLE_FFMPEG` (`0`/`1`, default `0`)
   - `ARL_DIRECT_STREAM_TIMEOUT_SECONDS` (int seconds, default `20`)
   - `ARL_RECORDING_FINALIZE_HEADROOM_SECONDS` (int seconds >= 0, default `60`) — for long direct-stream recordings, recorder subtracts this from the ffmpeg `-t` capture duration when the configured timeout is more than twice the headroom. This reserves process time for success audit/asset/state persistence and optional remux when an external unattended wrapper stops at the configured timeout boundary.
+  - `ARL_RECORDER_MAX_CONCURRENT_JOBS` (int >= 1, default `1`) — upper bound for how many recording jobs a single recorder run may execute in parallel. The recorder still applies state and asset writes on the main thread as each job completes.
   - `ARL_RECORDING_FFMPEG_MAX_RETRIES` (int >= 0, default `1`)
   - `ARL_RECORDING_AUTO_RETRY_MAX_ATTEMPTS` (int >= 0, default `2`)
   - `ARL_RECORDER_SESSION_RETRY_BUDGET` (int >= 1, default `8`) — per-session cap on transient ffmpeg yields; once hit, all non-FAILED jobs in the session are escalated to manual via `recording_session_retry_budget_exceeded`
@@ -498,6 +511,7 @@ class CopyAsset(BaseModel):
 ### 3. Contracts
 
 - `RecordingAsset.path` must point to the actual stored media file relative to project runtime paths or be an absolute local path; do not store opaque labels.
+- `RecordingAsset.started_at` / `ended_at` must describe the recorded media window. When the live session is already stopped, the asset may reuse session start/stop timestamps; when the session is still live during a bounded recorder run, recorder must stamp the actual attempt start/end so downstream segment durations do not default to an unrelated live-session estimate.
 - `MatchBoundary` timestamps are relative to the beginning of the referenced recording asset, in seconds.
 - `match_index` is 1-based within a session and must remain stable for downstream subtitle and export naming.
 - Segmenter stage-hint contract:
@@ -596,6 +610,7 @@ class CopyAsset(BaseModel):
 - Transient ffmpeg failures (HTTP 5xx, network timeout, ffmpeg process error) must yield to the next probe after a single in-run attempt rather than burning the in-run retry budget against the same (likely stale) stream URL. The corresponding `ffmpeg_record_failed` audit row carries `decision="attempt_failed_yield_to_next_probe"` to distinguish a transient yield from a non-retryable `decision="attempt_failed"` short-circuit.
 - Recorder should append structured audit rows for ffmpeg control flow (`ffmpeg_skipped`, `ffmpeg_record_failed`, `ffmpeg_record_succeeded`, `ffmpeg_fallback_placeholder`, `recording_session_retry_budget_exceeded`) and actual quality rejection (`quality_below_actual_resolution`) so retry and quality decisions are observable.
 - Exporter mirrors the same observability discipline through `data/tmp/exporter-events.jsonl` (writer = `ExporterService`; **reader = grep / future recovery tooling only — orchestrator does NOT consume this file**, no state machine transitions depend on it). Registered event types: `ffmpeg_export_failed`, `ffmpeg_export_succeeded`, `ffmpeg_export_fallback_placeholder`, `ffmpeg_export_batch_aborted`. Per-row identity uses `session_id` + `match_index` (no `job_id` because exporter is not job-scoped). `ffmpeg_export_failed`, `ffmpeg_export_fallback_placeholder`, and `ffmpeg_export_batch_aborted` rows must carry the same canonical decision tuple (`decision` / `failure_category` / `is_retryable` / `reason_code` / `reason_detail`) as recorder; `ffmpeg_export_succeeded` rows omit those fields (mirrors `ffmpeg_record_succeeded`). Exporter does NOT do yield-on-transient — `decision` on a failed exporter row is always `attempt_failed` (placeholder row uses `decision="fallback_placeholder"`). The placeholder row inherits the last-attempt classification so operators can grep one row to learn what root-caused exhaustion. `ffmpeg_export_batch_aborted` uses `decision="batch_aborted"`, inherits the last fallback classification, and adds `consecutive_fallbacks` plus `remaining_matches`.
+- Exporter ffmpeg success must be validated with `ffprobe` before emitting `ffmpeg_export_succeeded`: the output file must exist, be non-empty, and contain a probeable video stream with non-zero duration when duration metadata is present. A zero-stream/empty-shell MP4 is treated as `ffmpeg_export_failed` with canonical decision fields, removed, then replaced by the deterministic placeholder export.
 - Exporter subtitle burn-in must build ffmpeg's `subtitles` filter path from the resolved subtitle path using forward slashes, escape any drive colon, and wrap the path in single quotes (for example `subtitles='D\:/code/auto-record-live/data/processed/session/match-01.srt'`). Windows backslash paths or unquoted `D:/...` filter values can be parsed by ffmpeg as filter options instead of a subtitle filename.
 - Copywriter generation contract:
   - `CopywriterService` reads typed `SubtitleAsset` rows and optional matching `ExportAsset` rows keyed by `(session_id, match_index)`.
@@ -740,9 +755,13 @@ class CopyAsset(BaseModel):
 | A stage receives an unknown asset format or status | Reject or audit explicitly; do not guess |
 | `ARL_RECORDING_ENABLE_FFMPEG=1` but `stream_url` missing | Recorder logs skip reason and writes placeholder recording artifact |
 | `ARL_RECORDING_ENABLE_FFMPEG=1`, source is `browser_capture`, and resolved capture input is empty/unavailable | Recorder logs skip reason and writes placeholder recording artifact |
+| Recorder invokes ffmpeg for an HLS direct-stream URL (`.m3u8`) | Initial recording command includes `-bsf:a aac_adtstoasc` before MP4 output so ADTS AAC can be copied into MP4 |
 | Recorder invokes ffmpeg for a long direct-stream MP4 with `ARL_DIRECT_STREAM_TIMEOUT_SECONDS=7200` and default `ARL_RECORDING_FINALIZE_HEADROOM_SECONDS=60` | Initial recording command uses `-t 7140` and includes `-c copy -movflags +frag_keyframe+empty_moov+default_base_moof <output.mp4>` so ffmpeg can exit before an external 7200s wrapper deadline and the in-progress file remains probeable/playable if the supervisor still terminates near the boundary |
 | Recorder invokes ffmpeg with timeout <= twice the finalize headroom, or `ARL_RECORDING_FINALIZE_HEADROOM_SECONDS=0` | Initial recording command uses the full configured `ARL_DIRECT_STREAM_TIMEOUT_SECONDS` as `-t` |
+| Recorder has multiple runnable jobs and `ARL_RECORDER_MAX_CONCURRENT_JOBS=N` where `N > 1` | Recorder starts up to N ffmpeg recording jobs concurrently, appends recorder audit rows with thread-safe JSONL writes, and applies recording assets/state transitions on the main thread as jobs finish |
 | Direct-stream ffmpeg exits successfully and actual-resolution validation passes | Recorder emits `ffmpeg_record_succeeded`, appends the recording asset, saves `recorder-state.json` with the job id in `processed_job_ids`, then attempts a second copy-only remux command `-i <output.mp4> -map 0 -c copy -movflags +faststart <output.remux.mp4>` and atomically replaces `<output.mp4>` with the remuxed file when it exists |
+| Direct-stream ffmpeg exits with an error but leaves a non-empty `recording-source.mp4` that ffprobe confirms has a video stream and satisfies the actual-resolution gate | Recorder emits the original `ffmpeg_record_failed`, then emits `ffmpeg_record_succeeded`, appends the mp4 recording asset, marks the job processed, and does not write a txt fallback placeholder |
+| Direct-stream ffmpeg exits with an error and the partial `recording-source.mp4` is missing, empty, not ffprobeable, or fails the actual-resolution gate | Recorder keeps the existing retry/fallback behavior; below-resolution partials are deleted through `quality_below_actual_resolution` and do not emit a recording asset |
 | Direct-stream post-success remux fails or writes no remux output | Recorder keeps the original fragmented `<output.mp4>`, removes any failed `<output.remux.mp4>`, emits `ffmpeg_record_succeeded`, and writes the normal recording asset |
 | ffmpeg fails with retryable reason and retry budget remains | Recorder emits one `ffmpeg_record_failed` (decision `attempt_failed_yield_to_next_probe`) plus `recording_retry_scheduled`, writes `next_eligible_at_by_job_id[job]` per backoff schedule, and defers placeholder/asset emission until eligibility lapses |
 | ffmpeg retry budget exhausted | Recorder emits `recording_retry_exhausted`, writes placeholder artifact, and emits recording asset |
@@ -768,8 +787,10 @@ class CopyAsset(BaseModel):
 | Operator submits legacy-format `action_key` after keying upgrade | Recovery should still resolve/fail the intended pending action when it maps uniquely |
 | Operator submits legacy-format `action_key` that collides across multiple rows | Recovery should deterministically target the latest collided row (`created_at`, then append order) and apply status change only when that row is still `pending` |
 | Recovery maintenance runs after all actions become terminal | Terminal actions/events are archived/compacted; active files keep only non-terminal or empty state |
+| Exporter handles a session whose orchestrator state records `platform=<platform>` | Write the final export artifact under `data/exports/<platform>/...` (for example `data/exports/douyin/<session>_match01.mp4`) and persist that path in `export-assets.jsonl`; if platform cannot be resolved, use `data/exports/unknown/...` rather than mixing platforms in the root export directory |
 | `ARL_EXPORT_ENABLE_FFMPEG=1` but recording input is not a video file | Exporter writes placeholder export artifact and keeps pipeline progress |
 | `ffmpeg` command exits non-zero | Stage logs failure reason and falls back to deterministic placeholder artifact |
+| Exporter ffmpeg exits zero but `ffprobe` reports no video stream or zero-duration output | Emit `ffmpeg_export_failed` plus `ffmpeg_export_fallback_placeholder`, delete the invalid MP4 shell, and write placeholder export artifact |
 | Exporter sees a non-retryable ffmpeg failure | Emit exactly one `ffmpeg_export_failed` row plus `ffmpeg_export_fallback_placeholder`; do not run further attempts; increment the match-level fallback counter by 1 |
 | Exporter reaches `ARL_EXPORTER_BATCH_FALLBACK_BUDGET` consecutive match-level fallbacks | Emit one `ffmpeg_export_batch_aborted` row with `consecutive_fallbacks` and `remaining_matches`; leave the remaining boundaries unprocessed and absent from `processed_match_keys` |
 
@@ -793,6 +814,7 @@ class CopyAsset(BaseModel):
 - Unit test: segmenter accepts `detected_at` hints by converting them relative to recording start.
 - Unit test: segmenter preserves idempotency and does not duplicate boundaries on rerun.
 - Unit test: segmenter keeps single-boundary fallback when hints are missing or unusable.
+- Unit test: segmenter preserves sub-minute completed recording durations instead of clamping them to one minute.
 - Unit test: stage-hint writer appends typed rows for both `at_seconds` and `detected_at` input shapes.
 - Unit test: stage-hint CLI parser enforces timestamp input and rejects invalid datetime formats.
 - Unit test: auto stage-hint service derives periodic `in_game` anchors from recording duration and segment interval.
@@ -802,6 +824,7 @@ class CopyAsset(BaseModel):
 - Unit test: semantic stage-hint service remains idempotent across repeated runs.
 - Unit test: semantic stage-hint service skips sessions that already have stage hints.
 - Unit test: semantic stage-hint service keeps `in_game` timestamp inside duration for short recordings.
+- Unit test: semantic stage-hint service preserves sub-minute completed recording durations.
 - Unit test: semantic stage-hint service uses signal-driven generation when classified signals include `in_game`.
 - Unit test: semantic stage-hint service falls back to template generation when signals do not contain usable `in_game`.
 - Unit test: semantic stage-hint service converts `detected_at` signals to relative seconds and ignores out-of-range signals.
@@ -833,6 +856,8 @@ class CopyAsset(BaseModel):
 - Unit test: subtitle service auto-triggered stage-signal ingest inherits subtitles filter scope (`session_id`/`match_index`) and avoids unrelated subtitle scans.
 - Unit test: exporter refuses to burn subtitles when the declared subtitle file is missing.
 - Unit test: exporter ffmpeg command escapes Windows subtitle filter paths with forward slashes, escaped drive colon, and single quotes.
+- Unit test: exporter writes final artifacts under the orchestrator platform subdirectory so same-streamer multi-platform outputs remain distinguishable.
+- Unit test: exporter treats zero-exit MP4 outputs with no video stream as failed and falls back to placeholder instead of emitting `ffmpeg_export_succeeded`.
 - Unit test: copywriter emits deterministic title/copy JSON plus one `CopyAsset` from an existing subtitle asset and optional export asset.
 - Unit test: copywriter remains idempotent across repeated runs.
 - Unit test: copywriter skips missing subtitle paths without marking the match processed.
@@ -840,6 +865,8 @@ class CopyAsset(BaseModel):
 - Unit test: CLI parser includes `copywriter`.
 - Unit test: recorder with `enable_ffmpeg=True` but missing `stream_url` still emits one placeholder asset.
 - Unit test: recorder direct-stream ffmpeg command includes fragmented MP4 `-movflags` next to stream-copy output.
+- Unit test: recorder HLS direct-stream ffmpeg command includes `-bsf:a aac_adtstoasc`.
+- Unit test: recorder writes concrete attempt start/end timestamps for successful recordings while the live session is still open.
 - Unit test: recorder subtracts finalize headroom from long direct-stream ffmpeg `-t` values and leaves short captures unchanged.
 - Unit test: recorder remuxes successful direct-stream recordings to `+faststart` with `-map 0 -c copy`, replacing the original path only after the remux output exists and only after the recording asset plus `processed_job_ids` state are durable.
 - Unit test: recorder remux failure keeps the original recording and still emits `ffmpeg_record_succeeded`.
