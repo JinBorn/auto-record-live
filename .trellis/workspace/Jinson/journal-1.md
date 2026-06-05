@@ -1659,3 +1659,36 @@ Hardened long direct-stream recording finalization and exporter subtitle burn-in
 ### Next Steps
 
 - None - task complete
+
+
+## Session 40: Improve unattended recording stability
+
+**Date**: 2026-06-05
+**Task**: Improve unattended recording stability
+**Branch**: `main`
+
+### Summary
+
+Committed unattended recording stability updates, including Bilibili 403 diagnosis/recovery, recorder/export/subtitle resilience, and related contract/test coverage. Full pytest passed: 396 tests.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `db3f297` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 39
-- **Last Active**: 2026-06-03
+- **Total Sessions**: 40
+- **Last Active**: 2026-06-05
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1661 | Active |
+| `journal-1.md` | ~1694 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 40 | 2026-06-05 | Improve unattended recording stability | `db3f297` | `main` |
 | 39 | 2026-06-03 | Harden post-live media pipeline | `d66584d` | `main` |
 | 38 | 2026-06-02 | Direct stream MP4 resilience | `d52c9cf` | `main` |
 | 37 | 2026-06-02 | Add live status command | `f0e3f5a` | `main` |
