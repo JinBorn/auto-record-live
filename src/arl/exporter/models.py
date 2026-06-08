@@ -9,6 +9,7 @@ from arl.shared.failure_contracts import validate_core_decision_fields
 
 class ExporterStateFile(BaseModel):
     processed_match_keys: list[str] = Field(default_factory=list)
+    deferred_match_keys: list[str] = Field(default_factory=list)
 
 
 class ExporterAuditEvent(BaseModel):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from arl.config import Settings
 from arl.copywriter.service import CopywriterService
@@ -16,27 +17,55 @@ class PostProcessService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def run_once(self) -> None:
+    def run_once(self, *, session_ids: set[str] | None = None) -> None:
         log("postprocess", "starting")
+        if session_ids is not None:
+            log("postprocess", f"filters session_ids={','.join(sorted(session_ids))}")
         self._log_unregistered_recordings()
-        for stage_name, stage in self._stages():
+        for stage_name, stage in self._stages(session_ids=session_ids):
             log("postprocess", f"stage={stage_name} starting")
             stage()
             log("postprocess", f"stage={stage_name} completed")
         log("postprocess", "completed")
         self._log_status_summary()
 
-    def _stages(self) -> list[tuple[str, Callable[[], None]]]:
+    def _stages(
+        self,
+        *,
+        session_ids: set[str] | None,
+    ) -> list[tuple[str, Callable[[], None]]]:
         return [
             (
                 "stage-hints-semantic",
-                lambda: SemanticStageHintService(self.settings).run(),
+                lambda: self._run_stage(
+                    SemanticStageHintService(self.settings),
+                    session_ids=session_ids,
+                ),
             ),
-            ("segmenter", lambda: SegmenterService(self.settings).run()),
-            ("subtitles", lambda: SubtitleService(self.settings).run()),
-            ("exporter", lambda: ExporterService(self.settings).run()),
-            ("copywriter", lambda: CopywriterService(self.settings).run()),
+            (
+                "segmenter",
+                lambda: self._run_stage(SegmenterService(self.settings), session_ids=session_ids),
+            ),
+            (
+                "subtitles",
+                lambda: self._run_stage(SubtitleService(self.settings), session_ids=session_ids),
+            ),
+            (
+                "exporter",
+                lambda: self._run_stage(ExporterService(self.settings), session_ids=session_ids),
+            ),
+            (
+                "copywriter",
+                lambda: self._run_stage(CopywriterService(self.settings), session_ids=session_ids),
+            ),
         ]
+
+    @staticmethod
+    def _run_stage(stage: Any, *, session_ids: set[str] | None) -> None:
+        if session_ids is None:
+            stage.run()
+            return
+        stage.run(session_ids=session_ids)
 
     def _log_unregistered_recordings(self) -> None:
         unregistered = RecordingAssetRepairService(self.settings).find_unregistered()

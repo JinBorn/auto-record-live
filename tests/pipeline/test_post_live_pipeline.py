@@ -24,8 +24,10 @@ from arl.orchestrator.models import (
     SessionStatus,
 )
 from arl.recorder.service import RecorderService
+from arl.segmenter.models import MatchStageHint
 from arl.segmenter.service import SegmenterService
-from arl.shared.contracts import SourceType
+from arl.shared.contracts import MatchStage, RecordingAsset, SourceType
+from arl.shared.jsonl_store import append_model, load_models
 from arl.subtitles.service import SubtitleService
 
 
@@ -104,6 +106,7 @@ class PostLivePipelineTest(unittest.TestCase):
 
     def test_post_live_pipeline_outputs_and_idempotency(self) -> None:
         RecorderService(self.settings).run()
+        self._seed_in_game_hints()
         SegmenterService(self.settings).run()
         SubtitleService(self.settings).run()
         ExporterService(self.settings).run()
@@ -135,6 +138,17 @@ class PostLivePipelineTest(unittest.TestCase):
         self.assertEqual(_count_jsonl_lines(boundaries_path), 1)
         self.assertEqual(_count_jsonl_lines(subtitles_path), 1)
         self.assertEqual(_count_jsonl_lines(exports_path), 1)
+
+    def _seed_in_game_hints(self) -> None:
+        for asset in load_models(self.temp_root / "recording-assets.jsonl", RecordingAsset):
+            append_model(
+                self.temp_root / "match-stage-hints.jsonl",
+                MatchStageHint(
+                    session_id=asset.session_id,
+                    stage=MatchStage.IN_GAME,
+                    at_seconds=0.0,
+                ),
+            )
 
 
 if __name__ == "__main__":

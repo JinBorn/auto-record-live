@@ -152,9 +152,15 @@ class PostProcessResetService:
         self._rewrite_state(
             self.temp_dir / "exporter-state.json",
             ExporterStateFile,
-            lambda state: self._remove_session_prefixed_keys(
-                state.processed_match_keys,
-                session_ids,
+            lambda state: (
+                self._remove_session_prefixed_keys(
+                    state.processed_match_keys,
+                    session_ids,
+                )
+                + self._remove_session_prefixed_keys(
+                    state.deferred_match_keys,
+                    session_ids,
+                )
             ),
             result.removed_state_keys_by_file,
         )

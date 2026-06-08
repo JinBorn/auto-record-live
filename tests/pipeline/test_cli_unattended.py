@@ -12,6 +12,22 @@ class CliUnattendedTest(unittest.TestCase):
         self.assertEqual(args.command, "postprocess")
         self.assertTrue(args.once)
 
+    def test_postprocess_command_parses_session_filters(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "postprocess",
+                "--once",
+                "--session-id",
+                "session-a",
+                "--session-ids",
+                "session-b,session-c",
+            ]
+        )
+
+        self.assertEqual(args.command, "postprocess")
+        self.assertEqual(args.session_id, "session-a")
+        self.assertEqual(args.session_ids, "session-b,session-c")
+
     def test_postprocess_reset_command_parses(self) -> None:
         args = build_parser().parse_args(
             [
@@ -38,6 +54,27 @@ class CliUnattendedTest(unittest.TestCase):
         args = build_parser().parse_args(["copywriter"])
 
         self.assertEqual(args.command, "copywriter")
+
+    def test_copywriter_command_parses_filters(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "copywriter",
+                "--session-id",
+                "session-a",
+                "--session-ids",
+                "session-b,session-c",
+                "--match-index",
+                "2",
+                "--match-indices",
+                "3,4",
+            ]
+        )
+
+        self.assertEqual(args.command, "copywriter")
+        self.assertEqual(args.session_id, "session-a")
+        self.assertEqual(args.session_ids, "session-b,session-c")
+        self.assertEqual(args.match_index, 2)
+        self.assertEqual(args.match_indices, [3, 4])
 
     def test_maintenance_command_parses(self) -> None:
         args = build_parser().parse_args(["maintenance", "--once"])

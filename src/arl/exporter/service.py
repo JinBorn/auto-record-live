@@ -11,6 +11,7 @@ from typing import Any
 from arl.config import Settings
 from arl.exporter.models import ExporterAuditEvent, ExporterStateFile
 from arl.orchestrator.state_store import load_orchestrator_state
+from arl.segmenter.durations import recording_duration_seconds
 from arl.shared.contracts import ExportAsset, MatchBoundary, RecordingAsset, SubtitleAsset
 from arl.shared.failure_contracts import FailureDecision, classify_failure_reason
 from arl.shared.ffmpeg_runner import rotate_stderr_logs, run_ffmpeg_attempt
@@ -67,6 +68,7 @@ class ExporterService:
         platform_by_session = self._platform_by_session()
         state = self._load_state()
         processed_keys = set(state.processed_match_keys)
+        deferred_keys = set(state.deferred_match_keys)
         existing_output_keys = {
             self._key(asset.session_id, asset.match_index)
             for asset in load_models(self.exports_path, ExportAsset)
@@ -86,10 +88,18 @@ class ExporterService:
                 and key in existing_output_keys
             ):
                 continue
+            if not force_reprocess and key in deferred_keys:
+                continue
             if force_reprocess and key in processed_keys:
                 log(
                     "exporter",
                     "force reprocessing export output "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index}",
+                )
+            elif force_reprocess and key in deferred_keys:
+                log(
+                    "exporter",
+                    "force reprocessing deferred export "
                     f"session_id={boundary.session_id} match_index={boundary.match_index}",
                 )
             elif key in processed_keys:
@@ -98,6 +108,23 @@ class ExporterService:
                     "reprocessing missing export output "
                     f"session_id={boundary.session_id} match_index={boundary.match_index}",
                 )
+
+            recording_asset = recording_by_session.get(boundary.session_id)
+            if (
+                not force_reprocess
+                and self._is_low_confidence_full_recording_boundary(
+                    boundary,
+                    recording_asset,
+                )
+            ):
+                log(
+                    "exporter",
+                    "deferred low-confidence full-recording boundary "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    "reason=no_reliable_edit_signal",
+                )
+                self._mark_deferred(state, deferred_keys, key)
+                continue
 
             subtitle = subtitle_map.get((boundary.session_id, boundary.match_index))
             if subtitle is None:
@@ -114,7 +141,6 @@ class ExporterService:
                 )
                 continue
 
-            recording_asset = recording_by_session.get(boundary.session_id)
             platform = platform_by_session.get(boundary.session_id, "unknown")
             output_path, was_ffmpeg_fallback = self._write_export(
                 boundary,
@@ -122,6 +148,28 @@ class ExporterService:
                 recording_asset,
                 platform,
             )
+            if output_path is None:
+                self._mark_deferred(state, deferred_keys, key)
+                if was_ffmpeg_fallback:
+                    consecutive_fallbacks += 1
+                    if consecutive_fallbacks >= fallback_budget:
+                        remaining_matches = len(boundaries) - index - 1
+                        self._append_batch_aborted_audit(
+                            boundary=boundary,
+                            consecutive_fallbacks=consecutive_fallbacks,
+                            remaining_matches=remaining_matches,
+                        )
+                        log(
+                            "exporter",
+                            "batch aborted "
+                            f"budget={fallback_budget} "
+                            f"consecutive_fallbacks={consecutive_fallbacks} "
+                            f"remaining_matches={remaining_matches}",
+                        )
+                        break
+                else:
+                    consecutive_fallbacks = 0
+                continue
             export_asset = ExportAsset(
                 session_id=boundary.session_id,
                 match_index=boundary.match_index,
@@ -133,6 +181,7 @@ class ExporterService:
             if key not in processed_keys:
                 state.processed_match_keys.append(key)
                 processed_keys.add(key)
+            self._clear_deferred(state, deferred_keys, key)
             existing_output_keys.add(key)
             processed += 1
             log(
@@ -180,13 +229,54 @@ class ExporterService:
             filtered.append(boundary)
         return filtered
 
+    @staticmethod
+    def _mark_deferred(
+        state: ExporterStateFile,
+        deferred_keys: set[str],
+        key: str,
+    ) -> None:
+        if key in deferred_keys:
+            return
+        state.deferred_match_keys.append(key)
+        deferred_keys.add(key)
+
+    @staticmethod
+    def _clear_deferred(
+        state: ExporterStateFile,
+        deferred_keys: set[str],
+        key: str,
+    ) -> None:
+        if key not in deferred_keys:
+            return
+        state.deferred_match_keys = [
+            item for item in state.deferred_match_keys if item != key
+        ]
+        deferred_keys.discard(key)
+
+    def _is_low_confidence_full_recording_boundary(
+        self,
+        boundary: MatchBoundary,
+        recording_asset: RecordingAsset | None,
+    ) -> bool:
+        if boundary.confidence > 0.5:
+            return False
+        if boundary.match_index != 1:
+            return False
+        if abs(boundary.started_at_seconds) > 0.001:
+            return False
+        if recording_asset is None:
+            return True
+        duration = recording_duration_seconds(recording_asset)
+        tolerance_seconds = 2.0
+        return abs(boundary.ended_at_seconds - duration) <= tolerance_seconds
+
     def _write_export(
         self,
         boundary: MatchBoundary,
         subtitle: SubtitleAsset,
         recording_asset: RecordingAsset | None,
         platform: str,
-    ) -> tuple[Path, bool]:
+    ) -> tuple[Path | None, bool]:
         ffmpeg_path = shutil.which("ffmpeg")
         if (
             self.settings.export.enable_ffmpeg
@@ -218,28 +308,7 @@ class ExporterService:
                 f"ffmpeg skipped session_id={boundary.session_id} match_index={boundary.match_index} reason={reason}",
             )
 
-        return self._write_placeholder_export(boundary, subtitle, platform), False
-
-    def _write_placeholder_export(
-        self,
-        boundary: MatchBoundary,
-        subtitle: SubtitleAsset,
-        platform: str,
-    ) -> Path:
-        output_dir = self._platform_export_dir(platform)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f"{boundary.session_id}_match{boundary.match_index:02d}.txt"
-        output_path.write_text(
-            (
-                "placeholder exported video artifact\n"
-                f"session_id={boundary.session_id}\n"
-                f"match_index={boundary.match_index}\n"
-                f"platform={platform}\n"
-                f"subtitle_path={subtitle.path}\n"
-            ),
-            encoding="utf-8",
-        )
-        return output_path
+        return None, False
 
     def _write_export_with_ffmpeg(
         self,
@@ -247,7 +316,7 @@ class ExporterService:
         subtitle: SubtitleAsset,
         recording_asset: RecordingAsset,
         platform: str,
-    ) -> tuple[Path, bool]:
+    ) -> tuple[Path | None, bool]:
         output_dir = self._platform_export_dir(platform)
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{boundary.session_id}_match{boundary.match_index:02d}.mp4"
@@ -404,7 +473,7 @@ class ExporterService:
             max_attempts=attempts,
         )
         self._remove_file_if_exists(output_path)
-        return self._write_placeholder_export(boundary, subtitle, platform), True
+        return None, True
 
     def _platform_by_session(self) -> dict[str, str]:
         platforms: dict[str, str] = {}

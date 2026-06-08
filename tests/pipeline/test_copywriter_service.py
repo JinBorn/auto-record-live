@@ -108,6 +108,28 @@ class CopywriterServiceTest(unittest.TestCase):
         )
         self.assertEqual(state.processed_match_keys, [])
 
+    def test_filters_by_session_ids(self) -> None:
+        for session_id in ["session-copywriter-filter-a", "session-copywriter-filter-b"]:
+            subtitle_path = self._write_subtitle(
+                session_id,
+                "1\n00:00:00,000 --> 00:00:02,000\nfiltered subtitle\n",
+            )
+            append_model(
+                self.temp_root / "subtitle-assets.jsonl",
+                SubtitleAsset(
+                    session_id=session_id,
+                    match_index=1,
+                    path=str(subtitle_path),
+                    format="srt",
+                ),
+            )
+
+        CopywriterService(self.settings).run(session_ids={"session-copywriter-filter-b"})
+
+        copy_assets = load_models(self.temp_root / "copy-assets.jsonl", CopyAsset)
+        self.assertEqual(len(copy_assets), 1)
+        self.assertEqual(copy_assets[0].session_id, "session-copywriter-filter-b")
+
     def _write_subtitle(self, session_id: str, content: str) -> Path:
         path = self.processed_root / session_id / "match-01.srt"
         path.parent.mkdir(parents=True, exist_ok=True)

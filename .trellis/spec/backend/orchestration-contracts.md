@@ -509,7 +509,7 @@ class CopyAsset(BaseModel):
 - CLI helper signature for title/copy generation:
   - `arl copywriter`
 - CLI helper signature for post-live unattended processing:
-  - `arl postprocess [--once]`
+  - `arl postprocess [--once] [--session-id <id>] [--session-ids <csv>]`
 - CLI helper signature for resetting generated postprocess artifacts:
   - `arl postprocess-reset [--session-id <id>] [--session-ids <csv>] [--keep-files]`
 - CLI helper signature for repairing orphaned local recording files:
@@ -585,12 +585,21 @@ class CopyAsset(BaseModel):
   - when filters are provided, command should emit filter summary observability (`total_boundaries`, `matched_boundaries`) before generation.
   - when filters are provided and no boundaries match, command should emit explicit no-match filter diagnostics and complete with `processed_matches=0` (no failure exit).
   - post-generation best-effort `stage-signals-from-subtitles` ingest should inherit the same `session_id/match_index` filter scope used by the subtitles run, so targeted generation does not trigger unrelated subtitle-asset scans.
+  - if a boundary is the segmenter's low-confidence full-recording fallback (`confidence <= 0.5`, `match_index=1`, `[0, recording_duration]`) and its duration is greater than `recording.segment_minutes * 60`, subtitles must not run full-recording ASR during unattended postprocess. It writes the deterministic placeholder SRT and emits `subtitle_fallback_placeholder` with `reason="low_confidence_full_recording"` so operators see that no reliable edit signal exists without waiting on multi-hour transcription.
 - CLI `postprocess` contract:
   - command is single-pass and exits; looping belongs to `scripts/windows-postprocess-loop.ps1`.
   - command runs existing idempotent post-live stages in this order: `stage-hints-semantic`, `segmenter`, `subtitles`, `exporter`, `copywriter`.
+  - supports optional targeting filters: `--session-id/--session-ids`; when provided, every filter-aware stage must inherit the same session scope so a manual rerun for one recording does not scan historical subtitle/export/copy backlog.
   - command must not create a second global processed-state file; it relies on each stage's own idempotency state.
   - before running stages, command should report completed raw MP4 files under `data/raw/session-*/recording-source.mp4` that are not registered in `recording-assets.jsonl`, with a bounded sample path list and a `repair-recording-assets` hint.
   - after stages complete, command should print one compact status summary including health, manifest counts, missing subtitle/export/copy counts, and unregistered recording count.
+- Exporter deferred-output contract:
+  - exporter must not create `.mp4` or `.txt` artifacts for low-confidence full-recording fallback boundaries unless the operator explicitly runs the exporter with `--force-reprocess`.
+  - failed ffmpeg exports and unmet export prerequisites must emit audit diagnostics but must not create placeholder `.txt` artifacts in `storage.export_dir`.
+  - deferred paths record the match key in `exporter-state.json.deferred_match_keys`, do not append an `ExportAsset`, and leave `status.postprocess.missing_exports` degraded for that match.
+  - ordinary reruns skip deferred keys; `arl exporter --force-reprocess` may retry them.
+  - the low-confidence skip path logs `deferred low-confidence full-recording boundary ... reason=no_reliable_edit_signal`.
+  - high-confidence boundaries derived from valid `in_game` hints continue through normal ffmpeg export and failure handling.
 - CLI `postprocess-reset` contract:
   - command requires `--session-id` or `--session-ids`; it is session-scoped and must not wipe global postprocess state.
   - command removes target-session rows from `match-stage-hints.jsonl`, `match-boundaries.jsonl`, `subtitle-assets.jsonl`, `export-assets.jsonl`, and `copy-assets.jsonl`; stage hints do not currently carry source metadata, so reset cannot preserve manual hints.
@@ -826,10 +835,10 @@ class CopyAsset(BaseModel):
 | Operator submits legacy-format `action_key` that collides across multiple rows | Recovery should deterministically target the latest collided row (`created_at`, then append order) and apply status change only when that row is still `pending` |
 | Recovery maintenance runs after all actions become terminal | Terminal actions/events are archived/compacted; active files keep only non-terminal or empty state |
 | Exporter handles a session whose orchestrator state records `platform=<platform>` | Write the final export artifact under `data/exports/<platform>/...` (for example `data/exports/douyin/<session>_match01.mp4`) and persist that path in `export-assets.jsonl`; if platform cannot be resolved, use `data/exports/unknown/...` rather than mixing platforms in the root export directory |
-| `ARL_EXPORT_ENABLE_FFMPEG=1` but recording input is not a video file | Exporter writes placeholder export artifact and keeps pipeline progress |
-| `ffmpeg` command exits non-zero | Stage logs failure reason and falls back to deterministic placeholder artifact |
-| Exporter ffmpeg exits zero but `ffprobe` reports no video stream or zero-duration output | Emit `ffmpeg_export_failed` plus `ffmpeg_export_fallback_placeholder`, delete the invalid MP4 shell, and write placeholder export artifact |
-| Exporter sees a non-retryable ffmpeg failure | Emit exactly one `ffmpeg_export_failed` row plus `ffmpeg_export_fallback_placeholder`; do not run further attempts; increment the match-level fallback counter by 1 |
+| `ARL_EXPORT_ENABLE_FFMPEG=1` but recording input is not a video file | Exporter logs the prerequisite reason, records the match key in `deferred_match_keys`, and writes no `.txt` export artifact |
+| `ffmpeg` command exits non-zero | Stage logs failure reason, emits fallback audit diagnostics, records the match key in `deferred_match_keys`, and writes no `.txt` export artifact |
+| Exporter ffmpeg exits zero but `ffprobe` reports no video stream or zero-duration output | Emit `ffmpeg_export_failed` plus `ffmpeg_export_fallback_placeholder`, delete the invalid MP4 shell, record the match key as deferred, and write no `.txt` export artifact |
+| Exporter sees a non-retryable ffmpeg failure | Emit exactly one `ffmpeg_export_failed` row plus `ffmpeg_export_fallback_placeholder`; do not run further attempts; record the match key as deferred; increment the match-level fallback counter by 1 |
 | Exporter reaches `ARL_EXPORTER_BATCH_FALLBACK_BUDGET` consecutive match-level fallbacks | Emit one `ffmpeg_export_batch_aborted` row with `consecutive_fallbacks` and `remaining_matches`; leave the remaining boundaries unprocessed and absent from `processed_match_keys` |
 | `data/raw/session-*/recording-source.mp4` exists, is older than `--min-age-seconds`, and lacks a `RecordingAsset` row | `arl status` reports degraded `unregistered_recordings`; `arl postprocess` prints a repair hint; `arl repair-recording-assets` appends one typed `RecordingAsset` row after positive ffprobe duration |
 | Raw MP4 is still being written or was modified too recently | `repair-recording-assets` skips it as recent and does not append a manifest row |
@@ -901,18 +910,23 @@ class CopyAsset(BaseModel):
 - Unit test: subtitle service filtered no-match runs emit explicit no-match diagnostics and keep zero-result summary.
 - Unit test: CLI `subtitles` end-to-end run supports combined `session-id/session-ids` + `match-index/match-indices` filters and only emits targeted subtitle assets.
 - Unit test: subtitle service auto-triggered stage-signal ingest inherits subtitles filter scope (`session_id`/`match_index`) and avoids unrelated subtitle scans.
+- Unit test: subtitle service skips full-recording ASR for long low-confidence fallback boundaries and emits `reason=low_confidence_full_recording`.
+- Unit test: subtitle transcribe failures that are media/path-specific do not disable the CPU whisper candidate for remaining batch items.
 - Unit test: exporter refuses to burn subtitles when the declared subtitle file is missing.
 - Unit test: exporter ffmpeg command escapes Windows subtitle filter paths with forward slashes, escaped drive colon, and single quotes.
 - Unit test: exporter writes final artifacts under the orchestrator platform subdirectory so same-streamer multi-platform outputs remain distinguishable.
 - Unit test: exporter reads selected-recording orchestrator state files when resolving a session platform.
-- Unit test: exporter removes partial MP4 output before writing ffmpeg fallback placeholder artifacts.
+- Unit test: exporter removes partial MP4 output before deferring a failed export.
 - Unit test: exporter uses stream copy instead of subtitle burn-in when subtitle input is the deterministic placeholder SRT.
 - Unit test: exporter CLI supports scoped session/match filters and force reprocess.
-- Unit test: exporter treats zero-exit MP4 outputs with no video stream as failed and falls back to placeholder instead of emitting `ffmpeg_export_succeeded`.
+- Unit test: exporter defers low-confidence full-recording fallback boundaries without writing `.mp4` or `.txt` artifacts.
+- Unit test: exporter ffmpeg failure records `deferred_match_keys` without appending placeholder `ExportAsset` rows.
+- Unit test: exporter treats zero-exit MP4 outputs with no video stream as failed and defers the match instead of emitting `ffmpeg_export_succeeded`.
 - Unit test: copywriter emits deterministic title/copy JSON plus one `CopyAsset` from an existing subtitle asset and optional export asset.
 - Unit test: copywriter remains idempotent across repeated runs.
 - Unit test: copywriter skips missing subtitle paths without marking the match processed.
 - Unit test: postprocess invokes `copywriter` after `exporter`.
+- Unit test: postprocess accepts `--session-id/--session-ids` and passes the session scope to filter-aware stages.
 - Unit test: `postprocess-reset` removes only the target session's generated rows/state/files while preserving other sessions and raw recording assets.
 - Unit test: `postprocess-reset` removes orphan generated files for the target session even when manifest rows are already missing.
 - Unit test: `postprocess-reset` skips deleting manifest artifact paths outside generated roots.
@@ -932,7 +946,7 @@ class CopyAsset(BaseModel):
 - Unit test: recorder treats ffmpeg HTTP 4xx failures as non-recoverable and skips cross-run retry scheduling.
 - Unit test: recorder stops in-run ffmpeg retries early when a non-recoverable reason is detected.
 - Unit test: recorder infers actionable manual-recovery action mapping from `stop_reason` when `failure_category` is missing, and keeps inspect fallback only for opaque reasons.
-- Unit test: exporter with `enable_ffmpeg=True` and non-video recording input still emits deterministic placeholder export.
+- Unit test: exporter with `enable_ffmpeg=True` and non-video recording input defers the match without writing a `.txt` export artifact.
 - Unit test: recorder sees failed orchestrator job and emits one de-duplicated `recording_manual_recovery_required` audit row.
 - Unit test: recorder still emits manual recovery routing when a failed job id is already present in `processed_job_ids`.
 - Pipeline regression test: recorder placeholder success followed by orchestrator failure transition still triggers manual recovery routing on next recorder run.

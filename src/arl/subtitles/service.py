@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from arl.config import Settings
+from arl.segmenter.durations import recording_duration_seconds
 from arl.segmenter.signals_from_subtitles import StageSignalFromSubtitlesService
 from arl.shared.contracts import MatchBoundary, RecordingAsset, SubtitleAsset
 from arl.shared.jsonl_store import append_model, load_models
@@ -115,8 +116,12 @@ class SubtitleService:
 
         recording_assets = load_models(self.recording_assets_path, RecordingAsset)
         latest_recording_path_by_session: dict[str, str] = {}
+        latest_recording_duration_by_session: dict[str, float] = {}
         for recording_asset in recording_assets:
             latest_recording_path_by_session[recording_asset.session_id] = recording_asset.path
+            latest_recording_duration_by_session[recording_asset.session_id] = (
+                recording_duration_seconds(recording_asset)
+            )
         subtitle_assets = load_models(self.assets_path, SubtitleAsset)
         existing_output_keys = {
             self._key(asset.session_id, asset.match_index)
@@ -139,7 +144,12 @@ class SubtitleService:
                 )
 
             recording_path = latest_recording_path_by_session.get(boundary.session_id)
-            subtitle_path, outcome = self._write_subtitle(boundary, recording_path)
+            recording_duration = latest_recording_duration_by_session.get(boundary.session_id)
+            subtitle_path, outcome = self._write_subtitle(
+                boundary,
+                recording_path,
+                recording_duration,
+            )
             subtitle_asset = SubtitleAsset(
                 session_id=boundary.session_id,
                 match_index=boundary.match_index,
@@ -195,11 +205,16 @@ class SubtitleService:
         self,
         boundary: MatchBoundary,
         recording_path: str | None,
+        recording_duration_seconds: float | None = None,
     ) -> tuple[Path, TranscribeOutcome]:
         output_dir = self.settings.storage.processed_dir / boundary.session_id
         output_dir.mkdir(parents=True, exist_ok=True)
         subtitle_path = output_dir / f"match-{boundary.match_index:02d}.srt"
-        outcome = self._transcribe_boundary(boundary, recording_path)
+        outcome = self._transcribe_boundary(
+            boundary,
+            recording_path,
+            recording_duration_seconds=recording_duration_seconds,
+        )
         if outcome.entries:
             subtitle_path.write_text(self._build_srt(outcome.entries), encoding="utf-8")
         else:
@@ -210,6 +225,8 @@ class SubtitleService:
         self,
         boundary: MatchBoundary,
         recording_path: str | None,
+        *,
+        recording_duration_seconds: float | None = None,
     ) -> TranscribeOutcome:
         if self.settings.subtitles.provider != "faster-whisper":
             return TranscribeOutcome(
@@ -233,6 +250,43 @@ class SubtitleService:
             )
 
         source_path = Path(recording_path)
+        if self._should_skip_full_recording_fallback_asr(
+            boundary,
+            recording_duration_seconds,
+        ):
+            threshold = self._fallback_asr_threshold_seconds()
+            reason_detail = (
+                "low_confidence_full_recording "
+                f"duration={recording_duration_seconds:.3f} threshold={threshold:.3f}"
+            )
+            log(
+                "subtitles",
+                (
+                    "fallback to placeholder "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    "reason=low_confidence_full_recording"
+                ),
+            )
+            return TranscribeOutcome(
+                entries=[],
+                reason="low_confidence_full_recording",
+                reason_detail=reason_detail,
+            )
+        if not source_path.exists():
+            reason_detail = f"recording_path_not_found:{source_path}"
+            log(
+                "subtitles",
+                (
+                    "fallback to placeholder "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    f"reason={reason_detail}"
+                ),
+            )
+            return TranscribeOutcome(
+                entries=[],
+                reason="missing_recording",
+                reason_detail=reason_detail,
+            )
         if source_path.suffix.lower() not in self._TRANSCRIBE_SUFFIXES:
             reason_detail = f"unsupported_suffix:{source_path.suffix.lower()}"
             log(
@@ -342,7 +396,11 @@ class SubtitleService:
                     f"reason={exc}"
                 ),
             )
-            self._disable_whisper_model_config(model_config)
+            if self._should_disable_whisper_config_after_transcribe_error(
+                model_config,
+                exc,
+            ):
+                self._disable_whisper_model_config(model_config)
             return TranscribeOutcome(
                 entries=[],
                 device=model_config.device,
@@ -411,7 +469,11 @@ class SubtitleService:
                     f"reason={exc}"
                 ),
             )
-            self._disable_whisper_model_config(model_config)
+            if self._should_disable_whisper_config_after_transcribe_error(
+                model_config,
+                exc,
+            ):
+                self._disable_whisper_model_config(model_config)
             return TranscribeOutcome(
                 entries=[],
                 language=str(language) if language is not None else None,
@@ -559,6 +621,49 @@ class SubtitleService:
         if model_config.device == "cuda" and self._should_retry_cpu_after_cuda_failure():
             return "cpu"
         return None
+
+    def _should_skip_full_recording_fallback_asr(
+        self,
+        boundary: MatchBoundary,
+        recording_duration: float | None,
+    ) -> bool:
+        if recording_duration is None:
+            return False
+        if boundary.confidence > 0.5:
+            return False
+        if boundary.match_index != 1:
+            return False
+        if abs(boundary.started_at_seconds) > 0.001:
+            return False
+        if abs(boundary.ended_at_seconds - recording_duration) > 2.0:
+            return False
+        return recording_duration > self._fallback_asr_threshold_seconds()
+
+    def _fallback_asr_threshold_seconds(self) -> float:
+        return max(60.0, float(self.settings.recording.segment_minutes) * 60.0)
+
+    def _should_disable_whisper_config_after_transcribe_error(
+        self,
+        model_config: WhisperModelConfig,
+        exc: Exception,
+    ) -> bool:
+        if isinstance(exc, FileNotFoundError):
+            return False
+        message = str(exc).lower()
+        media_specific_markers = {
+            "invalid data found",
+            "moov atom not found",
+            "no such file or directory",
+            "recording_path_not_found",
+            "could not open",
+            "failed to open",
+            "permission denied",
+        }
+        if any(marker in message for marker in media_specific_markers):
+            return False
+        if model_config.device == "cuda":
+            return True
+        return False
 
     def _disable_whisper_model_config(self, model_config: WhisperModelConfig) -> None:
         self._disabled_whisper_configs.add(model_config)

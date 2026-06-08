@@ -40,6 +40,21 @@ def _parse_csv_values(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _collect_session_ids(args: argparse.Namespace) -> set[str] | None:
+    session_ids: set[str] | None = None
+    if getattr(args, "session_id", None) or getattr(args, "session_ids", None):
+        session_ids = set()
+        session_id = getattr(args, "session_id", None)
+        if session_id:
+            session_ids.add(session_id)
+        raw_session_ids = getattr(args, "session_ids", None)
+        if raw_session_ids:
+            session_ids.update(_parse_csv_values(raw_session_ids))
+        if not session_ids:
+            session_ids = None
+    return session_ids
+
+
 def _parse_positive_int(raw: str) -> int:
     try:
         value = int(raw)
@@ -291,6 +306,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run one post-processing pass and exit (default behavior).",
     )
+    postprocess.add_argument(
+        "--session-id",
+        help="Only run postprocess stages for one session id.",
+    )
+    postprocess.add_argument(
+        "--session-ids",
+        help="Only run postprocess stages for comma-separated session ids.",
+    )
     postprocess_reset = subparsers.add_parser(
         "postprocess-reset",
         help=(
@@ -470,7 +493,25 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Re-export even when exporter state and export assets already exist.",
     )
-    subparsers.add_parser("copywriter", help="Run the title/copy generation worker.")
+    copywriter = subparsers.add_parser("copywriter", help="Run the title/copy generation worker.")
+    copywriter.add_argument(
+        "--session-id",
+        help="Only generate copy for one session id.",
+    )
+    copywriter.add_argument(
+        "--session-ids",
+        help="Only generate copy for comma-separated session ids.",
+    )
+    copywriter.add_argument(
+        "--match-index",
+        type=_parse_positive_int,
+        help="Only generate copy for one match index.",
+    )
+    copywriter.add_argument(
+        "--match-indices",
+        type=_parse_csv_int_values,
+        help="Only generate copy for comma-separated match indices.",
+    )
 
     return parser
 
@@ -625,7 +666,7 @@ def main() -> int:
         return 0
 
     if args.command == "postprocess":
-        PostProcessService(settings).run_once()
+        PostProcessService(settings).run_once(session_ids=_collect_session_ids(args))
         return 0
 
     if args.command == "postprocess-reset":
@@ -652,15 +693,7 @@ def main() -> int:
         return 0
 
     if args.command == "stage-signals-from-subtitles":
-        session_ids: set[str] | None = None
-        if args.session_id or args.session_ids:
-            session_ids = set()
-            if args.session_id:
-                session_ids.add(args.session_id)
-            if args.session_ids:
-                session_ids.update(_parse_csv_values(args.session_ids))
-            if not session_ids:
-                session_ids = None
+        session_ids = _collect_session_ids(args)
 
         subtitle_paths: set[Path] | None = None
         if args.subtitle_path or args.subtitle_paths:
@@ -711,15 +744,7 @@ def main() -> int:
         return 0
 
     if args.command == "subtitles":
-        subtitle_session_ids: set[str] | None = None
-        if args.session_id or args.session_ids:
-            subtitle_session_ids = set()
-            if args.session_id:
-                subtitle_session_ids.add(args.session_id)
-            if args.session_ids:
-                subtitle_session_ids.update(_parse_csv_values(args.session_ids))
-            if not subtitle_session_ids:
-                subtitle_session_ids = None
+        subtitle_session_ids = _collect_session_ids(args)
 
         subtitle_match_indices: set[int] | None = None
         if args.match_index is not None or args.match_indices:
@@ -738,15 +763,7 @@ def main() -> int:
         return 0
 
     if args.command == "exporter":
-        export_session_ids: set[str] | None = None
-        if args.session_id or args.session_ids:
-            export_session_ids = set()
-            if args.session_id:
-                export_session_ids.add(args.session_id)
-            if args.session_ids:
-                export_session_ids.update(_parse_csv_values(args.session_ids))
-            if not export_session_ids:
-                export_session_ids = None
+        export_session_ids = _collect_session_ids(args)
 
         export_match_indices: set[int] | None = None
         if args.match_index is not None or args.match_indices:
@@ -766,7 +783,22 @@ def main() -> int:
         return 0
 
     if args.command == "copywriter":
-        CopywriterService(settings).run()
+        copywriter_session_ids = _collect_session_ids(args)
+
+        copywriter_match_indices: set[int] | None = None
+        if args.match_index is not None or args.match_indices:
+            copywriter_match_indices = set()
+            if args.match_index is not None:
+                copywriter_match_indices.add(args.match_index)
+            if args.match_indices:
+                copywriter_match_indices.update(args.match_indices)
+            if not copywriter_match_indices:
+                copywriter_match_indices = None
+
+        CopywriterService(settings).run(
+            session_ids=copywriter_session_ids,
+            match_indices=copywriter_match_indices,
+        )
         return 0
 
     parser.error(f"unsupported command: {args.command}")

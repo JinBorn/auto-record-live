@@ -20,9 +20,34 @@ class CopywriterService:
         self.copy_assets_path = settings.storage.temp_dir / "copy-assets.jsonl"
         self.state_path = settings.storage.temp_dir / "copywriter-state.json"
 
-    def run(self) -> None:
+    def run(
+        self,
+        *,
+        session_ids: set[str] | None = None,
+        match_indices: set[int] | None = None,
+    ) -> None:
         log("copywriter", "starting")
-        subtitles = load_models(self.subtitle_assets_path, SubtitleAsset)
+        all_subtitles = load_models(self.subtitle_assets_path, SubtitleAsset)
+        subtitles = self._filter_subtitles(
+            all_subtitles,
+            session_ids=session_ids,
+            match_indices=match_indices,
+        )
+        if session_ids is not None or match_indices is not None:
+            session_filter = ",".join(sorted(session_ids)) if session_ids is not None else "-"
+            match_index_filter = (
+                ",".join(str(item) for item in sorted(match_indices))
+                if match_indices is not None
+                else "-"
+            )
+            log(
+                "copywriter",
+                (
+                    "filters "
+                    f"total_subtitles={len(all_subtitles)} matched_subtitles={len(subtitles)} "
+                    f"session_ids={session_filter} match_indices={match_index_filter}"
+                ),
+            )
         exports = load_models(self.export_assets_path, ExportAsset)
         export_map = {(item.session_id, item.match_index): item for item in exports}
         state = self._load_state()
@@ -83,6 +108,24 @@ class CopywriterService:
 
         self._save_state(state)
         log("copywriter", f"processed_copies={processed}")
+
+    def _filter_subtitles(
+        self,
+        subtitles: list[SubtitleAsset],
+        *,
+        session_ids: set[str] | None,
+        match_indices: set[int] | None,
+    ) -> list[SubtitleAsset]:
+        if session_ids is None and match_indices is None:
+            return subtitles
+        filtered: list[SubtitleAsset] = []
+        for subtitle in subtitles:
+            if session_ids is not None and subtitle.session_id not in session_ids:
+                continue
+            if match_indices is not None and subtitle.match_index not in match_indices:
+                continue
+            filtered.append(subtitle)
+        return filtered
 
     def _build_draft(
         self,

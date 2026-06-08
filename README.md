@@ -161,6 +161,15 @@ Windows launcher 会自动准备 `.venv` 并安装 `.[subtitles]`。`ARL_WIN_INS
 .\.venv\Scripts\python.exe -m arl.cli postprocess --once
 ```
 
+如果只想处理刚录完的一个或几个 session，不要跑全量扫描，直接加 session 过滤：
+
+```powershell
+.\.venv\Scripts\python.exe -m arl.cli postprocess --once --session-id session-20260608095022-03694add
+.\.venv\Scripts\python.exe -m arl.cli postprocess --once --session-ids session-20260608095022-03694add,session-20260608095024-e8c86f82
+```
+
+未带 `--session-id` / `--session-ids` 时，`postprocess --once` 会扫描 `data/tmp/recording-assets.jsonl` 里的历史录制资产；如果历史 session 以前缺导出，它也会尝试补齐这些旧产物。
+
 这条命令会按下面顺序处理当前还没处理过的录制资产：
 
 ```text
@@ -202,7 +211,7 @@ $env:ARL_SEGMENTER_TEMPLATE_FALLBACK_ENABLED = "1"
 
 ```powershell
 .\.venv\Scripts\python.exe -m arl.cli postprocess-reset --session-id session-20260608095022-03694add
-.\.venv\Scripts\python.exe -m arl.cli postprocess --once
+.\.venv\Scripts\python.exe -m arl.cli postprocess --once --session-id session-20260608095022-03694add
 ```
 
 查看整体健康状态：
@@ -212,6 +221,8 @@ $env:ARL_SEGMENTER_TEMPLATE_FALLBACK_ENABLED = "1"
 ```
 
 判断后处理完成时，看 `status` 输出里的 `postprocess.missing_subtitles`、`missing_exports`、`missing_copies`、`unregistered_recordings` 是否都是 `0`。导出视频会写到 `data/exports/<platform>/`，例如 B 站录制在 `data/exports/bilibili/`。
+
+如果没有可靠的 `in_game` 信号，系统会把整段低置信边界标记为待处理，不会导出完整源视频，也不会再往 `data/exports/<platform>/` 写 `session-*_match*.txt` 占位文件。此时 `status` 里会看到 `missing_exports > 0`，表示需要补充手工 `stage-hint` / `stage-signal` 或等待后续真正的语义识别能力，而不是编排已经产出成片。
 
 ## 降低电脑压力
 

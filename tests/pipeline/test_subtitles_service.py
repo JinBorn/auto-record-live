@@ -131,6 +131,27 @@ class _WhisperModelFactory:
         )
 
 
+class _IntermittentFileFailureModel:
+    def __init__(self) -> None:
+        self.transcribe_calls = 0
+
+    def transcribe(
+        self,
+        path: str,
+        language: str | None,
+        *,
+        word_timestamps: bool = False,
+        clip_timestamps: list[float] | None = None,
+    ):
+        self.transcribe_calls += 1
+        if self.transcribe_calls == 1:
+            raise FileNotFoundError("temporary media file missing")
+        return (
+            [_Segment(0.0, 1.5, "real subtitle line")],
+            _Info("zh", 0.95),
+        )
+
+
 class _EnvIsolation:
     def __enter__(self) -> "_EnvIsolation":
         self._snapshot = {k: v for k, v in os.environ.items() if k.startswith("ARL_")}
@@ -159,6 +180,8 @@ class _FakeSubtitleService(SubtitleService):
         self,
         boundary: MatchBoundary,
         recording_path: str | None,
+        *,
+        recording_duration_seconds: float | None = None,
     ) -> TranscribeOutcome:
         return TranscribeOutcome(entries=self._entries)
 
@@ -650,21 +673,109 @@ class SubtitleServiceTest(unittest.TestCase):
     def test_runtime_failure_disables_whisper_for_remaining_batch(self) -> None:
         self._seed_single_media_boundary(session_id="session-subtitle-runtime-a")
         self._seed_single_media_boundary(session_id="session-subtitle-runtime-b")
-        model = _WhisperModelStub(
-            language_probability=0.95,
-            lazy_raises=RuntimeError("Library cublas64_12.dll is not found"),
-        )
         service = SubtitleService(self.settings)
-        service._whisper_model = model
-        service._whisper_model_initialized = True
+        factory = _WhisperModelFactory(lazy_fail_devices={"cuda"})
+
+        self._run_with_fake_faster_whisper(service, factory)
+
+        audit_rows = _read_jsonl(self.temp_root / "subtitles-events.jsonl")
+        self.assertEqual(len(audit_rows), 2)
+        self.assertEqual(
+            [(call["device"], call["compute_type"]) for call in factory.calls],
+            [("cuda", "float16"), ("cpu", "int8")],
+        )
+        self.assertEqual(audit_rows[0]["event_type"], "subtitle_transcribe_succeeded")
+        self.assertEqual(audit_rows[0]["device"], "cpu")
+        self.assertEqual(audit_rows[0]["fallback_device"], "cpu")
+        self.assertEqual(audit_rows[1]["event_type"], "subtitle_transcribe_succeeded")
+        self.assertEqual(audit_rows[1]["device"], "cpu")
+
+    def test_file_transcribe_failure_does_not_disable_cpu_for_remaining_batch(self) -> None:
+        self._seed_single_media_boundary(session_id="session-subtitle-file-a")
+        self._seed_single_media_boundary(session_id="session-subtitle-file-b")
+        settings = self.settings.model_copy(deep=True)
+        settings.subtitles.device = "cpu"
+        model = _IntermittentFileFailureModel()
+        service = SubtitleService(settings)
+        service._load_whisper_model = lambda: model
 
         service.run()
 
         audit_rows = _read_jsonl(self.temp_root / "subtitles-events.jsonl")
         self.assertEqual(len(audit_rows), 2)
-        self.assertEqual(model.transcribe_calls, 1)
+        self.assertEqual(model.transcribe_calls, 2)
         self.assertEqual(audit_rows[0]["reason"], "transcribe_failed")
-        self.assertEqual(audit_rows[1]["reason"], "model_unavailable")
+        self.assertEqual(audit_rows[0]["device"], "cpu")
+        self.assertEqual(audit_rows[1]["event_type"], "subtitle_transcribe_succeeded")
+        self.assertEqual(audit_rows[1]["device"], "cpu")
+
+    def test_missing_recording_path_short_circuits_before_loading_whisper(self) -> None:
+        session_id = "session-subtitle-missing-path"
+        append_model(
+            self.boundaries_path,
+            MatchBoundary(
+                session_id=session_id,
+                match_index=1,
+                started_at_seconds=0.0,
+                ended_at_seconds=30.0,
+                confidence=0.9,
+            ),
+        )
+        append_model(
+            self.recording_assets_path,
+            RecordingAsset(
+                session_id=session_id,
+                source_type=SourceType.BROWSER_CAPTURE,
+                path=str(self.raw_root / session_id / "missing.mp4"),
+                started_at=datetime(2026, 4, 26, 9, 0, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 4, 26, 9, 30, tzinfo=timezone.utc),
+            ),
+        )
+        service = SubtitleService(self.settings)
+        service._load_whisper_model = lambda: self.fail("Whisper should not load")
+
+        service.run()
+
+        audit_rows = _read_jsonl(self.temp_root / "subtitles-events.jsonl")
+        self.assertEqual(audit_rows[0]["reason"], "missing_recording")
+        self.assertIn("recording_path_not_found", audit_rows[0]["reason_detail"])
+
+    def test_long_low_confidence_full_boundary_skips_asr(self) -> None:
+        session_id = "session-subtitle-long-fallback"
+        append_model(
+            self.boundaries_path,
+            MatchBoundary(
+                session_id=session_id,
+                match_index=1,
+                started_at_seconds=0.0,
+                ended_at_seconds=3600.0,
+                confidence=0.5,
+            ),
+        )
+        recording_path = self.raw_root / session_id / "recording.mp4"
+        recording_path.parent.mkdir(parents=True, exist_ok=True)
+        recording_path.write_text("dummy media placeholder", encoding="utf-8")
+        append_model(
+            self.recording_assets_path,
+            RecordingAsset(
+                session_id=session_id,
+                source_type=SourceType.BROWSER_CAPTURE,
+                path=str(recording_path),
+                started_at=datetime(2026, 4, 26, 9, 0, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 4, 26, 10, 0, tzinfo=timezone.utc),
+            ),
+        )
+        service = SubtitleService(self.settings)
+        service._load_whisper_model = lambda: self.fail("Whisper should not load")
+
+        service.run()
+
+        audit_rows = _read_jsonl(self.temp_root / "subtitles-events.jsonl")
+        self.assertEqual(audit_rows[0]["reason"], "low_confidence_full_recording")
+        self.assertIn("duration=3600.000", audit_rows[0]["reason_detail"])
+        subtitle_assets = _read_jsonl(self.subtitle_assets_path)
+        subtitle_text = Path(subtitle_assets[0]["path"]).read_text(encoding="utf-8")
+        self.assertIn("Placeholder subtitle generated by local pipeline.", subtitle_text)
 
     def test_low_language_probability_emits_fallback_reason_low_language_confidence(self) -> None:
         self._seed_single_media_boundary(session_id="session-subtitle-audit-low-language")

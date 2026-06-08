@@ -165,6 +165,25 @@ class SegmenterServiceTest(unittest.TestCase):
         self.assertEqual(boundaries[0]["ended_at_seconds"], 2100.0)
         self.assertEqual(boundaries[0]["confidence"], 0.5)
 
+    def test_segmenter_filters_by_session_ids(self) -> None:
+        for session_id in ["session-segment-filter-a", "session-segment-filter-b"]:
+            append_model(
+                self.recording_assets_path,
+                RecordingAsset(
+                    session_id=session_id,
+                    source_type=SourceType.BROWSER_CAPTURE,
+                    path=f"/tmp/{session_id}.mp4",
+                    started_at=datetime(2026, 4, 26, 15, 0, tzinfo=timezone.utc),
+                    ended_at=datetime(2026, 4, 26, 15, 10, tzinfo=timezone.utc),
+                ),
+            )
+
+        SegmenterService(self.settings).run(session_ids={"session-segment-filter-b"})
+        boundaries = _read_jsonl(self.boundaries_path)
+
+        self.assertEqual(len(boundaries), 1)
+        self.assertEqual(boundaries[0]["session_id"], "session-segment-filter-b")
+
     def test_segmenter_preserves_sub_minute_recording_duration(self) -> None:
         append_model(
             self.recording_assets_path,

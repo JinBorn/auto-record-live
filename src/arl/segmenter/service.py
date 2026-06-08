@@ -16,9 +16,19 @@ class SegmenterService:
         self.boundaries_path = settings.storage.temp_dir / "match-boundaries.jsonl"
         self.state_path = settings.storage.temp_dir / "segmenter-state.json"
 
-    def run(self) -> None:
+    def run(self, *, session_ids: set[str] | None = None) -> None:
         log("segmenter", "starting")
         assets = load_models(self.recording_assets_path, RecordingAsset)
+        filtered_assets = self._filter_assets(assets, session_ids=session_ids)
+        if session_ids is not None:
+            log(
+                "segmenter",
+                (
+                    "filters "
+                    f"total_assets={len(assets)} matched_assets={len(filtered_assets)} "
+                    f"session_ids={','.join(sorted(session_ids))}"
+                ),
+            )
         stage_hints = load_models(self.match_stage_hints_path, MatchStageHint)
         existing_boundary_sessions = {
             boundary.session_id
@@ -29,7 +39,7 @@ class SegmenterService:
         processed_asset_keys = set(state.processed_asset_keys)
 
         processed = 0
-        for asset in assets:
+        for asset in filtered_assets:
             key = f"{asset.session_id}:{asset.path}"
             if key in processed_asset_keys and asset.session_id in existing_boundary_sessions:
                 continue
@@ -59,6 +69,16 @@ class SegmenterService:
 
         self._save_state(state)
         log("segmenter", f"processed_assets={processed}")
+
+    def _filter_assets(
+        self,
+        assets: list[RecordingAsset],
+        *,
+        session_ids: set[str] | None,
+    ) -> list[RecordingAsset]:
+        if session_ids is None:
+            return assets
+        return [asset for asset in assets if asset.session_id in session_ids]
 
     def _duration_seconds(self, asset: RecordingAsset) -> float:
         return recording_duration_seconds(asset)

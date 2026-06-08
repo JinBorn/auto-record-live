@@ -1388,10 +1388,11 @@ class FfmpegResilienceTest(unittest.TestCase):
             ExporterService(self.settings).run()
 
         self.assertEqual(mocked_run.call_count, 2)
-        exports_path = self.temp_root / "export-assets.jsonl"
-        payload = json.loads(exports_path.read_text(encoding="utf-8").splitlines()[0])
-        self.assertTrue(payload["path"].endswith("_match01.txt"))
-        self.assertTrue(Path(payload["path"]).exists())
+        self.assertFalse((self.temp_root / "export-assets.jsonl").exists())
+        state = ExporterStateFile.model_validate_json(
+            (self.temp_root / "exporter-state.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(state.deferred_match_keys, ["session-e:1"])
 
 
 class RecorderHardeningTest(unittest.TestCase):
@@ -2783,6 +2784,8 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         match_index: int = 1,
         platform: str = "douyin",
         placeholder_subtitle: bool = False,
+        boundary_ended_at_seconds: float = 60.0,
+        boundary_confidence: float = 0.9,
     ) -> None:
         started_at = datetime(2026, 5, 12, 1, 0, tzinfo=timezone.utc)
         ended_at = datetime(2026, 5, 12, 1, 10, tzinfo=timezone.utc)
@@ -2790,8 +2793,8 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
             session_id=session_id,
             match_index=match_index,
             started_at_seconds=0.0,
-            ended_at_seconds=60.0,
-            confidence=0.9,
+            ended_at_seconds=boundary_ended_at_seconds,
+            confidence=boundary_confidence,
         )
         subtitle_file = self.processed_root / session_id / f"match-{match_index:02d}.srt"
         subtitle_file.parent.mkdir(parents=True, exist_ok=True)
@@ -2896,6 +2899,39 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
 
     # ----- tests -----
 
+    def test_low_confidence_full_recording_boundary_is_deferred(self) -> None:
+        self._seed_export_inputs(
+            session_id="session-low-confidence-full",
+            boundary_ended_at_seconds=600.0,
+            boundary_confidence=0.5,
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(self.settings).run()
+
+        self.assertEqual(mocked_run.call_count, 0)
+        self.assertFalse((self.temp_root / "export-assets.jsonl").exists())
+        self.assertFalse(
+            (
+                self.export_root
+                / "douyin"
+                / "session-low-confidence-full_match01.mp4"
+            ).exists()
+        )
+        self.assertFalse(
+            (
+                self.export_root
+                / "douyin"
+                / "session-low-confidence-full_match01.txt"
+            ).exists()
+        )
+
     def test_failure_emits_canonical_audit_with_stderr_excerpt_and_log_path(self) -> None:
         self._seed_export_inputs()
         # Helper extracts the LAST stderr line as the failure reason, so the
@@ -2944,10 +2980,11 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertEqual(placeholder_rows[0]["failure_category"], "http_4xx_non_retryable")
         self.assertEqual(placeholder_rows[0]["reason_code"], "http_4xx")
 
-        # ExportAsset still gets written as the placeholder .txt fallback.
-        exports_path = self.temp_root / "export-assets.jsonl"
-        payload = json.loads(exports_path.read_text(encoding="utf-8").splitlines()[0])
-        self.assertTrue(payload["path"].endswith("_match01.txt"))
+        self.assertFalse((self.temp_root / "export-assets.jsonl").exists())
+        state = ExporterStateFile.model_validate_json(
+            (self.temp_root / "exporter-state.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(state.deferred_match_keys, ["session-e:1"])
 
     def test_non_retryable_short_circuits_with_max_retries_five(self) -> None:
         new_settings = self.settings.model_copy(deep=True)
@@ -3169,12 +3206,11 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
 
         partial_path = self.export_root / "douyin" / "session-e_match01.mp4"
         self.assertFalse(partial_path.exists())
-        export_row = json.loads(
-            (self.temp_root / "export-assets.jsonl")
-            .read_text(encoding="utf-8")
-            .splitlines()[0]
+        self.assertFalse((self.temp_root / "export-assets.jsonl").exists())
+        state = ExporterStateFile.model_validate_json(
+            (self.temp_root / "exporter-state.json").read_text(encoding="utf-8")
         )
-        self.assertTrue(export_row["path"].endswith("_match01.txt"))
+        self.assertEqual(state.deferred_match_keys, ["session-e:1"])
 
     def test_placeholder_subtitle_uses_stream_copy_export(self) -> None:
         self._seed_export_inputs(placeholder_subtitle=True)
@@ -3301,12 +3337,11 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
             "ffmpeg_output_missing_video_stream",
         )
         self.assertEqual(payloads[0]["reason_code"], "unknown_unclassified")
-        export_row = json.loads(
-            (self.temp_root / "export-assets.jsonl")
-            .read_text(encoding="utf-8")
-            .splitlines()[0]
+        self.assertFalse((self.temp_root / "export-assets.jsonl").exists())
+        state = ExporterStateFile.model_validate_json(
+            (self.temp_root / "exporter-state.json").read_text(encoding="utf-8")
         )
-        self.assertTrue(export_row["path"].endswith("_match01.txt"))
+        self.assertEqual(state.deferred_match_keys, ["session-e:1"])
         self.assertFalse((self.export_root / "douyin" / "session-e_match01.mp4").exists())
 
     def test_oserror_failure_audit_handles_missing_stderr_gracefully(self) -> None:
@@ -3599,6 +3634,12 @@ class ExporterBatchBudgetTest(unittest.TestCase):
             return []
         return json.loads(path.read_text(encoding="utf-8"))["processed_match_keys"]
 
+    def _deferred_keys(self) -> list[str]:
+        path = self.temp_root / "exporter-state.json"
+        if not path.exists():
+            return []
+        return json.loads(path.read_text(encoding="utf-8")).get("deferred_match_keys", [])
+
     def _run_with_failure_pattern(
         self,
         *,
@@ -3666,7 +3707,8 @@ class ExporterBatchBudgetTest(unittest.TestCase):
             ),
             1,
         )
-        self.assertEqual(len(self._processed_keys()), 5)
+        self.assertEqual(len(self._processed_keys()), 4)
+        self.assertEqual(self._deferred_keys(), ["session-batch:3"])
 
     def test_three_consecutive_fallbacks_trip_default_budget(self) -> None:
         self._run_with_failure_pattern(count=10, failing_matches=set(range(1, 11)))
@@ -3681,7 +3723,11 @@ class ExporterBatchBudgetTest(unittest.TestCase):
         self.assertEqual(len(abort_rows), 1)
         self.assertEqual(abort_rows[0]["consecutive_fallbacks"], 3)
         self.assertEqual(abort_rows[0]["remaining_matches"], 7)
-        self.assertEqual(self._processed_keys(), ["session-batch:1", "session-batch:2", "session-batch:3"])
+        self.assertEqual(self._processed_keys(), [])
+        self.assertEqual(
+            self._deferred_keys(),
+            ["session-batch:1", "session-batch:2", "session-batch:3"],
+        )
 
     def test_success_between_fallbacks_resets_counter(self) -> None:
         self._run_with_failure_pattern(count=6, failing_matches={1, 2, 4, 5, 6})
@@ -3735,7 +3781,8 @@ class ExporterBatchBudgetTest(unittest.TestCase):
         self.assertFalse(
             any(item["event_type"] == "ffmpeg_export_batch_aborted" for item in events)
         )
-        self.assertEqual(len(self._processed_keys()), 10)
+        self.assertEqual(len(self._processed_keys()), 0)
+        self.assertEqual(len(self._deferred_keys()), 10)
 
 
 if __name__ == "__main__":

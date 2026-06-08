@@ -15,7 +15,10 @@ from arl.orchestrator.service import OrchestratorService
 from arl.postprocess.service import PostProcessService
 from arl.recorder.models import RecorderStateFile
 from arl.recorder.service import RecorderService
+from arl.segmenter.models import MatchStageHint
 from arl.segmenter.service import SegmenterService
+from arl.shared.contracts import MatchStage, RecordingAsset
+from arl.shared.jsonl_store import append_model, load_models
 from arl.subtitles.service import SubtitleService
 from arl.windows_agent.platform_probe import CookieState
 from arl.windows_agent.service import WindowsAgentService
@@ -28,6 +31,18 @@ from tests.e2e._helpers import (
     make_live_snapshot,
     make_offline_snapshot,
 )
+
+
+def seed_in_game_hints(settings) -> None:
+    for asset in load_models(settings.storage.temp_dir / "recording-assets.jsonl", RecordingAsset):
+        append_model(
+            settings.storage.temp_dir / "match-stage-hints.jsonl",
+            MatchStageHint(
+                session_id=asset.session_id,
+                stage=MatchStage.IN_GAME,
+                at_seconds=0.0,
+            ),
+        )
 
 
 class GoldenPathTest(unittest.TestCase):
@@ -82,6 +97,7 @@ class GoldenPathTest(unittest.TestCase):
         recorder_events = jsonl_payloads(self.settings.orchestrator.recorder_event_log_path)
         self.assertIn("ffmpeg_record_succeeded", [row["event_type"] for row in recorder_events])
 
+        seed_in_game_hints(self.settings)
         SegmenterService(self.settings).run()
         boundaries = jsonl_payloads(self.settings.storage.temp_dir / "match-boundaries.jsonl")
         self.assertEqual(len(boundaries), 1)
@@ -241,6 +257,7 @@ class ExporterFfmpegFailureTest(unittest.TestCase):
             side_effect=fake_successful_subprocess,
         ):
             RecorderService(self.settings).run()
+        seed_in_game_hints(self.settings)
         SegmenterService(self.settings).run()
         SubtitleService(self.settings).run()
 
@@ -270,9 +287,13 @@ class ExporterFfmpegFailureTest(unittest.TestCase):
         self.assertEqual(fallback_rows[0]["reason_code"], "ffmpeg_process_error")
 
         exports = jsonl_payloads(self.settings.storage.temp_dir / "export-assets.jsonl")
-        self.assertEqual(len(exports), 1)
-        self.assertTrue(exports[0]["path"].endswith(".txt"))
-        self.assertTrue(Path(exports[0]["path"]).exists())
+        self.assertEqual(len(exports), 0)
+        exporter_state = ExporterStateFile.model_validate_json(
+            (self.settings.storage.temp_dir / "exporter-state.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(len(exporter_state.deferred_match_keys), 1)
 
 
 class DualPlatformConcurrencyTest(unittest.TestCase):
@@ -351,6 +372,7 @@ class DualPlatformConcurrencyTest(unittest.TestCase):
             side_effect=fake_successful_subprocess,
         ):
             RecorderService(self.settings).run()
+            seed_in_game_hints(self.settings)
             PostProcessService(self.settings).run_once()
             RecorderService(self.settings).run()
             PostProcessService(self.settings).run_once()

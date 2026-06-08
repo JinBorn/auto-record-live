@@ -93,7 +93,10 @@ class PostProcessResetServiceTest(unittest.TestCase):
             ),
             (
                 "exporter-state.json",
-                ExporterStateFile(processed_match_keys=[f"{target}:1", f"{other}:1"]),
+                ExporterStateFile(
+                    processed_match_keys=[f"{target}:1", f"{other}:1"],
+                    deferred_match_keys=[f"{target}:2", f"{other}:2"],
+                ),
             ),
             (
                 "copywriter-state.json",
@@ -149,6 +152,10 @@ class PostProcessResetServiceTest(unittest.TestCase):
         self.assertEqual(
             self._read_json(self.temp_root / "exporter-state.json")["processed_match_keys"],
             [f"{other}:1"],
+        )
+        self.assertEqual(
+            self._read_json(self.temp_root / "exporter-state.json")["deferred_match_keys"],
+            [f"{other}:2"],
         )
         self.assertEqual(
             self._read_json(self.temp_root / "copywriter-state.json")["processed_match_keys"],

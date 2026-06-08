@@ -32,13 +32,23 @@ class SemanticStageHintService:
             MatchStage.UNKNOWN: 4,
         }
 
-    def run(self) -> None:
+    def run(self, *, session_ids: set[str] | None = None) -> None:
         log("segmenter", "stage-hints-semantic starting")
         try:
-            StageSignalFromSubtitlesService(self.settings).run()
+            StageSignalFromSubtitlesService(self.settings).run(session_ids=session_ids)
         except Exception as exc:
             log("segmenter", f"stage-hints-semantic subtitle signal ingest skipped reason={exc}")
         assets = load_models(self.recording_assets_path, RecordingAsset)
+        filtered_assets = self._filter_assets(assets, session_ids=session_ids)
+        if session_ids is not None:
+            log(
+                "segmenter",
+                (
+                    "stage-hints-semantic filters "
+                    f"total_assets={len(assets)} matched_assets={len(filtered_assets)} "
+                    f"session_ids={','.join(sorted(session_ids))}"
+                ),
+            )
         existing_hints = load_models(self.match_stage_hints_path, MatchStageHint)
         signals = load_models(self.match_stage_signals_path, MatchStageSignal)
         signals_by_session = self._group_signals_by_session(signals)
@@ -46,7 +56,7 @@ class SemanticStageHintService:
 
         processed_assets = 0
         emitted_hints = 0
-        for asset in assets:
+        for asset in filtered_assets:
             if asset.session_id in sessions_with_hints:
                 continue
 
@@ -96,6 +106,16 @@ class SemanticStageHintService:
             "segmenter",
             f"stage-hints-semantic processed_assets={processed_assets} emitted_hints={emitted_hints}",
         )
+
+    def _filter_assets(
+        self,
+        assets: list[RecordingAsset],
+        *,
+        session_ids: set[str] | None,
+    ) -> list[RecordingAsset]:
+        if session_ids is None:
+            return assets
+        return [asset for asset in assets if asset.session_id in session_ids]
 
     def _duration_seconds(self, asset: RecordingAsset) -> float:
         return recording_duration_seconds(asset)
