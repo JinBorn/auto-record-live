@@ -186,6 +186,24 @@ class PostProcessResetServiceTest(unittest.TestCase):
         self.assertEqual(result.skipped_files, [f"{outside}:outside_generated_roots"])
         self.assertEqual(load_models(self.temp_root / "subtitle-assets.jsonl", SubtitleAsset), [])
 
+    def test_reset_deletes_orphan_generated_files_for_target_session(self) -> None:
+        target = "session-reset-orphan"
+        other = "session-reset-orphan-other"
+        target_processed = self.settings.storage.processed_dir / target / "match-01.txt"
+        target_export = self.settings.storage.export_dir / "unknown" / f"{target}_match01.txt"
+        other_export = self.settings.storage.export_dir / "unknown" / f"{other}_match01.txt"
+        for path in [target_processed, target_export, other_export]:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("orphan\n", encoding="utf-8")
+
+        result = PostProcessResetService(self.settings).run(session_ids={target})
+
+        self.assertFalse(target_processed.exists())
+        self.assertFalse(target_export.exists())
+        self.assertTrue(other_export.exists())
+        self.assertEqual(len(result.deleted_files), 2)
+        self.assertEqual(result.skipped_files, [])
+
     def _append_postprocess_rows(
         self,
         session_id: str,

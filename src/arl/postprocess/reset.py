@@ -62,6 +62,8 @@ class PostProcessResetService:
             result=result,
             delete_files=delete_files,
         )
+        if delete_files:
+            self._delete_orphan_generated_files(normalized_session_ids, result)
         self._rewrite_states(session_ids=normalized_session_ids, result=result)
 
         log(
@@ -266,6 +268,50 @@ class PostProcessResetService:
         resolved.unlink()
         result.deleted_files.append(str(resolved))
         self._remove_empty_generated_parent(resolved.parent)
+
+    def _delete_orphan_generated_files(
+        self,
+        session_ids: set[str],
+        result: PostProcessResetResult,
+    ) -> None:
+        deleted = set(result.deleted_files)
+        for session_id in session_ids:
+            session_dir = self.settings.storage.processed_dir / session_id
+            if session_dir.exists():
+                for path in sorted(session_dir.rglob("*")):
+                    if path.is_file():
+                        self._delete_existing_generated_file(path, result, deleted)
+
+        export_dir = self.settings.storage.export_dir
+        if export_dir.exists():
+            for path in sorted(export_dir.rglob("*")):
+                if not path.is_file():
+                    continue
+                if not self._is_export_file_for_session(path, session_ids):
+                    continue
+                self._delete_existing_generated_file(path, result, deleted)
+
+    def _delete_existing_generated_file(
+        self,
+        path: Path,
+        result: PostProcessResetResult,
+        deleted: set[str],
+    ) -> None:
+        resolved = path.expanduser().resolve(strict=False)
+        resolved_text = str(resolved)
+        if resolved_text in deleted:
+            return
+        if not self._is_under_generated_roots(resolved):
+            result.skipped_files.append(f"{path}:outside_generated_roots")
+            return
+        resolved.unlink()
+        deleted.add(resolved_text)
+        result.deleted_files.append(resolved_text)
+        self._remove_empty_generated_parent(resolved.parent)
+
+    @staticmethod
+    def _is_export_file_for_session(path: Path, session_ids: set[str]) -> bool:
+        return any(path.name.startswith(f"{session_id}_match") for session_id in session_ids)
 
     def _remove_empty_generated_parent(self, path: Path) -> None:
         if not self._is_under_generated_roots(path):

@@ -596,7 +596,7 @@ class CopyAsset(BaseModel):
   - command removes target-session rows from `match-stage-hints.jsonl`, `match-boundaries.jsonl`, `subtitle-assets.jsonl`, `export-assets.jsonl`, and `copy-assets.jsonl`; stage hints do not currently carry source metadata, so reset cannot preserve manual hints.
   - command removes only `source="subtitles_srt"` rows from `match-stage-signals.jsonl` so manual signal inputs remain available.
   - command removes target-session processed keys from `segmenter-state.json`, `subtitles-state.json`, `exporter-state.json`, `copywriter-state.json`, and subtitle-signal ingest state.
-  - by default, command deletes generated subtitle/export/copy files referenced by removed manifest rows only when the resolved path is under `storage.processed_dir` or `storage.export_dir`; paths outside those generated roots are reported as skipped.
+  - by default, command deletes generated subtitle/export/copy files referenced by removed manifest rows only when the resolved path is under `storage.processed_dir` or `storage.export_dir`; paths outside those generated roots are reported as skipped. It also removes orphan generated files for the target session under `storage.processed_dir/<session_id>/` and export files named `<session_id>_match*` under `storage.export_dir`.
   - `--keep-files` resets manifests/state without deleting generated files.
   - command must not delete raw recordings under `data/raw/`, remove `recording-assets.jsonl`, or mutate recorder/orchestrator state.
 - CLI `repair-recording-assets` contract:
@@ -788,6 +788,7 @@ class CopyAsset(BaseModel):
 | `arl copywriter` sees a subtitle asset whose path does not exist | Log skip, do not append `CopyAsset`, and do not mark the match key processed |
 | `arl copywriter` runs repeatedly on unchanged manifests/state | Do not duplicate copy JSON manifest rows |
 | `arl postprocess-reset --session-id <id>` runs after bad generated boundaries/subtitles/exports | Remove only that session's generated postprocess rows/state and generated files; keep raw recording assets intact for a later rerun |
+| `arl postprocess-reset --session-id <id>` sees orphan generated files not present in manifests | Remove target-session files under `storage.processed_dir/<session_id>/` and export files named `<session_id>_match*` under `storage.export_dir` |
 | `arl postprocess-reset` sees a removed artifact path outside `storage.processed_dir` / `storage.export_dir` | Remove the manifest row but skip file deletion and report the skipped path reason |
 | A stage receives an unknown asset format or status | Reject or audit explicitly; do not guess |
 | `ARL_RECORDING_ENABLE_FFMPEG=1` but `stream_url` missing | Recorder logs skip reason and writes placeholder recording artifact |
@@ -913,6 +914,7 @@ class CopyAsset(BaseModel):
 - Unit test: copywriter skips missing subtitle paths without marking the match processed.
 - Unit test: postprocess invokes `copywriter` after `exporter`.
 - Unit test: `postprocess-reset` removes only the target session's generated rows/state/files while preserving other sessions and raw recording assets.
+- Unit test: `postprocess-reset` removes orphan generated files for the target session even when manifest rows are already missing.
 - Unit test: `postprocess-reset` skips deleting manifest artifact paths outside generated roots.
 - Unit test: status reports unregistered raw MP4 files as degraded diagnostics without mutating state.
 - Unit test: status ignores historical exporter fallback/batch-abort rows after later MP4 export assets resolve the affected match/session.
