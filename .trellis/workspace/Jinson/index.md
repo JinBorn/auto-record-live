@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 41
-- **Last Active**: 2026-06-08
+- **Total Sessions**: 42
+- **Last Active**: 2026-06-09
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1727 | Active |
+| `journal-1.md` | ~1760 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 42 | 2026-06-09 | Defer untrusted fallback exports | `4ffd12a` | `main` |
 | 41 | 2026-06-08 | Harden interrupted recorder outcomes | `d774d5a` | `main` |
 | 40 | 2026-06-05 | Improve unattended recording stability | `db3f297` | `main` |
 | 39 | 2026-06-03 | Harden post-live media pipeline | `d66584d` | `main` |

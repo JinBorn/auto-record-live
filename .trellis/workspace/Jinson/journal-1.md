@@ -1725,3 +1725,36 @@ Recovered the missing selected-recording asset, fixed concurrent recorder Ctrl+C
 ### Next Steps
 
 - None - task complete
+
+
+## Session 42: Defer untrusted fallback exports
+
+**Date**: 2026-06-09
+**Task**: Defer untrusted fallback exports
+**Branch**: `main`
+
+### Summary
+
+Blocked low-confidence full-recording fallback exports, removed text placeholder export artifacts, added scoped postprocess flow, validated with pytest and real scoped postprocess sessions.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4ffd12a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
