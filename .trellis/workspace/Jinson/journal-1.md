@@ -1692,3 +1692,36 @@ Committed unattended recording stability updates, including Bilibili 403 diagnos
 ### Next Steps
 
 - None - task complete
+
+
+## Session 41: Harden interrupted recorder outcomes
+
+**Date**: 2026-06-08
+**Task**: Harden interrupted recorder outcomes
+**Branch**: `main`
+
+### Summary
+
+Recovered the missing selected-recording asset, fixed concurrent recorder Ctrl+C handling to drain completed worker outcomes, added selected-run final orchestrator sync and regression coverage.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d774d5a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
