@@ -25,7 +25,11 @@ from arl.shared.contracts import MatchStage
 from arl.soak.service import SoakService
 from arl.status.service import StatusService
 from arl.subtitles.service import SubtitleService
-from arl.windows_agent.cookie_health import run_cookie_health
+from arl.windows_agent.cookie_health import (
+    build_cookie_health_probes,
+    load_cookie_health_live_room_keys,
+    run_cookie_health,
+)
 from arl.windows_agent.live_status import LiveStatusReport, run_live_status
 from arl.windows_agent.registry import build_probes
 from arl.windows_agent.service import WindowsAgentService
@@ -171,7 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "cookie-health",
         help=(
-            "Run one detection cycle per platform and report cookie status "
+            "Run one detection cycle per platform credential and report cookie status "
             "(fresh / expired / not_configured / error). Exits non-zero if "
             "any configured cookie is detected expired."
         ),
@@ -491,7 +495,15 @@ def main() -> int:
         return 0
 
     if args.command == "cookie-health":
-        report = run_cookie_health(build_probes(settings.platforms))
+        live_room_keys = load_cookie_health_live_room_keys(
+            settings.windows_agent.state_file
+        )
+        report = run_cookie_health(
+            build_cookie_health_probes(
+                settings.platforms,
+                live_room_keys=live_room_keys,
+            )
+        )
         for row in report.rows:
             print(
                 f"platform={row.platform} "

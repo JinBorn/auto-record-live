@@ -75,10 +75,27 @@ class CookieHealthCliRunTest(unittest.TestCase):
     def _run(self, probes: list[PlatformProbe]) -> tuple[int, str]:
         argv = [sys.argv[0], "cookie-health"]
         captured = io.StringIO()
-        with patch("arl.cli.build_probes", return_value=probes), patch.object(
-            sys, "argv", argv
+        live_room_keys = {("bilibili", "https://live.example.com/bilibili")}
+        with patch(
+            "arl.cli.load_cookie_health_live_room_keys",
+            return_value=live_room_keys,
+        ) as mocked_live_room_keys, patch(
+            "arl.cli.build_cookie_health_probes",
+            return_value=probes,
+        ) as mocked_cookie_health_probes, patch(
+            "arl.cli.build_probes"
+        ) as mocked_build_probes, patch.object(
+            sys,
+            "argv",
+            argv,
         ), redirect_stdout(captured):
             exit_code = main()
+        mocked_live_room_keys.assert_called_once()
+        self.assertEqual(
+            mocked_cookie_health_probes.call_args.kwargs["live_room_keys"],
+            live_room_keys,
+        )
+        mocked_build_probes.assert_not_called()
         return exit_code, captured.getvalue()
 
     def test_all_fresh_exits_zero_and_reports_status(self) -> None:

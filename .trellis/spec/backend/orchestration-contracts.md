@@ -143,6 +143,7 @@ class RecordingJobRecord(BaseModel):
   - `snapshot.state` must be `offline`
   - `snapshot.reason` should be populated when the stop cause is known
 - `cookie_expired_for_<platform>` contract:
+  - `arl cookie-health` is credential-scoped, not room-scoped: when multiple configured rooms share the same platform credential (for example one Bilibili `SESSDATA` across several Bilibili rooms), the command MUST build only one representative probe for that `(platform, credential)` pair. It should prefer a room whose latest windows-agent snapshot is `live`, because live pages expose the strongest cookie validation signal; when no live-room hint exists, it falls back to the first configured room in `Settings.platforms`. If the same platform has genuinely different credential values, each distinct credential is checked separately.
   - Emitted by the windows agent in addition to (not instead of) the underlying `live_started`/`live_stopped` event when `PlatformProbe.classify_cookie_state(snapshot)` returns `expired` AND the snapshot has just transitioned (`_has_changed` returned True). High-confidence detection only:
     - Bilibili: `BilibiliSettings.sessdata` is non-empty AND `snapshot.reason` starts with `api_error:code=-101` or `playinfo_error:api_error:code=-101`
     - Douyin: `DouyinSettings.cookie` is non-empty AND `snapshot.reason` starts with `quality_below_min_tier:hd<` (the anonymous baseline tier)

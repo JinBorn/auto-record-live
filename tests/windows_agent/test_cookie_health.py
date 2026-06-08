@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import ClassVar
+from unittest.mock import patch
 
+from arl.config import BilibiliSettings, DouyinSettings
 from arl.shared.contracts import LiveState
 from arl.windows_agent.cookie_health import (
+    build_cookie_health_probes,
     CookieHealthReport,
     CookieHealthRow,
+    load_cookie_health_live_room_keys,
     run_cookie_health,
 )
-from arl.windows_agent.models import AgentSnapshot
+from arl.windows_agent.models import AgentSnapshot, AgentStateFile
 from arl.windows_agent.platform_probe import CookieState, PlatformProbe
 
 
@@ -168,6 +174,159 @@ class CookieHealthReportTests(unittest.TestCase):
         self.assertEqual(
             report.rows[0],
             CookieHealthRow(platform="bilibili", status="fresh", detail="n/a"),
+        )
+
+
+class CookieHealthProbeSelectionTests(unittest.TestCase):
+    def test_same_platform_credential_uses_first_representative_room(self) -> None:
+        platforms = [
+            BilibiliSettings(
+                room_url="https://live.bilibili.com/111",
+                streamer_name="bili-a",
+                sessdata="same-sessdata",
+            ),
+            BilibiliSettings(
+                room_url="https://live.bilibili.com/222",
+                streamer_name="bili-b",
+                sessdata="same-sessdata",
+            ),
+            DouyinSettings(
+                room_url="https://live.douyin.com/333",
+                streamer_name="douyin-a",
+                cookie="same-cookie",
+            ),
+            DouyinSettings(
+                room_url="https://live.douyin.com/444",
+                streamer_name="douyin-b",
+                cookie="same-cookie",
+            ),
+        ]
+
+        with patch("arl.windows_agent.cookie_health.build_probe") as mocked_build:
+            mocked_build.side_effect = lambda platform: _ScriptedProbe(
+                platform=platform.type,
+                snapshot=_snapshot(
+                    platform=platform.type,
+                    state=LiveState.LIVE,
+                    reason="ok",
+                ),
+                cookie_state=CookieState.FRESH,
+            )
+            probes = build_cookie_health_probes(platforms)
+
+        self.assertEqual(len(probes), 2)
+        selected_platforms = [call.args[0] for call in mocked_build.call_args_list]
+        self.assertEqual(
+            [(platform.type, platform.room_url) for platform in selected_platforms],
+            [
+                ("bilibili", "https://live.bilibili.com/111"),
+                ("douyin", "https://live.douyin.com/333"),
+            ],
+        )
+
+    def test_live_room_in_same_credential_group_is_preferred(self) -> None:
+        platforms = [
+            BilibiliSettings(
+                room_url="https://live.bilibili.com/111",
+                streamer_name="bili-offline",
+                sessdata="same-sessdata",
+            ),
+            BilibiliSettings(
+                room_url="https://live.bilibili.com/222",
+                streamer_name="bili-live",
+                sessdata="same-sessdata",
+            ),
+        ]
+
+        with patch("arl.windows_agent.cookie_health.build_probe") as mocked_build:
+            mocked_build.side_effect = lambda platform: _ScriptedProbe(
+                platform=platform.type,
+                snapshot=_snapshot(
+                    platform=platform.type,
+                    state=LiveState.LIVE,
+                    reason="ok",
+                ),
+                cookie_state=CookieState.FRESH,
+            )
+            probes = build_cookie_health_probes(
+                platforms,
+                live_room_keys={("bilibili", "https://live.bilibili.com/222")},
+            )
+
+        self.assertEqual(len(probes), 1)
+        selected_platform = mocked_build.call_args.args[0]
+        self.assertEqual(selected_platform.room_url, "https://live.bilibili.com/222")
+
+    def test_same_platform_different_credentials_are_checked_separately(self) -> None:
+        platforms = [
+            BilibiliSettings(
+                room_url="https://live.bilibili.com/111",
+                sessdata="sessdata-a",
+            ),
+            BilibiliSettings(
+                room_url="https://live.bilibili.com/222",
+                sessdata="sessdata-b",
+            ),
+        ]
+
+        with patch("arl.windows_agent.cookie_health.build_probe") as mocked_build:
+            mocked_build.side_effect = lambda platform: _ScriptedProbe(
+                platform=platform.type,
+                snapshot=_snapshot(
+                    platform=platform.type,
+                    state=LiveState.LIVE,
+                    reason="ok",
+                ),
+                cookie_state=CookieState.FRESH,
+            )
+            probes = build_cookie_health_probes(platforms)
+
+        self.assertEqual(len(probes), 2)
+        selected_platforms = [call.args[0] for call in mocked_build.call_args_list]
+        self.assertEqual(
+            [platform.room_url for platform in selected_platforms],
+            [
+                "https://live.bilibili.com/111",
+                "https://live.bilibili.com/222",
+            ],
+        )
+
+
+class CookieHealthLiveRoomStateTests(unittest.TestCase):
+    def test_load_live_room_keys_from_windows_agent_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "windows-agent-state.json"
+            state = AgentStateFile()
+            state.set(
+                _snapshot(
+                    platform="bilibili",
+                    state=LiveState.LIVE,
+                    reason="api_live_with_stream_url",
+                )
+            )
+            state.set(
+                AgentSnapshot(
+                    state=LiveState.OFFLINE,
+                    streamer_name="douyin-streamer",
+                    room_url="https://live.example.com/douyin-offline",
+                    reason="not_live",
+                    detected_at=_NOW,
+                    platform="douyin",
+                )
+            )
+            state_path.write_text(
+                state.model_dump_json(indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            keys = load_cookie_health_live_room_keys(state_path)
+
+        self.assertEqual(keys, {("bilibili", "https://live.example.com/bilibili")})
+
+    def test_missing_live_room_state_returns_empty_set(self) -> None:
+        self.assertEqual(
+            load_cookie_health_live_room_keys(Path("missing-windows-agent-state.json")),
+            set(),
         )
 
 
