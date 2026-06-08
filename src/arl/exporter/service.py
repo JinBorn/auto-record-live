@@ -28,11 +28,35 @@ class ExporterService:
         self.audit_path = settings.storage.temp_dir / "exporter-events.jsonl"
         self.stderr_dir = settings.storage.temp_dir / "exporter-stderr"
 
-    def run(self) -> None:
+    def run(
+        self,
+        *,
+        session_ids: set[str] | None = None,
+        match_indices: set[int] | None = None,
+        force_reprocess: bool = False,
+    ) -> None:
         log("exporter", "starting")
         log("exporter", f"ffmpeg_enabled={self.settings.export.enable_ffmpeg}")
         rotate_stderr_logs(self.stderr_dir, self.settings.export.stderr_retain_count)
-        boundaries = load_models(self.boundaries_path, MatchBoundary)
+        all_boundaries = load_models(self.boundaries_path, MatchBoundary)
+        boundaries = self._filter_boundaries(
+            all_boundaries,
+            session_ids=session_ids,
+            match_indices=match_indices,
+        )
+        if session_ids is not None or match_indices is not None:
+            session_filter = ",".join(sorted(session_ids)) if session_ids is not None else "-"
+            match_index_filter = (
+                ",".join(str(item) for item in sorted(match_indices))
+                if match_indices is not None
+                else "-"
+            )
+            log(
+                "exporter",
+                "filters "
+                f"total_boundaries={len(all_boundaries)} matched_boundaries={len(boundaries)} "
+                f"session_ids={session_filter} match_indices={match_index_filter}",
+            )
         subtitles = load_models(self.subtitles_path, SubtitleAsset)
         recording_assets = load_models(
             self.settings.storage.temp_dir / "recording-assets.jsonl",
@@ -42,6 +66,12 @@ class ExporterService:
         recording_by_session = {item.session_id: item for item in recording_assets}
         platform_by_session = self._platform_by_session()
         state = self._load_state()
+        processed_keys = set(state.processed_match_keys)
+        existing_output_keys = {
+            self._key(asset.session_id, asset.match_index)
+            for asset in load_models(self.exports_path, ExportAsset)
+            if Path(asset.path).exists()
+        }
         consecutive_fallbacks = 0
         fallback_budget = self.settings.export.batch_fallback_budget
         self._last_failure_classification: FailureDecision | None = None
@@ -50,14 +80,37 @@ class ExporterService:
         processed = 0
         for index, boundary in enumerate(boundaries):
             key = self._key(boundary.session_id, boundary.match_index)
-            if key in state.processed_match_keys:
+            if (
+                not force_reprocess
+                and key in processed_keys
+                and key in existing_output_keys
+            ):
                 continue
+            if force_reprocess and key in processed_keys:
+                log(
+                    "exporter",
+                    "force reprocessing export output "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index}",
+                )
+            elif key in processed_keys:
+                log(
+                    "exporter",
+                    "reprocessing missing export output "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index}",
+                )
 
             subtitle = subtitle_map.get((boundary.session_id, boundary.match_index))
             if subtitle is None:
                 log(
                     "exporter",
                     f"missing subtitle session_id={boundary.session_id} match_index={boundary.match_index}",
+                )
+                continue
+            if not Path(subtitle.path).exists():
+                log(
+                    "exporter",
+                    "missing subtitle file "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index}",
                 )
                 continue
 
@@ -77,7 +130,10 @@ class ExporterService:
                 created_at=datetime.now(timezone.utc),
             )
             append_model(self.exports_path, export_asset)
-            state.processed_match_keys.append(key)
+            if key not in processed_keys:
+                state.processed_match_keys.append(key)
+                processed_keys.add(key)
+            existing_output_keys.add(key)
             processed += 1
             log(
                 "exporter",
@@ -105,6 +161,24 @@ class ExporterService:
 
         self._save_state(state)
         log("exporter", f"processed_exports={processed}")
+
+    def _filter_boundaries(
+        self,
+        boundaries: list[MatchBoundary],
+        *,
+        session_ids: set[str] | None,
+        match_indices: set[int] | None,
+    ) -> list[MatchBoundary]:
+        if session_ids is None and match_indices is None:
+            return boundaries
+        filtered: list[MatchBoundary] = []
+        for boundary in boundaries:
+            if session_ids is not None and boundary.session_id not in session_ids:
+                continue
+            if match_indices is not None and boundary.match_index not in match_indices:
+                continue
+            filtered.append(boundary)
+        return filtered
 
     def _write_export(
         self,
@@ -178,29 +252,56 @@ class ExporterService:
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{boundary.session_id}_match{boundary.match_index:02d}.mp4"
         subtitle_path = Path(subtitle.path).resolve()
-        subtitle_filter = self._subtitle_filter_arg(subtitle_path)
-
-        command = [
-            "ffmpeg",
-            "-y",
-            "-nostdin",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-ss",
-            str(boundary.started_at_seconds),
-            "-to",
-            str(boundary.ended_at_seconds),
-            "-i",
-            recording_asset.path,
-            "-vf",
-            subtitle_filter,
-            "-preset",
-            self.settings.export.ffmpeg_preset,
-            "-crf",
-            str(self.settings.export.ffmpeg_crf),
-            str(output_path),
-        ]
+        if self._subtitle_is_placeholder(subtitle_path):
+            log(
+                "exporter",
+                "placeholder subtitle detected; using stream copy "
+                f"session_id={boundary.session_id} match_index={boundary.match_index}",
+            )
+            command = [
+                "ffmpeg",
+                "-y",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                str(boundary.started_at_seconds),
+                "-to",
+                str(boundary.ended_at_seconds),
+                "-i",
+                recording_asset.path,
+                "-map",
+                "0",
+                "-c",
+                "copy",
+                "-movflags",
+                "+faststart",
+                str(output_path),
+            ]
+        else:
+            subtitle_filter = self._subtitle_filter_arg(subtitle_path)
+            command = [
+                "ffmpeg",
+                "-y",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                str(boundary.started_at_seconds),
+                "-to",
+                str(boundary.ended_at_seconds),
+                "-i",
+                recording_asset.path,
+                "-vf",
+                subtitle_filter,
+                "-preset",
+                self.settings.export.ffmpeg_preset,
+                "-crf",
+                str(self.settings.export.ffmpeg_crf),
+                str(output_path),
+            ]
         attempts = self.settings.export.ffmpeg_max_retries + 1
         basename = f"{boundary.session_id}_match{boundary.match_index:02d}"
         last_failure_classification: FailureDecision | None = None
@@ -302,21 +403,36 @@ class ExporterService:
             attempt=attempts,
             max_attempts=attempts,
         )
+        self._remove_file_if_exists(output_path)
         return self._write_placeholder_export(boundary, subtitle, platform), True
 
     def _platform_by_session(self) -> dict[str, str]:
-        try:
-            state = load_orchestrator_state(self.settings.orchestrator.state_file)
-        except Exception as exc:
-            log("exporter", f"platform map unavailable reason={exc}")
-            return {}
-
         platforms: dict[str, str] = {}
-        for session in state.sessions:
-            platforms[session.session_id] = session.platform
-        for job in state.recording_jobs:
-            platforms.setdefault(job.session_id, job.platform)
+        for state_path in self._platform_state_paths():
+            try:
+                state = load_orchestrator_state(state_path)
+            except Exception as exc:
+                log(
+                    "exporter",
+                    f"platform map state unreadable path={state_path} reason={exc}",
+                )
+                continue
+
+            for session in state.sessions:
+                platforms[session.session_id] = session.platform
+            for job in state.recording_jobs:
+                platforms.setdefault(job.session_id, job.platform)
         return platforms
+
+    def _platform_state_paths(self) -> list[Path]:
+        paths = [self.settings.orchestrator.state_file]
+        selected_root = self.settings.storage.temp_dir / "selected-recordings"
+        if selected_root.exists():
+            try:
+                paths.extend(sorted(selected_root.glob("*/orchestrator-state.json")))
+            except OSError:
+                return paths
+        return paths
 
     def _platform_export_dir(self, platform: str) -> Path:
         return self.settings.storage.export_dir / self._safe_platform_dir(platform)
@@ -460,6 +576,13 @@ class ExporterService:
     def _subtitle_filter_arg(self, subtitle_path: Path) -> str:
         escaped = subtitle_path.as_posix().replace(":", "\\:")
         return f"subtitles='{escaped}'"
+
+    def _subtitle_is_placeholder(self, subtitle_path: Path) -> bool:
+        try:
+            text = subtitle_path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        return "Placeholder subtitle generated by local pipeline." in text
 
     def _load_state(self) -> ExporterStateFile:
         if not self.state_path.exists():

@@ -12,6 +12,7 @@ from arl.maintenance.service import MaintenanceService
 from arl.orchestrator.service import OrchestratorService
 from arl.postprocess.service import PostProcessService
 from arl.recovery.service import RecoveryService
+from arl.recorder.asset_repair import RecordingAssetRepairService
 from arl.recorder.service import RecorderService
 from arl.segmenter.auto_hints import AutoStageHintService
 from arl.segmenter.hints import StageHintWriter
@@ -19,6 +20,7 @@ from arl.segmenter.signals import StageSignalWriter
 from arl.segmenter.signals_from_subtitles import StageSignalFromSubtitlesService
 from arl.segmenter.semantic_hints import SemanticStageHintService
 from arl.segmenter.service import SegmenterService
+from arl.selected_recording.service import SelectedRecordingService
 from arl.shared.contracts import MatchStage
 from arl.soak.service import SoakService
 from arl.status.service import StatusService
@@ -63,6 +65,7 @@ def _format_live_status_text(report: LiveStatusReport) -> str:
         lines.append(
             " ".join(
                 [
+                    f"index={row.index}",
                     f"platform={row.platform}",
                     f"state={row.state}",
                     f"streamer_name={row.streamer_name or 'n/a'}",
@@ -183,6 +186,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="Process new events once and exit.",
     )
     subparsers.add_parser("recorder", help="Run the recorder worker.")
+    repair_recording_assets = subparsers.add_parser(
+        "repair-recording-assets",
+        help="Register completed raw MP4 recordings that are missing from recording-assets.jsonl.",
+    )
+    repair_recording_assets.add_argument(
+        "--min-age-seconds",
+        type=float,
+        default=60.0,
+        help="Only repair raw MP4 files not modified for this many seconds (default: 60).",
+    )
+    record_rooms = subparsers.add_parser(
+        "record-rooms",
+        help="Probe and record selected configured rooms by live-status index.",
+    )
+    record_room_selector = record_rooms.add_mutually_exclusive_group(required=True)
+    record_room_selector.add_argument(
+        "--room-index",
+        type=_parse_positive_int,
+        help="Record one configured room by the 1-based index shown by live-status.",
+    )
+    record_room_selector.add_argument(
+        "--room-indices",
+        type=_parse_csv_int_values,
+        help="Record comma-separated room indices shown by live-status, e.g. 1,3.",
+    )
+    record_room_selector.add_argument(
+        "--all-live",
+        action="store_true",
+        help="Probe all configured rooms and record the ones currently live.",
+    )
+    record_rooms.add_argument(
+        "--max-concurrent-jobs",
+        type=_parse_positive_int,
+        help="Override ARL_RECORDER_MAX_CONCURRENT_JOBS for this selected run.",
+    )
+    record_rooms.add_argument(
+        "--placeholder",
+        action="store_true",
+        help="Do not force real ffmpeg recording for this selected run.",
+    )
     recovery = subparsers.add_parser("recovery", help="Dispatch manual recovery actions.")
     recovery_mode = recovery.add_mutually_exclusive_group()
     recovery_mode.add_argument(
@@ -378,7 +421,30 @@ def build_parser() -> argparse.ArgumentParser:
         type=_parse_csv_int_values,
         help="Only process comma-separated match indices from boundaries.",
     )
-    subparsers.add_parser("exporter", help="Run the exporter worker.")
+    exporter = subparsers.add_parser("exporter", help="Run the exporter worker.")
+    exporter.add_argument(
+        "--session-id",
+        help="Only export match boundaries for one session id.",
+    )
+    exporter.add_argument(
+        "--session-ids",
+        help="Only export match boundaries for comma-separated session ids.",
+    )
+    exporter.add_argument(
+        "--match-index",
+        type=_parse_positive_int,
+        help="Only export one match index from boundaries.",
+    )
+    exporter.add_argument(
+        "--match-indices",
+        type=_parse_csv_int_values,
+        help="Only export comma-separated match indices from boundaries.",
+    )
+    exporter.add_argument(
+        "--force-reprocess",
+        action="store_true",
+        help="Re-export even when exporter state and export assets already exist.",
+    )
     subparsers.add_parser("copywriter", help="Run the title/copy generation worker.")
 
     return parser
@@ -451,6 +517,31 @@ def main() -> int:
 
     if args.command == "recorder":
         RecorderService(settings).run()
+        return 0
+
+    if args.command == "repair-recording-assets":
+        result = RecordingAssetRepairService(settings).run(
+            min_age_seconds=args.min_age_seconds,
+        )
+        print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "record-rooms":
+        room_indices: list[int] | None = None
+        if args.room_index is not None:
+            room_indices = [args.room_index]
+        elif args.room_indices is not None:
+            room_indices = args.room_indices
+        try:
+            result = SelectedRecordingService(settings).run(
+                room_indices=room_indices,
+                all_live=args.all_live,
+                force_ffmpeg=not args.placeholder,
+                max_concurrent_jobs=args.max_concurrent_jobs,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+        print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "recovery":
@@ -599,7 +690,31 @@ def main() -> int:
         return 0
 
     if args.command == "exporter":
-        ExporterService(settings).run()
+        export_session_ids: set[str] | None = None
+        if args.session_id or args.session_ids:
+            export_session_ids = set()
+            if args.session_id:
+                export_session_ids.add(args.session_id)
+            if args.session_ids:
+                export_session_ids.update(_parse_csv_values(args.session_ids))
+            if not export_session_ids:
+                export_session_ids = None
+
+        export_match_indices: set[int] | None = None
+        if args.match_index is not None or args.match_indices:
+            export_match_indices = set()
+            if args.match_index is not None:
+                export_match_indices.add(args.match_index)
+            if args.match_indices:
+                export_match_indices.update(args.match_indices)
+            if not export_match_indices:
+                export_match_indices = None
+
+        ExporterService(settings).run(
+            session_ids=export_session_ids,
+            match_indices=export_match_indices,
+            force_reprocess=args.force_reprocess,
+        )
         return 0
 
     if args.command == "copywriter":

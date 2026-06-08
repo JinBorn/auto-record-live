@@ -10,6 +10,7 @@ from arl.copywriter.models import CopywriterStateFile
 from arl.exporter.models import ExporterAuditEvent, ExporterStateFile
 from arl.orchestrator.models import OrchestratorStateFile, RecordingJobStatus
 from arl.orchestrator.state_store import load_orchestrator_state
+from arl.recorder.asset_repair import RecordingAssetRepairService, UnregisteredRecording
 from arl.recorder.models import RecorderAuditEvent, RecorderStateFile
 from arl.recovery.service import RecoveryService
 from arl.shared.contracts import CopyAsset, ExportAsset, MatchBoundary, RecordingAsset, SubtitleAsset
@@ -44,6 +45,9 @@ class StatusService:
             self.settings.orchestrator.recorder_event_log_path,
             RecorderAuditEvent,
         )
+        unregistered_recordings = RecordingAssetRepairService(
+            self.settings
+        ).find_unregistered()
         subtitle_events = load_models(
             self.temp_dir / "subtitles-events.jsonl",
             SubtitleAuditEvent,
@@ -79,6 +83,15 @@ class StatusService:
             for event in exporter_events
             if event.event_type == "ffmpeg_export_batch_aborted"
         ]
+        exporter_fallback_events = self._unresolved_exporter_fallback_events(
+            exporter_fallback_events,
+            export_assets,
+        )
+        exporter_batch_aborted_events = self._unresolved_exporter_batch_aborted_events(
+            exporter_batch_aborted_events,
+            boundaries,
+            export_assets,
+        )
         failed_jobs = [
             job
             for job in orchestrator_state.recording_jobs
@@ -102,6 +115,7 @@ class StatusService:
             missing_copies=missing_copies,
             recorder_failure_events=recorder_failure_events,
             bilibili_stream_url_events=bilibili_stream_url_events,
+            unregistered_recordings=unregistered_recordings,
         )
         action_required = bool(action_required_reasons)
         degraded = bool(degraded_reasons)
@@ -144,6 +158,10 @@ class StatusService:
                 "missing_subtitles": missing_subtitles,
                 "missing_exports": missing_exports,
                 "missing_copies": missing_copies,
+                "unregistered_recordings": len(unregistered_recordings),
+                "unregistered_recording_paths": [
+                    str(item.path) for item in unregistered_recordings[:5]
+                ],
             },
             "subtitles": {
                 "processed_matches": len(subtitle_state.processed_match_keys),
@@ -240,6 +258,68 @@ class StatusService:
             for boundary in boundaries
             if (boundary.session_id, boundary.match_index) not in available
         )
+
+    def _unresolved_exporter_fallback_events(
+        self,
+        fallback_events: list[ExporterAuditEvent],
+        export_assets: list[ExportAsset],
+    ) -> list[ExporterAuditEvent]:
+        media_export_times = self._present_media_export_times(export_assets)
+        unresolved: list[ExporterAuditEvent] = []
+        for event in fallback_events:
+            if event.match_index is None:
+                unresolved.append(event)
+                continue
+            resolved_at = media_export_times.get((event.session_id, event.match_index))
+            if resolved_at is not None and resolved_at >= event.created_at:
+                continue
+            unresolved.append(event)
+        return unresolved
+
+    def _unresolved_exporter_batch_aborted_events(
+        self,
+        batch_events: list[ExporterAuditEvent],
+        boundaries: list[MatchBoundary],
+        export_assets: list[ExportAsset],
+    ) -> list[ExporterAuditEvent]:
+        media_export_times = self._present_media_export_times(export_assets)
+        boundaries_by_session: dict[str, list[MatchBoundary]] = {}
+        for boundary in boundaries:
+            boundaries_by_session.setdefault(boundary.session_id, []).append(boundary)
+
+        unresolved: list[ExporterAuditEvent] = []
+        for event in batch_events:
+            session_boundaries = boundaries_by_session.get(event.session_id, [])
+            if not session_boundaries:
+                unresolved.append(event)
+                continue
+            if all(
+                (
+                    media_export_times.get((boundary.session_id, boundary.match_index))
+                    is not None
+                    and media_export_times[(boundary.session_id, boundary.match_index)]
+                    >= event.created_at
+                )
+                for boundary in session_boundaries
+            ):
+                continue
+            unresolved.append(event)
+        return unresolved
+
+    def _present_media_export_times(
+        self,
+        export_assets: list[ExportAsset],
+    ) -> dict[tuple[str, int], datetime]:
+        times: dict[tuple[str, int], datetime] = {}
+        for asset in export_assets:
+            path = Path(asset.path)
+            if path.suffix.lower() != ".mp4" or not path.exists():
+                continue
+            key = (asset.session_id, asset.match_index)
+            current = times.get(key)
+            if current is None or asset.created_at > current:
+                times[key] = asset.created_at
+        return times
 
     def _subtitle_fallback_reasons(
         self,
@@ -374,6 +454,7 @@ class StatusService:
         missing_copies: int,
         recorder_failure_events: list[RecorderAuditEvent],
         bilibili_stream_url_events: list[RecorderAuditEvent],
+        unregistered_recordings: list[UnregisteredRecording],
     ) -> list[dict[str, object]]:
         reasons: list[dict[str, object]] = []
         if bilibili_stream_url_events:
@@ -416,6 +497,16 @@ class StatusService:
             reasons.append({"code": "missing_exports", "count": missing_exports})
         if missing_copies > 0:
             reasons.append({"code": "missing_copies", "count": missing_copies})
+        if unregistered_recordings:
+            reasons.append(
+                {
+                    "code": "unregistered_recordings",
+                    "count": len(unregistered_recordings),
+                    "paths": self._sample_strings(
+                        str(item.path) for item in unregistered_recordings
+                    ),
+                }
+            )
         if recorder_failure_events:
             reasons.append(
                 {

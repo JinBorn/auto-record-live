@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -11,7 +12,7 @@ from arl.config import (
     StorageSettings,
 )
 from arl.copywriter.models import CopywriterStateFile
-from arl.exporter.models import ExporterStateFile
+from arl.exporter.models import ExporterAuditEvent, ExporterStateFile
 from arl.orchestrator.models import (
     OrchestratorStateFile,
     RecordingJobRecord,
@@ -283,6 +284,126 @@ class StatusServiceTest(unittest.TestCase):
                     "count": 1,
                     "reasons": {"refresh_failed:stream_url_missing": 1},
                     "job_ids": ["job-bili"],
+                }
+            ],
+        )
+
+    def test_status_ignores_exporter_failures_resolved_by_later_mp4(self) -> None:
+        session_id = "session-exporter-resolved"
+        subtitle_path = self._write_file("processed", session_id, "match-01.srt")
+        export_path = self._write_file("exports", "bilibili", f"{session_id}_match01.mp4")
+        copy_path = self._write_file("processed", session_id, "match-01-copy.json")
+        failed_at = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+        resolved_at = datetime(2026, 6, 1, 12, 5, tzinfo=timezone.utc)
+        append_model(
+            self.temp_root / "match-boundaries.jsonl",
+            MatchBoundary(
+                session_id=session_id,
+                match_index=1,
+                started_at_seconds=0.0,
+                ended_at_seconds=60.0,
+                confidence=0.8,
+            ),
+        )
+        append_model(
+            self.temp_root / "subtitle-assets.jsonl",
+            SubtitleAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(subtitle_path),
+                format="srt",
+            ),
+        )
+        append_model(
+            self.temp_root / "export-assets.jsonl",
+            ExportAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(export_path),
+                subtitle_path=str(subtitle_path),
+                created_at=resolved_at,
+            ),
+        )
+        append_model(
+            self.temp_root / "copy-assets.jsonl",
+            CopyAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(copy_path),
+                title="fixture title",
+                description="fixture description",
+                tags=["fixture"],
+                subtitle_path=str(subtitle_path),
+                export_path=str(export_path),
+                created_at=resolved_at,
+            ),
+        )
+        append_model(
+            self.temp_root / "exporter-events.jsonl",
+            ExporterAuditEvent(
+                event_type="ffmpeg_export_fallback_placeholder",
+                session_id=session_id,
+                match_index=1,
+                decision="fallback_placeholder",
+                failure_category="ffmpeg_process_error_retryable",
+                is_retryable=True,
+                reason_code="ffmpeg_process_error",
+                reason_detail="timed out after 120s",
+                reason="timed out after 120s",
+                created_at=failed_at,
+            ),
+        )
+        append_model(
+            self.temp_root / "exporter-events.jsonl",
+            ExporterAuditEvent(
+                event_type="ffmpeg_export_batch_aborted",
+                session_id=session_id,
+                match_index=1,
+                decision="batch_aborted",
+                failure_category="ffmpeg_process_error_retryable",
+                is_retryable=True,
+                reason_code="ffmpeg_process_error",
+                reason_detail="timed out after 120s",
+                reason="timed out after 120s",
+                consecutive_fallbacks=3,
+                remaining_matches=0,
+                created_at=failed_at,
+            ),
+        )
+
+        status = StatusService(self.settings).build()
+
+        self.assertEqual(status["summary"]["health"], "ok")
+        self.assertEqual(status["exporter"]["fallback_events"], 0)
+        self.assertEqual(status["exporter"]["batch_aborted_events"], 0)
+        self.assertEqual(status["summary"]["degraded_reasons"], [])
+        self.assertEqual(status["summary"]["action_required_reasons"], [])
+
+    def test_unregistered_raw_recording_is_degraded_diagnostic(self) -> None:
+        session_id = "session-20260606101149-9fe32958"
+        recording_path = (
+            self.settings.storage.raw_dir / session_id / "recording-source.mp4"
+        )
+        recording_path.parent.mkdir(parents=True, exist_ok=True)
+        recording_path.write_bytes(b"fake mp4 bytes")
+        old_time = 1_000_000_000
+        os.utime(recording_path, (old_time, old_time))
+
+        status = StatusService(self.settings).build()
+
+        self.assertEqual(status["summary"]["health"], "degraded")
+        self.assertEqual(status["postprocess"]["unregistered_recordings"], 1)
+        self.assertEqual(
+            status["postprocess"]["unregistered_recording_paths"],
+            [str(recording_path)],
+        )
+        self.assertEqual(
+            status["summary"]["degraded_reasons"],
+            [
+                {
+                    "code": "unregistered_recordings",
+                    "count": 1,
+                    "paths": [str(recording_path)],
                 }
             ],
         )

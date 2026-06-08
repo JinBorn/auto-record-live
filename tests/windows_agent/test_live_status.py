@@ -69,9 +69,11 @@ class LiveStatusServiceTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["live"], 1)
         self.assertEqual(payload["summary"]["offline"], 1)
         self.assertEqual(payload["summary"]["error"], 0)
+        self.assertEqual(payload["rooms"][0]["index"], 1)
         self.assertEqual(payload["rooms"][0]["platform"], "bilibili")
         self.assertEqual(payload["rooms"][0]["state"], "live")
         self.assertEqual(payload["rooms"][0]["source_type"], "direct_stream")
+        self.assertEqual(payload["rooms"][1]["index"], 2)
         self.assertEqual(payload["rooms"][1]["state"], "offline")
 
     def test_run_live_status_isolates_probe_errors(self) -> None:
@@ -80,6 +82,7 @@ class LiveStatusServiceTests(unittest.TestCase):
 
         self.assertEqual(payload["summary"]["total"], 1)
         self.assertEqual(payload["summary"]["error"], 1)
+        self.assertEqual(payload["rooms"][0]["index"], 1)
         self.assertEqual(payload["rooms"][0]["platform"], "crashing")
         self.assertEqual(payload["rooms"][0]["state"], "error")
         self.assertEqual(payload["rooms"][0]["room_url"], "https://live.example.com/crash")

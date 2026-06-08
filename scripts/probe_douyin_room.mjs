@@ -258,7 +258,10 @@ async function detectRoom(page, options = {}) {
   const title = await page.title();
   const html = await page.content();
   const observedUrls = Array.isArray(options.observedUrls) ? options.observedUrls : [];
-  const streamUrl = pickPreferredStreamUrl([html, ...observedUrls]);
+  const payloadUrls = Array.isArray(options.payloadUrls) ? options.payloadUrls : [];
+  const observedStreamUrl = pickPreferredStreamUrl(observedUrls);
+  const pageStreamUrl = pickPreferredStreamUrl([html, ...payloadUrls]);
+  const streamUrl = observedStreamUrl || pageStreamUrl;
 
   const liveMarkers = [
     '"status":2',
@@ -266,16 +269,6 @@ async function detectRoom(page, options = {}) {
     '"is_live":true',
     "直播中",
   ];
-  if (liveMarkers.some((marker) => html.includes(marker))) {
-    return buildResult({
-      state: "live",
-      sourceType: streamUrl ? "direct_stream" : "browser_capture",
-      streamUrl,
-      reason: "page_marker_detected",
-      pageTitle: title,
-    });
-  }
-
   const offlineMarkers = [
     '"status":4',
     '"live_status":4',
@@ -290,12 +283,30 @@ async function detectRoom(page, options = {}) {
     });
   }
 
-  if (streamUrl) {
+  if (liveMarkers.some((marker) => html.includes(marker))) {
+    return buildResult({
+      state: "live",
+      sourceType: streamUrl ? "direct_stream" : "browser_capture",
+      streamUrl,
+      reason: "page_marker_detected",
+      pageTitle: title,
+    });
+  }
+
+  if (observedStreamUrl) {
     return buildResult({
       state: "live",
       sourceType: "direct_stream",
-      streamUrl,
+      streamUrl: observedStreamUrl,
       reason: "stream_url_detected",
+      pageTitle: title,
+    });
+  }
+
+  if (pageStreamUrl) {
+    return buildResult({
+      state: "offline",
+      reason: "stream_url_without_live_marker",
       pageTitle: title,
     });
   }
@@ -336,9 +347,15 @@ async function main() {
     }
     const page = browser.pages()[0] || await browser.newPage();
     const observedStreamUrls = new Set();
+    const payloadStreamUrls = new Set();
     const collectObservedStreamUrls = (rawValue) => {
       for (const candidate of extractStreamUrlCandidates(rawValue)) {
         observedStreamUrls.add(candidate);
+      }
+    };
+    const collectPayloadStreamUrls = (rawValue) => {
+      for (const candidate of extractStreamUrlCandidates(rawValue)) {
+        payloadStreamUrls.add(candidate);
       }
     };
 
@@ -354,7 +371,7 @@ async function main() {
 
       void response.text()
         .then((text) => {
-          collectObservedStreamUrls(text);
+          collectPayloadStreamUrls(text);
         })
         .catch(() => {
           // best-effort probe only; ignore body read errors
@@ -368,6 +385,7 @@ async function main() {
     await page.waitForTimeout(2000);
     const result = await detectRoom(page, {
       observedUrls: Array.from(observedStreamUrls),
+      payloadUrls: Array.from(payloadStreamUrls),
     });
     console.log(JSON.stringify(result));
   } catch (error) {

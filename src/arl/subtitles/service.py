@@ -117,13 +117,26 @@ class SubtitleService:
         latest_recording_path_by_session: dict[str, str] = {}
         for recording_asset in recording_assets:
             latest_recording_path_by_session[recording_asset.session_id] = recording_asset.path
+        subtitle_assets = load_models(self.assets_path, SubtitleAsset)
+        existing_output_keys = {
+            self._key(asset.session_id, asset.match_index)
+            for asset in subtitle_assets
+            if Path(asset.path).exists()
+        }
         state = self._load_state()
+        processed_keys = set(state.processed_match_keys)
 
         processed = 0
         for boundary in filtered_boundaries:
             key = self._key(boundary.session_id, boundary.match_index)
-            if key in state.processed_match_keys:
+            if key in processed_keys and key in existing_output_keys:
                 continue
+            if key in processed_keys:
+                log(
+                    "subtitles",
+                    "reprocessing missing subtitle output "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index}",
+                )
 
             recording_path = latest_recording_path_by_session.get(boundary.session_id)
             subtitle_path, outcome = self._write_subtitle(boundary, recording_path)
@@ -135,7 +148,10 @@ class SubtitleService:
             )
             append_model(self.assets_path, subtitle_asset)
             self._append_subtitle_audit(boundary, outcome)
-            state.processed_match_keys.append(key)
+            if key not in processed_keys:
+                state.processed_match_keys.append(key)
+                processed_keys.add(key)
+            existing_output_keys.add(key)
             processed += 1
             log(
                 "subtitles",
@@ -308,10 +324,13 @@ class SubtitleService:
         source_path: Path,
     ) -> TranscribeOutcome:
         try:
+            boundary_start = boundary.started_at_seconds
+            boundary_end = boundary.ended_at_seconds
             segments, info = model.transcribe(
                 str(source_path),
                 language=self.settings.subtitles.language or None,
                 word_timestamps=True,
+                clip_timestamps=[boundary_start, boundary_end],
             )
         except Exception as exc:
             log(
@@ -367,8 +386,6 @@ class SubtitleService:
                 ),
             )
 
-        boundary_start = boundary.started_at_seconds
-        boundary_end = boundary.ended_at_seconds
         entries: list[tuple[float, float, str]] = []
         try:
             for segment in segments:

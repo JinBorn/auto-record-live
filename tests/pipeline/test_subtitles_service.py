@@ -63,6 +63,7 @@ class _WhisperModelStub:
         self.lazy_raises = lazy_raises
         self.segments = segments
         self.transcribe_calls = 0
+        self.transcribe_kwargs: list[dict[str, object]] = []
 
     def transcribe(
         self,
@@ -70,8 +71,17 @@ class _WhisperModelStub:
         language: str | None,
         *,
         word_timestamps: bool = False,
+        clip_timestamps: list[float] | None = None,
     ):
         self.transcribe_calls += 1
+        self.transcribe_kwargs.append(
+            {
+                "path": path,
+                "language": language,
+                "word_timestamps": word_timestamps,
+                "clip_timestamps": clip_timestamps,
+            }
+        )
         if self.raises is not None:
             raise self.raises
         if self.lazy_raises is not None:
@@ -287,6 +297,44 @@ class SubtitleServiceTest(unittest.TestCase):
             ),
         )
         return recording_path
+
+    def test_transcribe_uses_boundary_clip_timestamps(self) -> None:
+        session_id = "session-subtitle-clipped-asr"
+        append_model(
+            self.boundaries_path,
+            MatchBoundary(
+                session_id=session_id,
+                match_index=1,
+                started_at_seconds=10.0,
+                ended_at_seconds=40.0,
+                confidence=0.9,
+            ),
+        )
+        recording_path = self.raw_root / session_id / "recording.mp4"
+        recording_path.parent.mkdir(parents=True, exist_ok=True)
+        recording_path.write_text("dummy media placeholder", encoding="utf-8")
+        append_model(
+            self.recording_assets_path,
+            RecordingAsset(
+                session_id=session_id,
+                source_type=SourceType.BROWSER_CAPTURE,
+                path=str(recording_path),
+                started_at=datetime(2026, 4, 26, 9, 0, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 4, 26, 9, 30, tzinfo=timezone.utc),
+            ),
+        )
+        model = _WhisperModelStub(
+            language_probability=0.95,
+            segments=[_Segment(10.0, 11.0, "clipped subtitle")],
+        )
+        service = SubtitleService(self.settings)
+        service._load_whisper_model = lambda: model
+
+        service.run()
+
+        self.assertEqual(model.transcribe_calls, 1)
+        self.assertEqual(model.transcribe_kwargs[0]["clip_timestamps"], [10.0, 40.0])
+        self.assertTrue(model.transcribe_kwargs[0]["word_timestamps"])
 
     def test_low_language_probability_falls_back_to_placeholder(self) -> None:
         self._seed_single_media_boundary()

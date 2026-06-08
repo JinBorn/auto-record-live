@@ -29,6 +29,27 @@ class _ScriptedProbe(PlatformProbe):
         return self._snapshot
 
 
+class _SelectedRecordingResultStub:
+    def as_dict(self) -> dict:
+        return {
+            "selected_rooms": [{"index": 1}, {"index": 3}],
+            "state_dir": "data/tmp/selected-recordings/test",
+            "sessions": 2,
+            "recording_jobs_by_status": {"stopped": 2},
+        }
+
+
+class _SelectedRecordingServiceStub:
+    calls: list[dict] = []
+
+    def __init__(self, settings) -> None:
+        self.settings = settings
+
+    def run(self, **kwargs) -> _SelectedRecordingResultStub:
+        self.calls.append(kwargs)
+        return _SelectedRecordingResultStub()
+
+
 def _live_snapshot(platform: str) -> AgentSnapshot:
     return AgentSnapshot(
         state=LiveState.LIVE,
@@ -72,6 +93,7 @@ class LiveStatusCliRunTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertIn("platform=bilibili", output)
+        self.assertIn("index=1", output)
         self.assertIn("state=live", output)
         self.assertIn("streamer_name=bilibili-streamer", output)
         self.assertIn("room_url=https://live.example.com/bilibili", output)
@@ -87,8 +109,41 @@ class LiveStatusCliRunTest(unittest.TestCase):
         payload = json.loads(output)
         self.assertEqual(payload["summary"]["total"], 1)
         self.assertEqual(payload["summary"]["live"], 1)
+        self.assertEqual(payload["rooms"][0]["index"], 1)
         self.assertEqual(payload["rooms"][0]["platform"], "douyin")
         self.assertEqual(payload["rooms"][0]["state"], "live")
+
+    def test_record_rooms_command_invokes_selected_recording_service(self) -> None:
+        argv = [
+            sys.argv[0],
+            "record-rooms",
+            "--room-indices",
+            "1,3",
+            "--max-concurrent-jobs",
+            "2",
+        ]
+        captured = io.StringIO()
+        _SelectedRecordingServiceStub.calls = []
+        with patch(
+            "arl.cli.SelectedRecordingService",
+            _SelectedRecordingServiceStub,
+        ), patch.object(sys, "argv", argv), redirect_stdout(captured):
+            exit_code = main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            _SelectedRecordingServiceStub.calls,
+            [
+                {
+                    "room_indices": [1, 3],
+                    "all_live": False,
+                    "force_ffmpeg": True,
+                    "max_concurrent_jobs": 2,
+                }
+            ],
+        )
+        payload = json.loads(captured.getvalue())
+        self.assertEqual(payload["selected_rooms"], [{"index": 1}, {"index": 3}])
 
 
 if __name__ == "__main__":

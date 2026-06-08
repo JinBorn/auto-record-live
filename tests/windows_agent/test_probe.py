@@ -249,6 +249,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
             status_code=200,
             text=(
                 '<html><script>'
+                '"live_status":2,'
                 '"hls_pull_url":"https:\\/\\/pull.example.com\\/live\\/abc_hd.m3u8?token=1&sign=hls"'
                 "</script></html>"
             ),
@@ -261,7 +262,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
 
         self.assertEqual(snapshot.state, LiveState.LIVE)
         self.assertEqual(snapshot.source_type, SourceType.DIRECT_STREAM)
-        self.assertEqual(snapshot.reason, "stream_url_detected_http")
+        self.assertEqual(snapshot.reason, "page_marker_detected")
         self.assertEqual(snapshot.stream_url, "https://pull.example.com/live/abc_hd.m3u8?token=1&sign=hls")
 
     def test_detect_http_live_marker_uses_direct_stream_when_available(self) -> None:
@@ -270,7 +271,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
         http_response = SimpleNamespace(
             status_code=200,
             text=(
-                '<html><body>鐩存挱涓?script>'
+                '<html><body><script>"live_status":2,'
                 '"stream_url":"https%3A%2F%2Fpull.example.com%2Flive%2Froom_hd.m3u8%3Ftoken%3D1%26sign%3Dxyz"'
                 "</script></body></html>"
             ),
@@ -282,7 +283,7 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
         self.assertEqual(snapshot.source_type, SourceType.DIRECT_STREAM)
         self.assertEqual(snapshot.stream_url, "https://pull.example.com/live/room_hd.m3u8?token=1&sign=xyz")
 
-    def test_detect_http_percent_encoded_direct_url_without_markers_is_still_live(self) -> None:
+    def test_detect_http_percent_encoded_direct_url_without_markers_stays_offline(self) -> None:
         settings = self.settings.model_copy(update={"use_playwright_probe": False})
         probe = DouyinRoomProbe(settings)
         http_response = SimpleNamespace(
@@ -296,15 +297,12 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
         with patch("arl.windows_agent.probe.httpx.get", return_value=http_response):
             snapshot = probe.detect()
 
-        self.assertEqual(snapshot.state, LiveState.LIVE)
-        self.assertEqual(snapshot.source_type, SourceType.DIRECT_STREAM)
-        self.assertEqual(snapshot.reason, "stream_url_detected_http")
-        self.assertEqual(
-            snapshot.stream_url,
-            "https://pull.example.com/live/encoded-room_hd.m3u8?token=1&sign=abc",
-        )
+        self.assertEqual(snapshot.state, LiveState.OFFLINE)
+        self.assertIsNone(snapshot.source_type)
+        self.assertIsNone(snapshot.stream_url)
+        self.assertEqual(snapshot.reason, "stream_url_without_live_marker")
 
-    def test_detect_http_multilayer_percent_encoded_and_x_escaped_stream_url(self) -> None:
+    def test_detect_http_multilayer_percent_encoded_and_x_escaped_stream_url_without_marker_stays_offline(self) -> None:
         settings = self.settings.model_copy(update={"use_playwright_probe": False})
         probe = DouyinRoomProbe(settings)
         http_response = SimpleNamespace(
@@ -318,13 +316,29 @@ class DouyinRoomProbePlaywrightTests(unittest.TestCase):
         with patch("arl.windows_agent.probe.httpx.get", return_value=http_response):
             snapshot = probe.detect()
 
-        self.assertEqual(snapshot.state, LiveState.LIVE)
-        self.assertEqual(snapshot.source_type, SourceType.DIRECT_STREAM)
-        self.assertEqual(snapshot.reason, "stream_url_detected_http")
-        self.assertEqual(
-            snapshot.stream_url,
-            "https://pull.example.com/live/deep-room_hd.m3u8?token=1&sign=abc",
+        self.assertEqual(snapshot.state, LiveState.OFFLINE)
+        self.assertIsNone(snapshot.source_type)
+        self.assertIsNone(snapshot.stream_url)
+        self.assertEqual(snapshot.reason, "stream_url_without_live_marker")
+
+    def test_detect_http_offline_marker_wins_over_stream_url(self) -> None:
+        settings = self.settings.model_copy(update={"use_playwright_probe": False})
+        probe = DouyinRoomProbe(settings)
+        http_response = SimpleNamespace(
+            status_code=200,
+            text=(
+                '<html><body>暂未开播<script>'
+                '"stream_url":"https%3A%2F%2Fpull.example.com%2Flive%2Froom_hd.m3u8%3Ftoken%3D1%26sign%3Dabc"'
+                "</script></body></html>"
+            ),
         )
+        with patch("arl.windows_agent.probe.httpx.get", return_value=http_response):
+            snapshot = probe.detect()
+
+        self.assertEqual(snapshot.state, LiveState.OFFLINE)
+        self.assertIsNone(snapshot.source_type)
+        self.assertIsNone(snapshot.stream_url)
+        self.assertEqual(snapshot.reason, "page_marker_detected")
 
     def test_detect_http_ignores_static_assets_without_live_markers(self) -> None:
         settings = self.settings.model_copy(update={"use_playwright_probe": False})
@@ -415,7 +429,7 @@ class DouyinRoomProbeQualityGateTests(unittest.TestCase):
         http_response = SimpleNamespace(
             status_code=200,
             text=(
-                '<html><body>閻╁瓨鎸辨稉?script>'
+                '<html><body><script>"live_status":2,'
                 '"stream_url":"https%3A%2F%2Fpull.example.com%2Flive%2Froom_hd.m3u8%3Ftoken%3D1%26sign%3Dxyz"'
                 "</script></body></html>"
             ),
@@ -431,7 +445,7 @@ class DouyinRoomProbeQualityGateTests(unittest.TestCase):
         http_response = SimpleNamespace(
             status_code=200,
             text=(
-                '<html><body>閻╁瓨鎸辨稉?script>'
+                '<html><body><script>"live_status":2,'
                 '"stream_url":"https%3A%2F%2Fpull.example.com%2Flive%2Froom_uhd.m3u8%3Ftoken%3D1%26sign%3Dxyz"'
                 "</script></body></html>"
             ),
@@ -447,7 +461,7 @@ class DouyinRoomProbeQualityGateTests(unittest.TestCase):
         http_response = SimpleNamespace(
             status_code=200,
             text=(
-                '<html><body><script>'
+                '<html><body><script>"live_status":2,'
                 '"stream_url":"https%3A%2F%2Fpull.example.com%2Flive%2Froom.m3u8%3Ftoken%3D1%26sign%3Dxyz"'
                 "</script></body></html>"
             ),

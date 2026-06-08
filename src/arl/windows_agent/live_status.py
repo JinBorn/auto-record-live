@@ -10,6 +10,7 @@ from arl.windows_agent.platform_probe import PlatformProbe
 
 @dataclass(frozen=True)
 class LiveStatusRow:
+    index: int
     platform: str
     state: str
     streamer_name: str
@@ -20,8 +21,9 @@ class LiveStatusRow:
     detected_at: str | None
 
     @classmethod
-    def from_snapshot(cls, snapshot: AgentSnapshot) -> "LiveStatusRow":
+    def from_snapshot(cls, snapshot: AgentSnapshot, *, index: int) -> "LiveStatusRow":
         return cls(
+            index=index,
             platform=snapshot.platform,
             state=snapshot.state.value,
             streamer_name=snapshot.streamer_name,
@@ -33,11 +35,18 @@ class LiveStatusRow:
         )
 
     @classmethod
-    def from_probe_error(cls, probe: PlatformProbe, exc: Exception) -> "LiveStatusRow":
+    def from_probe_error(
+        cls,
+        probe: PlatformProbe,
+        exc: Exception,
+        *,
+        index: int,
+    ) -> "LiveStatusRow":
         settings = getattr(probe, "settings", None)
         room_url = str(getattr(settings, "room_url", "") or "")
         streamer_name = str(getattr(settings, "streamer_name", "") or "")
         return cls(
+            index=index,
             platform=probe.platform_name,
             state="error",
             streamer_name=streamer_name,
@@ -50,6 +59,7 @@ class LiveStatusRow:
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "index": self.index,
             "platform": self.platform,
             "state": self.state,
             "streamer_name": self.streamer_name,
@@ -81,13 +91,13 @@ class LiveStatusReport:
 
 def run_live_status(probes: list[PlatformProbe]) -> LiveStatusReport:
     rows: list[LiveStatusRow] = []
-    for probe in probes:
+    for index, probe in enumerate(probes, start=1):
         try:
             snapshot = probe.detect()
         except Exception as exc:  # noqa: BLE001 - per-room probe isolation
-            rows.append(LiveStatusRow.from_probe_error(probe, exc))
+            rows.append(LiveStatusRow.from_probe_error(probe, exc, index=index))
             continue
-        rows.append(LiveStatusRow.from_snapshot(snapshot))
+        rows.append(LiveStatusRow.from_snapshot(snapshot, index=index))
     return LiveStatusReport(
         rows=rows,
         generated_at=datetime.now(timezone.utc).isoformat(),

@@ -26,12 +26,24 @@ class CopywriterService:
         exports = load_models(self.export_assets_path, ExportAsset)
         export_map = {(item.session_id, item.match_index): item for item in exports}
         state = self._load_state()
+        processed_keys = set(state.processed_match_keys)
+        existing_output_keys = {
+            self._key(asset.session_id, asset.match_index)
+            for asset in load_models(self.copy_assets_path, CopyAsset)
+            if Path(asset.path).exists()
+        }
 
         processed = 0
         for subtitle in subtitles:
             key = self._key(subtitle.session_id, subtitle.match_index)
-            if key in state.processed_match_keys:
+            if key in processed_keys and key in existing_output_keys:
                 continue
+            if key in processed_keys:
+                log(
+                    "copywriter",
+                    "reprocessing missing copy output "
+                    f"session_id={subtitle.session_id} match_index={subtitle.match_index}",
+                )
 
             subtitle_path = Path(subtitle.path)
             if not subtitle_path.exists():
@@ -59,7 +71,10 @@ class CopywriterService:
                     created_at=draft.created_at,
                 ),
             )
-            state.processed_match_keys.append(key)
+            if key not in processed_keys:
+                state.processed_match_keys.append(key)
+                processed_keys.add(key)
+            existing_output_keys.add(key)
             processed += 1
             log(
                 "copywriter",

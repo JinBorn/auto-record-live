@@ -130,11 +130,12 @@ class RecordingJobRecord(BaseModel):
     - Douyin: selected stream URL must satisfy `DouyinSettings.min_quality_tier` (default `uhd`, i.e. 1080p-grade); lower tiers (`hd/sd/md/ld`) and tier-unknown URLs are treated as unavailable (`state=offline` with quality reason)
     - Bilibili: selected playinfo candidate must satisfy `BilibiliSettings.min_stream_qn` (default `400`, i.e. 1080p baseline); candidates below threshold are treated as unavailable (`state=offline` with quality reason)
     - Bilibili bitrate gate (when metadata exists): if codec payload exposes `bandwidth`/`bitrate`/`bit_rate`, candidate must satisfy `BilibiliSettings.min_stream_bitrate_kbps` (default `4500`) or be treated as unavailable
-  - direct-stream discovery may combine page HTML extraction and observed browser network URLs; when either channel yields a valid stream URL and no explicit offline marker is present, producer may emit `state=live` with `reason=stream_url_detected`
+  - direct-stream discovery may combine page HTML extraction, live-marker detection, and observed browser network URLs. Douyin must treat explicit offline markers as higher priority than stream URLs. Page HTML / JSON payload stream URLs alone are not sufficient live evidence because offline rooms can retain stale signed URLs; they may only enrich a snapshot after an explicit live marker is found.
+  - Douyin Playwright probing may promote unknown page state to `state=live` with `reason=stream_url_detected` only when the valid stream URL came from an actual observed browser request/response URL. Payload body URLs without a live marker must emit `state=offline` with `reason=stream_url_without_live_marker`.
   - direct-stream candidate normalization should decode escaped and percent-encoded URL forms (for example `https%3A%2F%2F...m3u8`) before stream-url validation
   - normalization should also tolerate multi-layer percent-encoded payloads (for example `https%253A%252F%252F...`) and `\xNN`-escaped URL fragments that appear in script payloads
   - if Playwright probing fails (`playwright_script_missing`, `playwright_exec_error:*`, `playwright_error:*`), windows agent should fall back to HTTP page fetch detection instead of exiting early
-  - HTTP fallback detection should extract stream URLs from escaped/encoded payload fields (`hls_pull_url`, `stream_url`, etc.); when a valid stream URL is found, producer may emit `state=live` with `source_type=direct_stream` and `reason=stream_url_detected_http`
+  - HTTP fallback detection should extract stream URLs from escaped/encoded payload fields (`hls_pull_url`, `stream_url`, etc.) for direct-stream enrichment only when a reliable live marker is present. If the HTTP page contains a valid stream URL but no live marker, emit `state=offline` with `reason=stream_url_without_live_marker`.
   - malformed probe payloads must be normalized before emitting:
     - unknown `sourceType` with valid `streamUrl` → `source_type=direct_stream`
     - `sourceType=direct_stream` without valid `streamUrl` → `source_type=browser_capture`
@@ -190,6 +191,12 @@ class RecordingJobRecord(BaseModel):
     - `recording_job_recovery_manual_required` for manual intervention path
   - recognized recorder transition events are applied monotonically per job by `created_at`; stale or duplicated timestamps must be ignored
   - unknown recorder event types must not advance monotonic per-job timestamps
+- Operator-selected recording CLI:
+  - `arl live-status` returns one stable 1-based `index` per configured probe in `Settings.platforms` order. Text output includes `index=N`; JSON output includes the same field on each `rooms[]` row.
+  - `arl record-rooms --room-index N`, `--room-indices N,M`, and `--all-live` must filter `Settings.platforms` for that one-shot run instead of requiring the operator to edit `.env`.
+  - Selected recording runs must use isolated agent/orchestrator state and event files under `data/tmp/selected-recordings/<run-id>/` so the recorder only sees jobs created for the selected rooms. Shared manifests such as `recording-assets.jsonl` remain in the normal temp directory so downstream postprocess stages can consume the resulting recordings.
+  - Exporter platform lookup must read both the normal orchestrator state and selected-run state files under `data/tmp/selected-recordings/*/orchestrator-state.json`; otherwise selected Bilibili recordings export to `data/exports/unknown`.
+  - `record-rooms` defaults to real ffmpeg recording (`recording.enable_ffmpeg=True`) because the command is an explicit recording action; a placeholder/testing mode must be opt-in.
 
 ### 4. Validation & Error Matrix
 
@@ -280,10 +287,11 @@ class RecordingJobRecord(BaseModel):
   - Assert percent-encoded stream URL candidates are decoded and recognized as direct-stream URLs.
   - Assert multi-layer percent-encoded (`%25`-wrapped) + `\xNN` escaped stream URL candidates are decoded and recognized as direct-stream URLs.
   - Assert static asset URLs are ignored.
-  - Assert observed network URL candidates can promote unknown page state to `state=live` with `reason=stream_url_detected`.
+  - Assert observed browser request/response URL candidates can promote unknown page state to `state=live` with `reason=stream_url_detected`.
+  - Assert page/payload stream URL candidates without a live marker stay `state=offline` with `reason=stream_url_without_live_marker`.
 - Unit test: windows-agent probe fallback path.
   - Assert `detect()` falls back to HTTP detection when Playwright returns probe-error reasons.
-  - Assert HTTP fallback can decode escaped/encoded stream URL values into `source_type=direct_stream`.
+  - Assert HTTP fallback can decode escaped/encoded stream URL values into `source_type=direct_stream` only when a live marker is present.
 - Unit test: `live_stopped` closes active session and job.
   - Assert `ended_at`, `status`, and `stop_reason` are persisted.
 - Unit test: cursor reset after log truncation.
@@ -501,6 +509,8 @@ class CopyAsset(BaseModel):
   - `arl copywriter`
 - CLI helper signature for post-live unattended processing:
   - `arl postprocess [--once]`
+- CLI helper signature for repairing orphaned local recording files:
+  - `arl repair-recording-assets [--min-age-seconds <seconds>]`
 - CLI helper signature for local operator status:
   - `arl status`
 - CLI helper signature for local long-run maintenance:
@@ -533,8 +543,9 @@ class CopyAsset(BaseModel):
 - CLI `status` contract:
   - command prints one local-only JSON object and must not include cookies, auth headers, raw stream URLs, or transcript text.
   - `summary.health` is `ok`, `degraded`, or `action_required`.
-  - `summary.action_required_reasons` lists stable reason objects for manual-required recorder jobs, failed orchestrator jobs, pending/undispatched/failed recovery actions, and exporter batch aborts.
-  - `summary.degraded_reasons` lists stable reason objects for subtitle fallbacks, exporter fallbacks, missing subtitle/export/copy outputs, and recorder failure audit events.
+  - `summary.action_required_reasons` lists stable reason objects for manual-required recorder jobs, failed orchestrator jobs, pending/undispatched/failed recovery actions, and unresolved exporter batch aborts.
+  - `summary.degraded_reasons` lists stable reason objects for subtitle fallbacks, unresolved exporter fallbacks, missing subtitle/export/copy outputs, unregistered raw recordings, and recorder failure audit events.
+  - exporter fallback and batch-abort audit rows are historical diagnostics after a later existing `.mp4` `ExportAsset` covers the same match/session; `status` must not keep reporting them as current degraded/action-required reasons.
   - reason objects may include bounded local identifiers such as `job_ids` or `session_ids`, but must not include platform stream URLs or secret-bearing media URLs.
 - CLI `stage-hints-semantic` ingestion contract:
   - supports optional `--stage-keywords-path` override; when provided, this CLI value takes precedence over `ARL_STAGE_KEYWORDS_PATH`.
@@ -575,11 +586,20 @@ class CopyAsset(BaseModel):
   - command is single-pass and exits; looping belongs to `scripts/windows-postprocess-loop.ps1`.
   - command runs existing idempotent post-live stages in this order: `stage-hints-semantic`, `segmenter`, `subtitles`, `exporter`, `copywriter`.
   - command must not create a second global processed-state file; it relies on each stage's own idempotency state.
+  - before running stages, command should report completed raw MP4 files under `data/raw/session-*/recording-source.mp4` that are not registered in `recording-assets.jsonl`, with a bounded sample path list and a `repair-recording-assets` hint.
+  - after stages complete, command should print one compact status summary including health, manifest counts, missing subtitle/export/copy counts, and unregistered recording count.
+- CLI `repair-recording-assets` contract:
+  - command scans `data/raw/session-*/recording-source.mp4` and appends `RecordingAsset` rows only for files missing from `recording-assets.jsonl`.
+  - command skips raw MP4 files modified more recently than `--min-age-seconds` to avoid registering an in-progress ffmpeg output.
+  - command requires a positive `ffprobe` duration before appending a repaired asset; zero-duration, unreadable, or unprobeable files are skipped and counted.
+  - repaired assets use `source_type=direct_stream`, `path=<raw mp4 path>`, `session_id=<session directory name>`, `started_at` parsed from `session-YYYYMMDDHHMMSS-*` when possible, and `ended_at=started_at+duration`.
+  - repeated command runs must be idempotent: an already registered `(session_id, path)` pair is not appended again.
 - CLI `status` contract:
   - command is read-only and emits one JSON object to stdout.
   - command summarizes existing local state/audit/manifest files only; it must not probe live rooms, run ffmpeg, mutate state, or append audit rows.
   - output must not include raw stream URLs, cookies, stream headers, full transcripts, or full audit payloads.
   - top-level `summary.health` is one of `ok`, `degraded`, or `action_required`.
+  - `postprocess.unregistered_recordings` and degraded reason `code="unregistered_recordings"` report completed raw MP4 files that are not yet registered in `recording-assets.jsonl`.
 - Stage keyword override contract (`ARL_STAGE_KEYWORDS_PATH`):
   - when configured and file exists, JSON payload may override per-stage keyword lists by keys: `champion_select`, `loading`, `in_game`, `post_game`.
   - project-maintained example: `examples/stage-keywords.example.json`.
@@ -589,6 +609,7 @@ class CopyAsset(BaseModel):
   - precedence rule for commands that accept `--stage-keywords-path`: CLI arg > `ARL_STAGE_KEYWORDS_PATH` > built-in defaults.
 - `SubtitleAsset.format` must be an explicit file format such as `srt` or `ass`, not a provider name.
 - Recorder, segmenter, subtitles, exporter, and copywriter must communicate through typed records and JSONL manifests, not inferred filenames alone.
+- A stage state key is only a valid idempotency skip when the corresponding durable output still exists. If a subtitle/export/copy file or match-boundary manifest row is missing while state says processed, the stage should rebuild that output instead of silently skipping it.
 - If a stage is not yet able to finish its real work, it may emit a stub or no-op result only if the status is explicit and downstream stages can detect it safely.
 - Subtitle generation contract:
   - when `subtitles.provider == "faster-whisper"` and recording input is a transcribable media path, subtitles may be generated from ASR segments within each `MatchBoundary`
@@ -611,6 +632,9 @@ class CopyAsset(BaseModel):
 - Recorder should append structured audit rows for ffmpeg control flow (`ffmpeg_skipped`, `ffmpeg_record_failed`, `ffmpeg_record_succeeded`, `ffmpeg_fallback_placeholder`, `recording_session_retry_budget_exceeded`) and actual quality rejection (`quality_below_actual_resolution`) so retry and quality decisions are observable.
 - Exporter mirrors the same observability discipline through `data/tmp/exporter-events.jsonl` (writer = `ExporterService`; **reader = grep / future recovery tooling only — orchestrator does NOT consume this file**, no state machine transitions depend on it). Registered event types: `ffmpeg_export_failed`, `ffmpeg_export_succeeded`, `ffmpeg_export_fallback_placeholder`, `ffmpeg_export_batch_aborted`. Per-row identity uses `session_id` + `match_index` (no `job_id` because exporter is not job-scoped). `ffmpeg_export_failed`, `ffmpeg_export_fallback_placeholder`, and `ffmpeg_export_batch_aborted` rows must carry the same canonical decision tuple (`decision` / `failure_category` / `is_retryable` / `reason_code` / `reason_detail`) as recorder; `ffmpeg_export_succeeded` rows omit those fields (mirrors `ffmpeg_record_succeeded`). Exporter does NOT do yield-on-transient — `decision` on a failed exporter row is always `attempt_failed` (placeholder row uses `decision="fallback_placeholder"`). The placeholder row inherits the last-attempt classification so operators can grep one row to learn what root-caused exhaustion. `ffmpeg_export_batch_aborted` uses `decision="batch_aborted"`, inherits the last fallback classification, and adds `consecutive_fallbacks` plus `remaining_matches`.
 - Exporter ffmpeg success must be validated with `ffprobe` before emitting `ffmpeg_export_succeeded`: the output file must exist, be non-empty, and contain a probeable video stream with non-zero duration when duration metadata is present. A zero-stream/empty-shell MP4 is treated as `ffmpeg_export_failed` with canonical decision fields, removed, then replaced by the deterministic placeholder export.
+- Exporter ffmpeg failure fallback must delete any partial target `.mp4` before writing the deterministic `.txt` placeholder so a timed-out mux cannot be mistaken for a playable export.
+- Exporter must use stream-copy clipping (`-map 0 -c copy -movflags +faststart`) when the subtitle file is the deterministic placeholder SRT. Burning placeholder subtitles forces a full re-encode of long recordings and can time out without adding useful text.
+- `arl exporter --session-id/--session-ids --match-index/--match-indices --force-reprocess` must support scoped recovery runs. Filters use intersection semantics; `--force-reprocess` bypasses exporter processed-state/output idempotency for matched boundaries only.
 - Exporter subtitle burn-in must build ffmpeg's `subtitles` filter path from the resolved subtitle path using forward slashes, escape any drive colon, and wrap the path in single quotes (for example `subtitles='D\:/code/auto-record-live/data/processed/session/match-01.srt'`). Windows backslash paths or unquoted `D:/...` filter values can be parsed by ffmpeg as filter options instead of a subtitle filename.
 - Copywriter generation contract:
   - `CopywriterService` reads typed `SubtitleAsset` rows and optional matching `ExportAsset` rows keyed by `(session_id, match_index)`.
@@ -793,18 +817,25 @@ class CopyAsset(BaseModel):
 | Exporter ffmpeg exits zero but `ffprobe` reports no video stream or zero-duration output | Emit `ffmpeg_export_failed` plus `ffmpeg_export_fallback_placeholder`, delete the invalid MP4 shell, and write placeholder export artifact |
 | Exporter sees a non-retryable ffmpeg failure | Emit exactly one `ffmpeg_export_failed` row plus `ffmpeg_export_fallback_placeholder`; do not run further attempts; increment the match-level fallback counter by 1 |
 | Exporter reaches `ARL_EXPORTER_BATCH_FALLBACK_BUDGET` consecutive match-level fallbacks | Emit one `ffmpeg_export_batch_aborted` row with `consecutive_fallbacks` and `remaining_matches`; leave the remaining boundaries unprocessed and absent from `processed_match_keys` |
+| `data/raw/session-*/recording-source.mp4` exists, is older than `--min-age-seconds`, and lacks a `RecordingAsset` row | `arl status` reports degraded `unregistered_recordings`; `arl postprocess` prints a repair hint; `arl repair-recording-assets` appends one typed `RecordingAsset` row after positive ffprobe duration |
+| Raw MP4 is still being written or was modified too recently | `repair-recording-assets` skips it as recent and does not append a manifest row |
+| Raw MP4 is unreadable, empty, or ffprobe cannot report positive duration | `repair-recording-assets` increments `skipped_unreadable` and does not append a manifest row |
+| Stage state contains a processed key but its output file/manifest row is missing | The stage logs a reprocessing message and regenerates the missing output instead of treating the state key as complete |
 
 ### 5. Good / Base / Bad Cases
 
 - Good:
   - Recorder emits one `RecordingAsset`, segmenter emits two `MatchBoundary` rows, subtitles emits one `SubtitleAsset` per match, exporter writes final output with stable naming, and copywriter emits one publishable copy JSON per match.
+  - `postprocess` final summary shows `unregistered_recordings=0` and `missing_subtitles=missing_exports=missing_copies=0` for the processed match set.
 - Base:
   - Recorder succeeds, segmenter emits one low-confidence match boundary, export is deferred pending operator review.
+  - A completed raw MP4 exists but recorder was interrupted before manifest append; operator runs `repair-recording-assets`, then reruns `postprocess`.
 - Bad:
   - Exporter guesses `match_index` from filenames instead of reading typed metadata.
   - Segmenter emits negative or overlapping timestamps without validation.
   - Recorder writes files but never records their source type or time bounds.
   - `ffmpeg` failure aborts the whole pipeline and prevents manifest emission.
+  - `postprocess` reports all stage `processed=0` without surfacing that a completed raw MP4 is not registered.
 
 ### 6. Tests Required
 
@@ -857,11 +888,19 @@ class CopyAsset(BaseModel):
 - Unit test: exporter refuses to burn subtitles when the declared subtitle file is missing.
 - Unit test: exporter ffmpeg command escapes Windows subtitle filter paths with forward slashes, escaped drive colon, and single quotes.
 - Unit test: exporter writes final artifacts under the orchestrator platform subdirectory so same-streamer multi-platform outputs remain distinguishable.
+- Unit test: exporter reads selected-recording orchestrator state files when resolving a session platform.
+- Unit test: exporter removes partial MP4 output before writing ffmpeg fallback placeholder artifacts.
+- Unit test: exporter uses stream copy instead of subtitle burn-in when subtitle input is the deterministic placeholder SRT.
+- Unit test: exporter CLI supports scoped session/match filters and force reprocess.
 - Unit test: exporter treats zero-exit MP4 outputs with no video stream as failed and falls back to placeholder instead of emitting `ffmpeg_export_succeeded`.
 - Unit test: copywriter emits deterministic title/copy JSON plus one `CopyAsset` from an existing subtitle asset and optional export asset.
 - Unit test: copywriter remains idempotent across repeated runs.
 - Unit test: copywriter skips missing subtitle paths without marking the match processed.
 - Unit test: postprocess invokes `copywriter` after `exporter`.
+- Unit test: status reports unregistered raw MP4 files as degraded diagnostics without mutating state.
+- Unit test: status ignores historical exporter fallback/batch-abort rows after later MP4 export assets resolve the affected match/session.
+- Unit test: `repair-recording-assets` appends one `RecordingAsset` for an unregistered completed raw MP4 and remains idempotent on rerun.
+- Unit test: subtitle/export/copy processed state does not suppress regeneration when the declared output file is missing.
 - Unit test: CLI parser includes `copywriter`.
 - Unit test: recorder with `enable_ffmpeg=True` but missing `stream_url` still emits one placeholder asset.
 - Unit test: recorder direct-stream ffmpeg command includes fragmented MP4 `-movflags` next to stream-copy output.
@@ -914,6 +953,27 @@ else:
     write_placeholder_artifact(...)
 append_manifest_record(...)
 ```
+
+#### Wrong
+
+```python
+if key in processed_match_keys:
+    continue
+```
+
+- Treats a stale state key as proof of completion even when the SRT/export/copy file was deleted or never written.
+- Makes `arl postprocess --once` print `processed=0` forever while `arl status` still reports missing outputs.
+
+#### Correct
+
+```python
+if key in processed_match_keys and output_path.exists():
+    continue
+rebuild_missing_output(...)
+```
+
+- Keeps reruns idempotent when outputs exist.
+- Allows local recovery when manifests/state survive but generated files are missing.
 
 #### Wrong
 

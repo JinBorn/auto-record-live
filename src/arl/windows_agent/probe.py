@@ -176,6 +176,22 @@ class DouyinRoomProbe(PlatformProbe):
             '"is_live":true',
             "直播中",
         ]
+        offline_markers = [
+            '"status":4',
+            '"live_status":4',
+            "暂未开播",
+            "还没开播",
+        ]
+        if any(marker in text for marker in offline_markers):
+            return AgentSnapshot(
+                state=LiveState.OFFLINE,
+                streamer_name=streamer_name,
+                room_url=room_url,
+                reason="page_marker_detected",
+                detected_at=now,
+                stream_headers=self.stream_headers(),
+            )
+
         if any(marker in text for marker in live_markers):
             quality_reason = self._quality_gate_reason(stream_url)
             if quality_reason is not None:
@@ -198,40 +214,12 @@ class DouyinRoomProbe(PlatformProbe):
                 stream_headers=self.stream_headers(),
             )
 
-        offline_markers = [
-            '"status":4',
-            '"live_status":4',
-            "暂未开播",
-            "还没开播",
-        ]
-        if any(marker in text for marker in offline_markers):
+        if stream_url:
             return AgentSnapshot(
                 state=LiveState.OFFLINE,
                 streamer_name=streamer_name,
                 room_url=room_url,
-                reason="page_marker_detected",
-                detected_at=now,
-                stream_headers=self.stream_headers(),
-            )
-
-        if stream_url:
-            quality_reason = self._quality_gate_reason(stream_url)
-            if quality_reason is not None:
-                return AgentSnapshot(
-                    state=LiveState.OFFLINE,
-                    streamer_name=streamer_name,
-                    room_url=room_url,
-                    reason=quality_reason,
-                    detected_at=now,
-                    stream_headers=self.stream_headers(),
-                )
-            return AgentSnapshot(
-                state=LiveState.LIVE,
-                streamer_name=streamer_name,
-                room_url=room_url,
-                source_type=SourceType.DIRECT_STREAM,
-                stream_url=stream_url,
-                reason="stream_url_detected_http",
+                reason="stream_url_without_live_marker",
                 detected_at=now,
                 stream_headers=self.stream_headers(),
             )

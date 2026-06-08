@@ -102,6 +102,48 @@ test("detectRoom marks live when stream url exists in observed network urls", as
   );
 });
 
+test("detectRoom keeps unknown page offline when stream url exists only in page data", async () => {
+  const page = {
+    async title() {
+      return "直播间";
+    },
+    async content() {
+      return `
+        <html><body><script>
+          "stream_url":"https%3A%2F%2Fpull.example.com%2Flive%2Fstale_hd.m3u8%3Fsign%3Dstale"
+        </script></body></html>
+      `;
+    },
+  };
+
+  const result = await detectRoom(page);
+
+  assert.equal(result.state, "offline");
+  assert.equal(result.sourceType, null);
+  assert.equal(result.streamUrl, null);
+  assert.equal(result.reason, "stream_url_without_live_marker");
+});
+
+test("detectRoom lets offline marker override observed stream url", async () => {
+  const page = {
+    async title() {
+      return "直播间";
+    },
+    async content() {
+      return "<html><body><div>暂未开播</div></body></html>";
+    },
+  };
+
+  const result = await detectRoom(page, {
+    observedUrls: ["https://pull.example.com/stream/abc123.m3u8?sign=ob"],
+  });
+
+  assert.equal(result.state, "offline");
+  assert.equal(result.sourceType, null);
+  assert.equal(result.streamUrl, null);
+  assert.equal(result.reason, "page_marker_detected");
+});
+
 test("isLikelyStreamUrl rejects unsigned URLs even when path looks like a stream", () => {
   // The unsigned _uhd master playlist Douyin embeds in the page DOM —
   // matches every other heuristic (m3u8, pull, stream) but lacks sign=.

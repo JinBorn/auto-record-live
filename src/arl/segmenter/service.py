@@ -20,14 +20,24 @@ class SegmenterService:
         log("segmenter", "starting")
         assets = load_models(self.recording_assets_path, RecordingAsset)
         stage_hints = load_models(self.match_stage_hints_path, MatchStageHint)
+        existing_boundary_sessions = {
+            boundary.session_id
+            for boundary in load_models(self.boundaries_path, MatchBoundary)
+        }
         hints_by_session = self._group_hints_by_session(stage_hints)
         state = self._load_state()
+        processed_asset_keys = set(state.processed_asset_keys)
 
         processed = 0
         for asset in assets:
             key = f"{asset.session_id}:{asset.path}"
-            if key in state.processed_asset_keys:
+            if key in processed_asset_keys and asset.session_id in existing_boundary_sessions:
                 continue
+            if key in processed_asset_keys:
+                log(
+                    "segmenter",
+                    f"reprocessing missing boundaries session_id={asset.session_id}",
+                )
 
             duration = self._duration_seconds(asset)
             boundaries = self._build_boundaries(
@@ -37,7 +47,10 @@ class SegmenterService:
             )
             for boundary in boundaries:
                 append_model(self.boundaries_path, boundary)
-            state.processed_asset_keys.append(key)
+            if key not in processed_asset_keys:
+                state.processed_asset_keys.append(key)
+                processed_asset_keys.add(key)
+            existing_boundary_sessions.add(asset.session_id)
             processed += 1
             log(
                 "segmenter",

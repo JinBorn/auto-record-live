@@ -157,6 +157,16 @@ The current MVP backend is a local pipeline with file-backed contracts and typed
 
 **Prevention**: Keep a regression test where a segment starts at `0.0` but its first word starts later, and assert the generated SRT begins at the first word time rather than `00:00:00,000`.
 
+### Common Mistake: Transcribing the whole recording for every subtitle boundary
+
+**Symptom**: A long recording with multiple match boundaries makes the computer run hot during subtitle generation, even when each boundary is much shorter than the full recording.
+
+**Cause**: Calling `faster-whisper` on the full `recording-source.mp4` once per `MatchBoundary` forces repeated full-file ASR work. A 2-hour recording with four matches can be decoded/transcribed four times.
+
+**Fix**: Pass `clip_timestamps=[boundary.started_at_seconds, boundary.ended_at_seconds]` to `model.transcribe(...)` while keeping the existing boundary filtering as a guardrail. This lets faster-whisper limit decoding/transcription to the match window.
+
+**Prevention**: Keep a subtitle regression test asserting `clip_timestamps` matches the boundary start/end, and keep word timestamp filtering tests so clipping does not regress subtitle timing precision.
+
 ### Common Mistake: Adding subtitle failures to `CORE_DECISION_EVENT_TYPES`
 
 **Symptom**: `subtitles-events.jsonl` rows start carrying recorder/exporter fields such as `decision`, `failure_category`, `is_retryable`, and `reason_code`, or validation failures appear because subtitle reasons like `model_unavailable` are not in the ffmpeg taxonomy.
@@ -226,6 +236,16 @@ The current MVP backend is a local pipeline with file-backed contracts and typed
 **Fix**: Follow the copywriter pattern: add a `CopyAsset`-style typed model, append one manifest row per `(session_id, match_index)`, persist processed keys in a stage state file, wire a dedicated CLI command, add the stage to `postprocess`, and extend `StatusService` with present/missing counts.
 
 **Prevention**: For every new post-recording stage, update `.trellis/spec/backend/orchestration-contracts.md` first with signatures, file paths, validation/error rows, and required tests. Add unit tests for generation, idempotency, missing-input retry behavior, CLI parsing, postprocess order, and status counts.
+
+### Common Mistake: Treating processed state as stronger than output existence
+
+**Symptom**: `arl postprocess --once` prints `processed=0` for every stage, but `arl status` still reports missing subtitles, exports, or copy files.
+
+**Cause**: Stage state files (`subtitles-state.json`, `exporter-state.json`, `copywriter-state.json`, `segmenter-state.json`) say a key was processed, while the actual output file or boundary row was deleted, never written, or lost after an interrupted run.
+
+**Fix**: A stage may skip a processed key only when the durable output still exists. If the state key exists but the output file/manifest row is missing, log a reprocessing message and rebuild the output. For raw MP4 files that exist on disk but never reached `recording-assets.jsonl`, use `arl repair-recording-assets` before postprocess.
+
+**Prevention**: Keep regression tests for missing-output reruns and for `status`/`repair-recording-assets` handling of unregistered `data/raw/session-*/recording-source.mp4` files.
 
 ### Common Mistake: Burning the in-run retry budget on transient stream-URL failures
 
