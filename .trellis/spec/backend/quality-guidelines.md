@@ -343,9 +343,9 @@ The current MVP backend is a local pipeline with file-backed contracts and typed
 
 **Cause**: Signal text classification has no in-game guardrail and does not filter out-of-range timestamps.
 
-**Fix**: Accept signal-driven output only when at least one usable `in_game` stage remains after timestamp filtering; otherwise fall back to template strategy.
+**Fix**: Accept signal-driven output only when at least one usable `in_game` stage remains after timestamp filtering; otherwise emit no semantic hints by default. Template strategy is an explicit opt-in fallback, not the default semantic path.
 
-**Prevention**: Keep regression tests for signal-driven success path, no-in-game fallback path, and out-of-range signal filtering.
+**Prevention**: Keep regression tests for signal-driven success path, default no-in-game no-op path, opt-in template fallback, and out-of-range signal filtering.
 
 ### Common Mistake: Subtitle-to-signal ingest duplicates or starves downstream semantic generation
 
@@ -369,7 +369,7 @@ The current MVP backend is a local pipeline with file-backed contracts and typed
 
 ### Common Mistake: Semantic hint generation uses stale signal snapshot
 
-**Symptom**: `stage-hints-semantic` falls back to template even though fresh subtitle assets already contain clear `in_game` cues.
+**Symptom**: `stage-hints-semantic` misses signal-driven hints even though fresh subtitle assets already contain clear `in_game` cues.
 
 **Cause**: Semantic generation reads `match-stage-signals.jsonl` before running subtitle-to-signal ingest, so latest SRT cues never enter the current run.
 
@@ -379,7 +379,7 @@ The current MVP backend is a local pipeline with file-backed contracts and typed
 
 ### Common Mistake: English-only stage keywords miss real subtitles
 
-**Symptom**: `stage-signals-from-subtitles` emits zero or incomplete signals for sessions with Chinese subtitles, causing semantic hints to degrade to template.
+**Symptom**: `stage-signals-from-subtitles` emits zero or incomplete signals for sessions with Chinese subtitles, causing semantic hints to stay unavailable or use only an explicit template fallback.
 
 **Cause**: Stage classifier keyword set only covers English stage terms.
 

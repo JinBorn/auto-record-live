@@ -146,6 +146,7 @@ class SubtitleSettings(BaseModel):
 
 class SegmenterSettings(BaseModel):
     stage_keywords_path: Path | None = None
+    template_fallback_enabled: bool = False
 
 
 class ExportSettings(BaseModel):
@@ -447,7 +448,13 @@ def load_settings() -> Settings:
                 or "int8"
             ),
         ),
-        segmenter=SegmenterSettings(stage_keywords_path=stage_keywords_path),
+        segmenter=SegmenterSettings(
+            stage_keywords_path=stage_keywords_path,
+            template_fallback_enabled=_env_bool(
+                "ARL_SEGMENTER_TEMPLATE_FALLBACK_ENABLED",
+                False,
+            ),
+        ),
         recording=RecordingSettings(
             preferred_resolution=os.getenv("ARL_RECORDING_PREFERRED_RESOLUTION", "1080p"),
             segment_minutes=int(os.getenv("ARL_RECORDING_SEGMENT_MINUTES", "30")),

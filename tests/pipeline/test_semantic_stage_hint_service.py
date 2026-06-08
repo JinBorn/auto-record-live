@@ -35,6 +35,16 @@ class SemanticStageHintServiceTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
+    def _settings_with_template_fallback(self) -> Settings:
+        return self.settings.model_copy(
+            deep=True,
+            update={
+                "segmenter": self.settings.segmenter.model_copy(
+                    update={"template_fallback_enabled": True}
+                )
+            },
+        )
+
     def _append_asset(
         self,
         session_id: str,
@@ -95,7 +105,7 @@ class SemanticStageHintServiceTest(unittest.TestCase):
             datetime(2026, 4, 26, 18, 40, tzinfo=timezone.utc),
         )
 
-        SemanticStageHintService(self.settings).run()
+        SemanticStageHintService(self._settings_with_template_fallback()).run()
         hints = self._load_hints("session-semantic-001")
 
         expected = [
@@ -118,7 +128,7 @@ class SemanticStageHintServiceTest(unittest.TestCase):
             datetime(2026, 4, 26, 19, 31, tzinfo=timezone.utc),
         )
 
-        service = SemanticStageHintService(self.settings)
+        service = SemanticStageHintService(self._settings_with_template_fallback())
         service.run()
         service.run()
 
@@ -153,7 +163,7 @@ class SemanticStageHintServiceTest(unittest.TestCase):
             datetime(2026, 4, 26, 21, 1, tzinfo=timezone.utc),
         )
 
-        SemanticStageHintService(self.settings).run()
+        SemanticStageHintService(self._settings_with_template_fallback()).run()
         hints = self._load_hints("session-semantic-004")
         in_game_hints = [hint for hint in hints if hint.stage == MatchStage.IN_GAME]
 
@@ -168,7 +178,7 @@ class SemanticStageHintServiceTest(unittest.TestCase):
             datetime(2026, 4, 26, 21, 0, 30, tzinfo=timezone.utc),
         )
 
-        SemanticStageHintService(self.settings).run()
+        SemanticStageHintService(self._settings_with_template_fallback()).run()
         hints = self._load_hints("session-semantic-011")
         in_game_hints = [hint for hint in hints if hint.stage == MatchStage.IN_GAME]
 
@@ -224,7 +234,19 @@ class SemanticStageHintServiceTest(unittest.TestCase):
             ],
         )
 
-    def test_semantic_stage_hints_fallback_to_template_when_signals_have_no_in_game(self) -> None:
+    def test_semantic_stage_hints_skip_template_by_default_when_no_signals(self) -> None:
+        self._append_asset(
+            "session-semantic-012",
+            datetime(2026, 4, 27, 4, 0, tzinfo=timezone.utc),
+            datetime(2026, 4, 27, 4, 40, tzinfo=timezone.utc),
+        )
+
+        SemanticStageHintService(self.settings).run()
+        hints = self._load_hints("session-semantic-012")
+
+        self.assertEqual(hints, [])
+
+    def test_semantic_stage_hints_template_fallback_is_opt_in_when_signals_have_no_in_game(self) -> None:
         self._append_asset(
             "session-semantic-006",
             datetime(2026, 4, 26, 23, 0, tzinfo=timezone.utc),
@@ -234,7 +256,7 @@ class SemanticStageHintServiceTest(unittest.TestCase):
         self._append_signal("session-semantic-006", "loading complete", at_seconds=50.0)
         self._append_signal("session-semantic-006", "post game summary", at_seconds=1800.0)
 
-        SemanticStageHintService(self.settings).run()
+        SemanticStageHintService(self._settings_with_template_fallback()).run()
         hints = self._load_hints("session-semantic-006")
 
         self.assertEqual(len(hints), 8)

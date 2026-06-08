@@ -554,8 +554,8 @@ class CopyAsset(BaseModel):
   - command reads `recording-assets.jsonl`; when signal rows exist for a session, semantic generation first attempts signal-driven stage classification from `match-stage-signals.jsonl`.
   - signal-driven stage classification recognizes stage markers from signal text and keeps chronological order with duplicate-stage collapse.
   - signal-driven path is accepted only when at least one classified `in_game` signal remains in-range after filtering.
-  - when no usable `in_game` signal exists, command falls back to template generation.
-  - template generation emits stage hints in order: `champion_select -> loading -> in_game -> post_game` per cycle (`recording.segment_minutes * 60`).
+  - when no usable `in_game` signal exists, command emits no semantic hints by default and logs `strategy=no_signals`; it must not silently turn missing ASR/signals into fixed-duration match cuts.
+  - template generation is opt-in via `ARL_SEGMENTER_TEMPLATE_FALLBACK_ENABLED=1`; when enabled, it emits stage hints in order: `champion_select -> loading -> in_game -> post_game` per cycle (`recording.segment_minutes * 60`).
   - if a session already has any stage hint row, semantic command skips that session.
   - command is idempotent across repeated runs on unchanged manifests.
 - CLI `stage-signal` ingestion contract:
@@ -747,7 +747,7 @@ class CopyAsset(BaseModel):
 | `ARL_STAGE_KEYWORDS_PATH` provides custom keyword lists | Subtitle signal extraction and semantic stage-hint classification should both use the overridden keywords |
 | `ARL_STAGE_KEYWORDS_PATH` has invalid payload shape for one stage (for example non-list) | Module logs per-stage fallback and still applies valid stage overrides |
 | `stage-hints-semantic` / `stage-signals-from-subtitles` / `subtitles` command sets `--stage-keywords-path` and env key also exists | Command should use CLI path (higher priority), then fall back to env/default behavior if CLI path invalid |
-| Signal rows exist but none classify to `in_game` | Semantic generator falls back to template strategy |
+| Signal rows exist but none classify to `in_game` | Semantic generator emits no hints by default and logs `strategy=no_signals`; template fallback only runs when `ARL_SEGMENTER_TEMPLATE_FALLBACK_ENABLED=1` |
 | Signal rows include timestamps outside recording duration | Out-of-range signals are ignored before stage generation |
 | `arl stage-signal` is called without timestamp source | CLI parse should fail fast and avoid malformed signal rows |
 | `arl stage-signals-from-subtitles` sees a subtitle row whose `path` does not exist | Row is skipped and left unprocessed for a later rerun |
@@ -853,13 +853,14 @@ class CopyAsset(BaseModel):
 - Unit test: auto stage-hint service derives periodic `in_game` anchors from recording duration and segment interval.
 - Unit test: auto stage-hint service remains idempotent across repeated runs.
 - Unit test: auto stage-hint service skips sessions that already have `in_game` hints.
-- Unit test: semantic stage-hint service emits per-cycle stage sequence (`champion_select/loading/in_game/post_game`).
+- Unit test: semantic stage-hint service emits per-cycle stage sequence (`champion_select/loading/in_game/post_game`) when template fallback is explicitly enabled.
 - Unit test: semantic stage-hint service remains idempotent across repeated runs.
 - Unit test: semantic stage-hint service skips sessions that already have stage hints.
 - Unit test: semantic stage-hint service keeps `in_game` timestamp inside duration for short recordings.
 - Unit test: semantic stage-hint service preserves sub-minute completed recording durations.
 - Unit test: semantic stage-hint service uses signal-driven generation when classified signals include `in_game`.
-- Unit test: semantic stage-hint service falls back to template generation when signals do not contain usable `in_game`.
+- Unit test: semantic stage-hint service emits no template hints by default when signals do not contain usable `in_game`.
+- Unit test: semantic stage-hint service falls back to template generation when signals do not contain usable `in_game` and template fallback is explicitly enabled.
 - Unit test: semantic stage-hint service converts `detected_at` signals to relative seconds and ignores out-of-range signals.
 - Unit test: semantic stage-hint service can auto-ingest subtitle-derived signals and emit signal-driven hints without manual `stage-signal` pre-write.
 - Unit test: semantic stage-hint service can map Chinese signal text into the expected stage sequence.

@@ -59,9 +59,12 @@ class SemanticStageHintService:
             if signal_hints:
                 hints = signal_hints
                 strategy = "signals"
-            else:
+            elif self.settings.segmenter.template_fallback_enabled:
                 hints = self._build_template_hints(asset.session_id, duration)
                 strategy = "template"
+            else:
+                hints = []
+                strategy = "no_signals"
 
             for hint in hints:
                 append_model(self.match_stage_hints_path, hint)
@@ -69,10 +72,25 @@ class SemanticStageHintService:
 
             sessions_with_hints.add(asset.session_id)
             processed_assets += 1
-            log(
-                "segmenter",
-                f"semantic stage hints emitted session_id={asset.session_id} strategy={strategy} count={len(hints)}",
-            )
+            if hints:
+                log(
+                    "segmenter",
+                    (
+                        "semantic stage hints emitted "
+                        f"session_id={asset.session_id} strategy={strategy} "
+                        f"count={len(hints)}"
+                    ),
+                )
+            else:
+                log(
+                    "segmenter",
+                    (
+                        "semantic stage hints skipped "
+                        f"session_id={asset.session_id} strategy={strategy} "
+                        "reason=no_usable_in_game_signal "
+                        "template_fallback_enabled=False"
+                    ),
+                )
 
         log(
             "segmenter",

@@ -167,6 +167,12 @@ Windows launcher 会自动准备 `.venv` 并安装 `.[subtitles]`。`ARL_WIN_INS
 stage-hints-semantic -> segmenter -> subtitles -> exporter -> copywriter
 ```
 
+`stage-hints-semantic` 只会在已有字幕或手工信号能识别出 `in_game` 时生成语义切点。没有可用信号时，默认不会再按 `ARL_RECORDING_SEGMENT_MINUTES` 硬切 30 分钟；如果确实想保留固定周期模板切片，需要显式设置：
+
+```powershell
+$env:ARL_SEGMENTER_TEMPLATE_FALLBACK_ENABLED = "1"
+```
+
 也就是自动生成阶段提示、切分对局、生成字幕、导出每局视频，并生成标题文案。
 
 也可以单独执行其中某一步：

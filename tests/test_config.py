@@ -281,6 +281,18 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(settings.subtitles.compute_type, "auto")
         self.assertEqual(settings.subtitles.cpu_compute_type, "int8")
 
+    def test_segmenter_template_fallback_env_loads(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            settings = load_settings()
+
+        self.assertFalse(settings.segmenter.template_fallback_enabled)
+
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_SEGMENTER_TEMPLATE_FALLBACK_ENABLED"] = "1"
+            settings = load_settings()
+
+        self.assertTrue(settings.segmenter.template_fallback_enabled)
+
 
 class SettingsValidatorTests(unittest.TestCase):
     def test_settings_with_empty_platforms_defaults_to_douyin(self) -> None:
