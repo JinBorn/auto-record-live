@@ -198,6 +198,13 @@ $env:ARL_SEGMENTER_TEMPLATE_FALLBACK_ENABLED = "1"
 .\.venv\Scripts\python.exe -m arl.cli exporter --session-id session-20260606101149-9fe32958 --force-reprocess
 ```
 
+如果某个 session 已经生成了错误边界、占位字幕或错误导出，先清掉该 session 的后处理生成物，再重新跑一轮。这个命令不会删除 `data/raw/.../recording-source.mp4`：
+
+```powershell
+.\.venv\Scripts\python.exe -m arl.cli postprocess-reset --session-id session-20260608095022-03694add
+.\.venv\Scripts\python.exe -m arl.cli postprocess --once
+```
+
 查看整体健康状态：
 
 ```powershell

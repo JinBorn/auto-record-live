@@ -10,6 +10,7 @@ from arl.copywriter.service import CopywriterService
 from arl.exporter.service import ExporterService
 from arl.maintenance.service import MaintenanceService
 from arl.orchestrator.service import OrchestratorService
+from arl.postprocess.reset import PostProcessResetService
 from arl.postprocess.service import PostProcessService
 from arl.recovery.service import RecoveryService
 from arl.recorder.asset_repair import RecordingAssetRepairService
@@ -289,6 +290,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--once",
         action="store_true",
         help="Run one post-processing pass and exit (default behavior).",
+    )
+    postprocess_reset = subparsers.add_parser(
+        "postprocess-reset",
+        help=(
+            "Remove generated postprocess manifests/state for session(s) so "
+            "they can be processed again."
+        ),
+    )
+    postprocess_reset.add_argument(
+        "--session-id",
+        help="Reset generated postprocess data for one session id.",
+    )
+    postprocess_reset.add_argument(
+        "--session-ids",
+        help="Reset generated postprocess data for comma-separated session ids.",
+    )
+    postprocess_reset.add_argument(
+        "--keep-files",
+        action="store_true",
+        help="Only reset manifests/state; do not delete generated subtitle/export/copy files.",
     )
     subparsers.add_parser(
         "stage-hints-auto",
@@ -605,6 +626,21 @@ def main() -> int:
 
     if args.command == "postprocess":
         PostProcessService(settings).run_once()
+        return 0
+
+    if args.command == "postprocess-reset":
+        reset_session_ids: set[str] = set()
+        if args.session_id:
+            reset_session_ids.add(args.session_id)
+        if args.session_ids:
+            reset_session_ids.update(_parse_csv_values(args.session_ids))
+        if not reset_session_ids:
+            parser.error("postprocess-reset requires --session-id or --session-ids")
+        result = PostProcessResetService(settings).run(
+            session_ids=reset_session_ids,
+            delete_files=not args.keep_files,
+        )
+        print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "stage-hints-auto":

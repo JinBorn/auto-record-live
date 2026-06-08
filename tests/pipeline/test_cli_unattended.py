@@ -12,6 +12,23 @@ class CliUnattendedTest(unittest.TestCase):
         self.assertEqual(args.command, "postprocess")
         self.assertTrue(args.once)
 
+    def test_postprocess_reset_command_parses(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "postprocess-reset",
+                "--session-id",
+                "session-a",
+                "--session-ids",
+                "session-b,session-c",
+                "--keep-files",
+            ]
+        )
+
+        self.assertEqual(args.command, "postprocess-reset")
+        self.assertEqual(args.session_id, "session-a")
+        self.assertEqual(args.session_ids, "session-b,session-c")
+        self.assertTrue(args.keep_files)
+
     def test_status_command_parses(self) -> None:
         args = build_parser().parse_args(["status"])
 
