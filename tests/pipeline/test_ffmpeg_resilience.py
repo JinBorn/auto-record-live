@@ -32,7 +32,11 @@ from arl.orchestrator.models import (
 from arl.orchestrator.service import OrchestratorService
 from arl.recorder.models import RecorderStateFile
 from arl.recovery.service import RecoveryService
-from arl.recorder.service import RecorderService
+from arl.recorder.service import (
+    RecordingBuildOutcome,
+    RecordingWorkResult,
+    RecorderService,
+)
 from arl.shared.contracts import (
     ExportAsset,
     LiveState,
@@ -1585,6 +1589,83 @@ class RecorderHardeningTest(unittest.TestCase):
             {Path(asset["path"]).name for asset in assets},
             {"recording-source.mp4"},
         )
+
+    def test_interrupted_parallel_run_persists_completed_outcomes(self) -> None:
+        self._seed_state(
+            session_id="session-interrupt-a",
+            job_id="job-interrupt-a",
+            extra_jobs=[
+                ("session-interrupt-b", "job-interrupt-b", RecordingJobStatus.STOPPED),
+            ],
+        )
+        self.settings.recording.max_concurrent_jobs = 2
+
+        first_done = threading.Event()
+        release_second = threading.Event()
+
+        def _fake_build(
+            service: RecorderService,
+            item,
+        ) -> RecordingWorkResult:
+            output_path = (
+                service.settings.storage.raw_dir
+                / item.session.session_id
+                / "recording-source.mp4"
+            )
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            if item.job.job_id == "job-interrupt-a":
+                output_path.write_text("completed recording", encoding="utf-8")
+                first_done.set()
+                return RecordingWorkResult(
+                    item=item,
+                    outcome=RecordingBuildOutcome(output_path=output_path),
+                )
+
+            self.assertTrue(first_done.wait(timeout=2))
+            release_second.wait(timeout=2)
+            output_path.write_text("late recording", encoding="utf-8")
+            return RecordingWorkResult(
+                item=item,
+                outcome=RecordingBuildOutcome(output_path=output_path),
+            )
+
+        def _interrupting_as_completed(futures):
+            self.assertTrue(first_done.wait(timeout=2))
+            raise KeyboardInterrupt
+
+        try:
+            with patch(
+                "arl.recorder.service.RecorderService._build_recording_work_item",
+                new=_fake_build,
+            ), patch(
+                "arl.recorder.service.as_completed",
+                side_effect=_interrupting_as_completed,
+            ), patch(
+                "arl.recorder.service._RECORDING_INTERRUPT_DRAIN_TIMEOUT_SECONDS",
+                0.05,
+            ), patch.object(
+                RecorderService,
+                "_remux_direct_stream_recording",
+                return_value=None,
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    RecorderService(self.settings).run()
+        finally:
+            release_second.set()
+
+        assets = [
+            json.loads(line)
+            for line in (self.temp_root / "recording-assets.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        self.assertEqual(len(assets), 1)
+        self.assertEqual(assets[0]["session_id"], "session-interrupt-a")
+
+        recorder_state = json.loads(
+            (self.temp_root / "recorder-state.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(recorder_state["processed_job_ids"], ["job-interrupt-a"])
 
     def test_direct_stream_failure_salvages_probeable_partial_mp4_as_asset(self) -> None:
         self._seed_state(job_id="job-partial-salvage")

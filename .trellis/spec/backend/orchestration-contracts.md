@@ -821,6 +821,7 @@ class CopyAsset(BaseModel):
 | Raw MP4 is still being written or was modified too recently | `repair-recording-assets` skips it as recent and does not append a manifest row |
 | Raw MP4 is unreadable, empty, or ffprobe cannot report positive duration | `repair-recording-assets` increments `skipped_unreadable` and does not append a manifest row |
 | Stage state contains a processed key but its output file/manifest row is missing | The stage logs a reprocessing message and regenerates the missing output instead of treating the state key as complete |
+| Operator presses Ctrl+C while the concurrent recorder is waiting for worker futures | Recorder briefly drains already completed worker outcomes, applies those outcomes to `recording-assets.jsonl` and `recorder-state.json`, logs the interrupted drain, and then preserves the interrupt; `record-rooms` still runs one final orchestrator pass for the selected-run state, and `python -m arl.cli ...` exits 130 without a Python traceback |
 
 ### 5. Good / Base / Bad Cases
 
@@ -909,6 +910,7 @@ class CopyAsset(BaseModel):
 - Unit test: recorder subtracts finalize headroom from long direct-stream ffmpeg `-t` values and leaves short captures unchanged.
 - Unit test: recorder remuxes successful direct-stream recordings to `+faststart` with `-map 0 -c copy`, replacing the original path only after the remux output exists and only after the recording asset plus `processed_job_ids` state are durable.
 - Unit test: recorder remux failure keeps the original recording and still emits `ffmpeg_record_succeeded`.
+- Unit test: concurrent recorder interruption drains and persists completed worker outcomes before surfacing `KeyboardInterrupt`.
 - Unit test: recorder treats ffmpeg HTTP 4xx failures as non-recoverable and skips cross-run retry scheduling.
 - Unit test: recorder stops in-run ffmpeg retries early when a non-recoverable reason is detected.
 - Unit test: recorder infers actionable manual-recovery action mapping from `stop_reason` when `failure_category` is missing, and keeps inspect fallback only for opaque reasons.

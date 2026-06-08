@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass
 import json
 import os
@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -55,6 +56,9 @@ _PLATFORM_COOKIE_FIELD = {
     "douyin": "cookie",
     "bilibili": "sessdata",
 }
+
+_RECORDING_INTERRUPT_DRAIN_TIMEOUT_SECONDS = 5.0
+_RECORDING_INTERRUPT_DRAIN_POLL_SECONDS = 0.25
 
 
 @dataclass
@@ -226,21 +230,29 @@ class RecorderService:
 
         processed = 0
         retries_scheduled = 0
-        for result in self._run_recording_work_items(work_items):
-            processed_delta, retries_delta = self._apply_recording_outcome(
-                recorder_state=recorder_state,
-                orchestrator_state=orchestrator_state,
-                result=result,
-            )
-            processed += processed_delta
-            retries_scheduled += retries_delta
+        interrupted = False
+        try:
+            for result in self._run_recording_work_items(work_items):
+                processed_delta, retries_delta = self._apply_recording_outcome(
+                    recorder_state=recorder_state,
+                    orchestrator_state=orchestrator_state,
+                    result=result,
+                )
+                processed += processed_delta
+                retries_scheduled += retries_delta
+        except KeyboardInterrupt:
+            interrupted = True
+        finally:
+            self._save_state(recorder_state)
 
-        self._save_state(recorder_state)
         log("recorder", f"processed_jobs={processed}")
         if retries_scheduled > 0:
             log("recorder", f"scheduled_retries={retries_scheduled}")
         if manual_recovery_marked > 0:
             log("recorder", f"manual_recovery_required={manual_recovery_marked}")
+        if interrupted:
+            log("recorder", "interrupted after saving completed outcomes")
+            raise KeyboardInterrupt
 
     def _run_recording_work_items(
         self,
@@ -262,13 +274,96 @@ class RecorderService:
             "recorder",
             f"recording_workers={worker_count} runnable_jobs={len(work_items)}",
         )
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            futures = [
-                executor.submit(self._build_recording_work_item, item)
-                for item in work_items
-            ]
+        executor = ThreadPoolExecutor(max_workers=worker_count)
+        interrupted = False
+        futures: list[Future[RecordingWorkResult]] = [
+            executor.submit(self._build_recording_work_item, item)
+            for item in work_items
+        ]
+        yielded_futures: set[Future[RecordingWorkResult]] = set()
+        try:
             for future in as_completed(futures):
+                yielded_futures.add(future)
                 yield future.result()
+        except KeyboardInterrupt:
+            interrupted = True
+            for future in futures:
+                if future not in yielded_futures:
+                    future.cancel()
+
+            drained = 0
+            for future in self._drain_completed_recording_futures(
+                futures=futures,
+                yielded_futures=yielded_futures,
+            ):
+                yielded_futures.add(future)
+                drained += 1
+                yield future.result()
+
+            unfinished = sum(
+                1
+                for future in futures
+                if future not in yielded_futures and not future.cancelled()
+            )
+            log(
+                "recorder",
+                "interrupted while waiting for workers "
+                f"drained_completed_jobs={drained} unfinished_jobs={unfinished}",
+            )
+            raise
+        finally:
+            executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
+
+    def _drain_completed_recording_futures(
+        self,
+        *,
+        futures: list[Future[RecordingWorkResult]],
+        yielded_futures: set[Future[RecordingWorkResult]],
+    ) -> Iterator[Future[RecordingWorkResult]]:
+        pending = [
+            future
+            for future in futures
+            if future not in yielded_futures and not future.cancelled()
+        ]
+        deadline = time.monotonic() + _RECORDING_INTERRUPT_DRAIN_TIMEOUT_SECONDS
+        while pending:
+            ready = [
+                future
+                for future in pending
+                if future.done() and not future.cancelled()
+            ]
+            if not ready:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                done, _ = wait(
+                    pending,
+                    timeout=min(
+                        _RECORDING_INTERRUPT_DRAIN_POLL_SECONDS,
+                        remaining,
+                    ),
+                    return_when=FIRST_COMPLETED,
+                )
+                ready = [
+                    future
+                    for future in done
+                    if future.done() and not future.cancelled()
+                ]
+            if not ready:
+                pending = [
+                    future
+                    for future in pending
+                    if not future.cancelled()
+                ]
+                continue
+            for future in ready:
+                yield future
+            ready_set = set(ready)
+            pending = [
+                future
+                for future in pending
+                if future not in ready_set and not future.cancelled()
+            ]
 
     def _build_recording_work_item(self, item: RecordingWorkItem) -> RecordingWorkResult:
         outcome = self._build_recording(

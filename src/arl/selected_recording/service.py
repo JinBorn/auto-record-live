@@ -90,8 +90,10 @@ class SelectedRecordingService:
 
         WindowsAgentService(selected_settings).run(once=True)
         OrchestratorService(selected_settings).run(once=True)
-        RecorderService(selected_settings).run()
-        OrchestratorService(selected_settings).run(once=True)
+        try:
+            RecorderService(selected_settings).run()
+        finally:
+            OrchestratorService(selected_settings).run(once=True)
 
         state = load_orchestrator_state(selected_settings.orchestrator.state_file)
         return SelectedRecordingResult(

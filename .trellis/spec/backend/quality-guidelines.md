@@ -247,6 +247,16 @@ The current MVP backend is a local pipeline with file-backed contracts and typed
 
 **Prevention**: Keep regression tests for missing-output reruns and for `status`/`repair-recording-assets` handling of unregistered `data/raw/session-*/recording-source.mp4` files.
 
+### Common Mistake: Interrupt handling drops completed concurrent worker outcomes
+
+**Symptom**: A concurrent `record-rooms` run prints `ffmpeg_record_succeeded` for a worker after Ctrl+C, but the raw MP4 never appears in `recording-assets.jsonl`; later `postprocess` ignores the file until `repair-recording-assets` is run.
+
+**Cause**: The main recorder thread is interrupted while blocked in `as_completed(futures)`, so completed worker results are never applied to the durable manifest/state even though worker-side audit rows were already appended.
+
+**Fix**: On `KeyboardInterrupt`, cancel not-yet-started futures, briefly drain already completed worker futures, apply those outcomes through the normal manifest/state path, and then preserve the interrupt. For `record-rooms`, run one final orchestrator pass in `finally` so selected-run state consumes recorder audit rows before the CLI exits.
+
+**Prevention**: Keep a regression test that interrupts the concurrent future wait after one worker completes and asserts `recording-assets.jsonl` plus `recorder-state.json` contain that worker's outcome.
+
 ### Common Mistake: Burning the in-run retry budget on transient stream-URL failures
 
 **Symptom**: Recorder runs ffmpeg back-to-back against the same stale (token-expired) `stream_url`, producing duplicate 5xx/timeout/process_error failures before the orchestrator can refresh the URL. Audit log balloons with redundant `ffmpeg_record_failed` rows and recovery is delayed by `ffmpeg_max_retries * timeout` per run.
