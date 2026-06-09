@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 42
+- **Total Sessions**: 43
 - **Last Active**: 2026-06-09
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1760 | Active |
+| `journal-1.md` | ~1794 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 43 | 2026-06-09 | Highlight condense editing and H265 export | `1095885`, `1b3ff53` | `main` |
 | 42 | 2026-06-09 | Defer untrusted fallback exports | `4ffd12a` | `main` |
 | 41 | 2026-06-08 | Harden interrupted recorder outcomes | `d774d5a` | `main` |
 | 40 | 2026-06-05 | Improve unattended recording stability | `db3f297` | `main` |

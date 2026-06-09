@@ -1758,3 +1758,37 @@ Blocked low-confidence full-recording fallback exports, removed text placeholder
 ### Next Steps
 
 - None - task complete
+
+
+## Session 43: Highlight condense editing and H265 export
+
+**Date**: 2026-06-09
+**Task**: Highlight condense editing and H265 export
+**Branch**: `main`
+
+### Summary
+
+Added optional H.265 export transcoding, post-game boundary truncation, and conservative highlight planning/export flow with status, reset, CLI, contracts, and tests.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1095885` | (see git log) |
+| `1b3ff53` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
