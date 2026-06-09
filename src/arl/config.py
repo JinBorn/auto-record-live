@@ -151,6 +151,7 @@ class SegmenterSettings(BaseModel):
 
 class ExportSettings(BaseModel):
     enable_ffmpeg: bool = False
+    ffmpeg_video_codec: str = "auto"
     ffmpeg_preset: str = "veryfast"
     ffmpeg_crf: int = 23
     ffmpeg_timeout_seconds: int = 120
@@ -159,6 +160,29 @@ class ExportSettings(BaseModel):
     backoff_initial_seconds: float = 2.0
     backoff_max_seconds: float = 8.0
     batch_fallback_budget: int = 3
+
+    @model_validator(mode="after")
+    def _normalize_ffmpeg_video_codec(self) -> "ExportSettings":
+        aliases = {
+            "": "auto",
+            "auto": "auto",
+            "copy": "copy",
+            "h264": "h264",
+            "avc": "h264",
+            "x264": "h264",
+            "libx264": "h264",
+            "h265": "h265",
+            "hevc": "h265",
+            "x265": "h265",
+            "libx265": "h265",
+        }
+        raw = self.ffmpeg_video_codec.strip().lower()
+        if raw not in aliases:
+            raise ValueError(
+                "ffmpeg_video_codec must be one of auto, copy, h264, h265, or hevc"
+            )
+        self.ffmpeg_video_codec = aliases[raw]
+        return self
 
 
 class MaintenanceSettings(BaseModel):
@@ -512,6 +536,7 @@ def load_settings() -> Settings:
         ),
         export=ExportSettings(
             enable_ffmpeg=os.getenv("ARL_EXPORT_ENABLE_FFMPEG", "0") == "1",
+            ffmpeg_video_codec=os.getenv("ARL_EXPORT_FFMPEG_VIDEO_CODEC", "auto"),
             ffmpeg_preset=os.getenv("ARL_EXPORT_FFMPEG_PRESET", "veryfast"),
             ffmpeg_crf=int(os.getenv("ARL_EXPORT_FFMPEG_CRF", "23")),
             ffmpeg_timeout_seconds=max(

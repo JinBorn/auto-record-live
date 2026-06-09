@@ -250,6 +250,13 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(settings.export.backoff_max_seconds, 6.0)
         self.assertEqual(settings.export.batch_fallback_budget, 2)
 
+    def test_export_ffmpeg_video_codec_env_loads(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_EXPORT_FFMPEG_VIDEO_CODEC"] = "hevc"
+            settings = load_settings()
+
+        self.assertEqual(settings.export.ffmpeg_video_codec, "h265")
+
     def test_maintenance_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             os.environ["ARL_MAINTENANCE_MAX_JSONL_BYTES"] = "2048"

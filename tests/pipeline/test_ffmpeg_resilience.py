@@ -3074,6 +3074,31 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertIsNone(payloads[0]["decision"])
         self.assertIsNone(payloads[0]["failure_category"])
 
+    def test_h265_export_with_subtitles_uses_libx265(self) -> None:
+        self._seed_export_inputs()
+        settings = self.settings.model_copy(deep=True)
+        settings.export.ffmpeg_video_codec = "h265"
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        self.assertIn("-vf", command)
+        self.assertIn("-c:v", command)
+        self.assertEqual(command[command.index("-c:v") + 1], "libx265")
+        self.assertIn("-tag:v", command)
+        self.assertEqual(command[command.index("-tag:v") + 1], "hvc1")
+
     def test_export_path_uses_platform_subdirectory(self) -> None:
         self._seed_export_inputs(platform="bilibili")
 
@@ -3235,6 +3260,32 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertEqual(command[command.index("-c") + 1], "copy")
         self.assertIn("-movflags", command)
         self.assertEqual(command[command.index("-movflags") + 1], "+faststart")
+
+    def test_h265_placeholder_subtitle_transcodes_instead_of_stream_copy(self) -> None:
+        self._seed_export_inputs(placeholder_subtitle=True)
+        settings = self.settings.model_copy(deep=True)
+        settings.export.ffmpeg_video_codec = "h265"
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        self.assertNotIn("-vf", command)
+        self.assertNotIn("-map", command)
+        self.assertIn("-c:v", command)
+        self.assertEqual(command[command.index("-c:v") + 1], "libx265")
+        self.assertIn("-tag:v", command)
+        self.assertEqual(command[command.index("-tag:v") + 1], "hvc1")
 
     def test_force_reprocess_can_target_one_existing_export(self) -> None:
         self._seed_export_inputs(session_id="session-force", match_index=1)

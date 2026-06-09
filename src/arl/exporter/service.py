@@ -38,6 +38,7 @@ class ExporterService:
     ) -> None:
         log("exporter", "starting")
         log("exporter", f"ffmpeg_enabled={self.settings.export.enable_ffmpeg}")
+        log("exporter", f"ffmpeg_video_codec={self.settings.export.ffmpeg_video_codec}")
         rotate_stderr_logs(self.stderr_dir, self.settings.export.stderr_retain_count)
         all_boundaries = load_models(self.boundaries_path, MatchBoundary)
         boundaries = self._filter_boundaries(
@@ -321,7 +322,8 @@ class ExporterService:
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{boundary.session_id}_match{boundary.match_index:02d}.mp4"
         subtitle_path = Path(subtitle.path).resolve()
-        if self._subtitle_is_placeholder(subtitle_path):
+        subtitle_is_placeholder = self._subtitle_is_placeholder(subtitle_path)
+        if subtitle_is_placeholder and self._should_stream_copy_export():
             log(
                 "exporter",
                 "placeholder subtitle detected; using stream copy "
@@ -349,7 +351,6 @@ class ExporterService:
                 str(output_path),
             ]
         else:
-            subtitle_filter = self._subtitle_filter_arg(subtitle_path)
             command = [
                 "ffmpeg",
                 "-y",
@@ -363,14 +364,19 @@ class ExporterService:
                 str(boundary.ended_at_seconds),
                 "-i",
                 recording_asset.path,
-                "-vf",
-                subtitle_filter,
-                "-preset",
-                self.settings.export.ffmpeg_preset,
-                "-crf",
-                str(self.settings.export.ffmpeg_crf),
-                str(output_path),
             ]
+            if not subtitle_is_placeholder:
+                command.extend(["-vf", self._subtitle_filter_arg(subtitle_path)])
+            command.extend(self._video_codec_args())
+            command.extend(
+                [
+                    "-preset",
+                    self.settings.export.ffmpeg_preset,
+                    "-crf",
+                    str(self.settings.export.ffmpeg_crf),
+                    str(output_path),
+                ]
+            )
         attempts = self.settings.export.ffmpeg_max_retries + 1
         basename = f"{boundary.session_id}_match{boundary.match_index:02d}"
         last_failure_classification: FailureDecision | None = None
@@ -641,6 +647,19 @@ class ExporterService:
         initial = self.settings.export.backoff_initial_seconds
         maximum = self.settings.export.backoff_max_seconds
         return min(initial * (2 ** (attempt - 1)), maximum)
+
+    def _should_stream_copy_export(self) -> bool:
+        return self.settings.export.ffmpeg_video_codec in {"auto", "copy"}
+
+    def _video_codec_args(self) -> list[str]:
+        codec = self.settings.export.ffmpeg_video_codec
+        if codec in {"auto", "copy"}:
+            return []
+        if codec == "h264":
+            return ["-c:v", "libx264"]
+        if codec == "h265":
+            return ["-c:v", "libx265", "-tag:v", "hvc1"]
+        raise ValueError(f"unsupported export video codec: {codec}")
 
     def _subtitle_filter_arg(self, subtitle_path: Path) -> str:
         escaped = subtitle_path.as_posix().replace(":", "\\:")
