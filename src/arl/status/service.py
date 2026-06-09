@@ -8,12 +8,20 @@ from typing import Any
 from arl.config import Settings
 from arl.copywriter.models import CopywriterStateFile
 from arl.exporter.models import ExporterAuditEvent, ExporterStateFile
+from arl.highlights.models import HighlightPlannerStateFile
 from arl.orchestrator.models import OrchestratorStateFile, RecordingJobStatus
 from arl.orchestrator.state_store import load_orchestrator_state
 from arl.recorder.asset_repair import RecordingAssetRepairService, UnregisteredRecording
 from arl.recorder.models import RecorderAuditEvent, RecorderStateFile
 from arl.recovery.service import RecoveryService
-from arl.shared.contracts import CopyAsset, ExportAsset, MatchBoundary, RecordingAsset, SubtitleAsset
+from arl.shared.contracts import (
+    CopyAsset,
+    ExportAsset,
+    HighlightPlanAsset,
+    MatchBoundary,
+    RecordingAsset,
+    SubtitleAsset,
+)
 from arl.shared.jsonl_store import load_models
 from arl.subtitles.models import SubtitleAuditEvent, SubtitleStateFile
 
@@ -27,6 +35,7 @@ class StatusService:
         orchestrator_state = self._load_orchestrator_state()
         recorder_state = self._load_recorder_state()
         subtitle_state = self._load_subtitle_state()
+        highlight_state = self._load_highlight_state()
         exporter_state = self._load_exporter_state()
         copywriter_state = self._load_copywriter_state()
 
@@ -41,6 +50,10 @@ class StatusService:
         )
         export_assets = load_models(self.temp_dir / "export-assets.jsonl", ExportAsset)
         copy_assets = load_models(self.temp_dir / "copy-assets.jsonl", CopyAsset)
+        highlight_plans = load_models(
+            self.temp_dir / "highlight-plans.jsonl",
+            HighlightPlanAsset,
+        )
         recorder_events = load_models(
             self.settings.orchestrator.recorder_event_log_path,
             RecorderAuditEvent,
@@ -153,6 +166,7 @@ class StatusService:
             "postprocess": {
                 "match_boundaries": len(boundaries),
                 "subtitle_assets": len(subtitle_assets),
+                "highlight_plans": len(highlight_plans),
                 "export_assets": len(export_assets),
                 "copy_assets": len(copy_assets),
                 "missing_subtitles": missing_subtitles,
@@ -168,6 +182,10 @@ class StatusService:
                 "fallback_reasons": subtitle_fallback_reasons,
                 "devices": self._subtitle_devices(subtitle_events),
                 "fallback_devices": self._subtitle_fallback_devices(subtitle_events),
+            },
+            "highlights": {
+                "processed_matches": len(highlight_state.processed_match_keys),
+                "plans": len(highlight_plans),
             },
             "exporter": {
                 "processed_matches": len(exporter_state.processed_match_keys),
@@ -198,6 +216,12 @@ class StatusService:
         if not path.exists():
             return SubtitleStateFile()
         return SubtitleStateFile.model_validate_json(path.read_text(encoding="utf-8"))
+
+    def _load_highlight_state(self) -> HighlightPlannerStateFile:
+        path = self.temp_dir / "highlight-planner-state.json"
+        if not path.exists():
+            return HighlightPlannerStateFile()
+        return HighlightPlannerStateFile.model_validate_json(path.read_text(encoding="utf-8"))
 
     def _load_exporter_state(self) -> ExporterStateFile:
         path = self.temp_dir / "exporter-state.json"

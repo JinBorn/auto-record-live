@@ -13,6 +13,7 @@ from arl.config import (
 )
 from arl.copywriter.models import CopywriterStateFile
 from arl.exporter.models import ExporterAuditEvent, ExporterStateFile
+from arl.highlights.models import HighlightPlannerStateFile
 from arl.orchestrator.models import (
     OrchestratorStateFile,
     RecordingJobRecord,
@@ -24,6 +25,8 @@ from arl.recorder.models import RecorderAuditEvent, RecorderStateFile
 from arl.shared.contracts import (
     CopyAsset,
     ExportAsset,
+    HighlightClipWindow,
+    HighlightPlanAsset,
     MatchBoundary,
     RecordingAsset,
     SourceType,
@@ -104,6 +107,23 @@ class StatusServiceTest(unittest.TestCase):
             ),
         )
         append_model(
+            self.temp_root / "highlight-plans.jsonl",
+            HighlightPlanAsset(
+                session_id=session_id,
+                match_index=1,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=60.0,
+                windows=[
+                    HighlightClipWindow(
+                        started_at_seconds=0.0,
+                        ended_at_seconds=60.0,
+                        reason="fixture",
+                    )
+                ],
+                created_at=self._now(),
+            ),
+        )
+        append_model(
             self.temp_root / "export-assets.jsonl",
             ExportAsset(
                 session_id=session_id,
@@ -136,6 +156,10 @@ class StatusServiceTest(unittest.TestCase):
             ExporterStateFile(processed_match_keys=[f"{session_id}:1"]),
         )
         self._write_json_state(
+            self.temp_root / "highlight-planner-state.json",
+            HighlightPlannerStateFile(processed_match_keys=[f"{session_id}:1"]),
+        )
+        self._write_json_state(
             self.temp_root / "copywriter-state.json",
             CopywriterStateFile(processed_match_keys=[f"{session_id}:1"]),
         )
@@ -145,9 +169,12 @@ class StatusServiceTest(unittest.TestCase):
         self.assertEqual(status["summary"]["health"], "ok")
         self.assertEqual(status["postprocess"]["match_boundaries"], 1)
         self.assertEqual(status["postprocess"]["subtitle_assets"], 1)
+        self.assertEqual(status["postprocess"]["highlight_plans"], 1)
         self.assertEqual(status["postprocess"]["export_assets"], 1)
         self.assertEqual(status["postprocess"]["copy_assets"], 1)
         self.assertEqual(status["postprocess"]["missing_copies"], 0)
+        self.assertEqual(status["highlights"]["plans"], 1)
+        self.assertEqual(status["highlights"]["processed_matches"], 1)
         self.assertEqual(status["copywriter"]["processed_matches"], 1)
 
     def test_subtitle_fallback_and_missing_outputs_are_degraded(self) -> None:

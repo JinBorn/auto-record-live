@@ -39,6 +39,8 @@ from arl.recorder.service import (
 )
 from arl.shared.contracts import (
     ExportAsset,
+    HighlightClipWindow,
+    HighlightPlanAsset,
     LiveState,
     MatchBoundary,
     RecordingAsset,
@@ -3098,6 +3100,56 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertEqual(command[command.index("-c:v") + 1], "libx265")
         self.assertIn("-tag:v", command)
         self.assertEqual(command[command.index("-tag:v") + 1], "hvc1")
+
+    def test_highlight_plan_export_uses_select_filters(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=120.0)
+        append_model(
+            self.temp_root / "highlight-plans.jsonl",
+            HighlightPlanAsset(
+                session_id="session-e",
+                match_index=1,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=120.0,
+                windows=[
+                    HighlightClipWindow(
+                        started_at_seconds=0.0,
+                        ended_at_seconds=30.0,
+                        reason="narration",
+                    ),
+                    HighlightClipWindow(
+                        started_at_seconds=90.0,
+                        ended_at_seconds=120.0,
+                        reason="highlight_keyword",
+                    ),
+                ],
+                created_at=datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(self.settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        self.assertIn("-t", command)
+        self.assertEqual(command[command.index("-t") + 1], "120.0")
+        self.assertNotIn("-to", command)
+        video_filter = command[command.index("-vf") + 1]
+        audio_filter = command[command.index("-af") + 1]
+        self.assertIn("subtitles=", video_filter)
+        self.assertIn("select='between(t,0.000,30.000)+between(t,90.000,120.000)'", video_filter)
+        self.assertIn("setpts=N/FRAME_RATE/TB", video_filter)
+        self.assertIn("aselect='between(t,0.000,30.000)+between(t,90.000,120.000)'", audio_filter)
+        self.assertIn("asetpts=N/SR/TB", audio_filter)
 
     def test_export_path_uses_platform_subdirectory(self) -> None:
         self._seed_export_inputs(platform="bilibili")

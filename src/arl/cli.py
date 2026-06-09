@@ -8,6 +8,7 @@ from pathlib import Path
 from arl.config import load_settings
 from arl.copywriter.service import CopywriterService
 from arl.exporter.service import ExporterService
+from arl.highlights.service import HighlightPlannerService
 from arl.maintenance.service import MaintenanceService
 from arl.orchestrator.service import OrchestratorService
 from arl.postprocess.reset import PostProcessResetService
@@ -469,6 +470,28 @@ def build_parser() -> argparse.ArgumentParser:
         type=_parse_csv_int_values,
         help="Only process comma-separated match indices from boundaries.",
     )
+    highlight_planner = subparsers.add_parser(
+        "highlight-planner",
+        help="Run the conservative highlight planner worker.",
+    )
+    highlight_planner.add_argument(
+        "--session-id",
+        help="Only plan highlight windows for one session id.",
+    )
+    highlight_planner.add_argument(
+        "--session-ids",
+        help="Only plan highlight windows for comma-separated session ids.",
+    )
+    highlight_planner.add_argument(
+        "--match-index",
+        type=_parse_positive_int,
+        help="Only plan one match index from boundaries.",
+    )
+    highlight_planner.add_argument(
+        "--match-indices",
+        type=_parse_csv_int_values,
+        help="Only plan comma-separated match indices from boundaries.",
+    )
     exporter = subparsers.add_parser("exporter", help="Run the exporter worker.")
     exporter.add_argument(
         "--session-id",
@@ -759,6 +782,25 @@ def main() -> int:
         SubtitleService(settings).run(
             session_ids=subtitle_session_ids,
             match_indices=subtitle_match_indices,
+        )
+        return 0
+
+    if args.command == "highlight-planner":
+        highlight_session_ids = _collect_session_ids(args)
+
+        highlight_match_indices: set[int] | None = None
+        if args.match_index is not None or args.match_indices:
+            highlight_match_indices = set()
+            if args.match_index is not None:
+                highlight_match_indices.add(args.match_index)
+            if args.match_indices:
+                highlight_match_indices.update(args.match_indices)
+            if not highlight_match_indices:
+                highlight_match_indices = None
+
+        HighlightPlannerService(settings).run(
+            session_ids=highlight_session_ids,
+            match_indices=highlight_match_indices,
         )
         return 0
 

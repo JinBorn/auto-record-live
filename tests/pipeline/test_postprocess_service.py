@@ -40,6 +40,9 @@ class PostProcessServiceTest(unittest.TestCase):
             "arl.postprocess.service.SubtitleService",
             side_effect=lambda _: _StageStub(calls, "subtitles"),
         ), patch(
+            "arl.postprocess.service.HighlightPlannerService",
+            side_effect=lambda _: _StageStub(calls, "highlight-planner"),
+        ), patch(
             "arl.postprocess.service.ExporterService",
             side_effect=lambda _: _StageStub(calls, "exporter"),
         ), patch(
@@ -50,7 +53,14 @@ class PostProcessServiceTest(unittest.TestCase):
 
         self.assertEqual(
             calls,
-            ["stage-hints-semantic", "segmenter", "subtitles", "exporter", "copywriter"],
+            [
+                "stage-hints-semantic",
+                "segmenter",
+                "subtitles",
+                "highlight-planner",
+                "exporter",
+                "copywriter",
+            ],
         )
 
     def test_run_once_passes_session_filters_to_stages(self) -> None:
@@ -67,6 +77,9 @@ class PostProcessServiceTest(unittest.TestCase):
             "arl.postprocess.service.SubtitleService",
             side_effect=lambda _: _FilteredStageStub(calls, "subtitles"),
         ), patch(
+            "arl.postprocess.service.HighlightPlannerService",
+            side_effect=lambda _: _FilteredStageStub(calls, "highlight-planner"),
+        ), patch(
             "arl.postprocess.service.ExporterService",
             side_effect=lambda _: _FilteredStageStub(calls, "exporter"),
         ), patch(
@@ -81,6 +94,7 @@ class PostProcessServiceTest(unittest.TestCase):
                 ("stage-hints-semantic", {"session-a", "session-b"}),
                 ("segmenter", {"session-a", "session-b"}),
                 ("subtitles", {"session-a", "session-b"}),
+                ("highlight-planner", {"session-a", "session-b"}),
                 ("exporter", {"session-a", "session-b"}),
                 ("copywriter", {"session-a", "session-b"}),
             ],

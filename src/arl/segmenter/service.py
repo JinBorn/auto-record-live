@@ -94,8 +94,16 @@ class SegmenterService:
             return [self._fallback_boundary(asset, duration)]
 
         boundaries: list[MatchBoundary] = []
+        post_game_times = self._resolve_post_game_times(asset, duration, stage_hints)
         for index, start in enumerate(in_game_starts):
-            end = duration if index + 1 >= len(in_game_starts) else in_game_starts[index + 1]
+            fallback_end = (
+                duration if index + 1 >= len(in_game_starts) else in_game_starts[index + 1]
+            )
+            end = self._boundary_end_from_post_game(
+                start=start,
+                fallback_end=fallback_end,
+                post_game_times=post_game_times,
+            )
             if end <= start:
                 continue
             boundaries.append(
@@ -129,6 +137,36 @@ class SegmenterService:
                 continue
             starts.add(round(at_seconds, 3))
         return sorted(starts)
+
+    def _resolve_post_game_times(
+        self,
+        asset: RecordingAsset,
+        duration: float,
+        stage_hints: list[MatchStageHint],
+    ) -> list[float]:
+        times: set[float] = set()
+        for hint in stage_hints:
+            if hint.stage != MatchStage.POST_GAME:
+                continue
+            at_seconds = self._hint_at_seconds(asset, hint)
+            if at_seconds is None:
+                continue
+            if at_seconds <= 0.0 or at_seconds > duration:
+                continue
+            times.add(round(at_seconds, 3))
+        return sorted(times)
+
+    @staticmethod
+    def _boundary_end_from_post_game(
+        *,
+        start: float,
+        fallback_end: float,
+        post_game_times: list[float],
+    ) -> float:
+        for at_seconds in post_game_times:
+            if start < at_seconds <= fallback_end:
+                return at_seconds
+        return fallback_end
 
     def _hint_at_seconds(
         self,

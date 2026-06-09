@@ -9,6 +9,7 @@ from pathlib import Path
 from arl.config import Settings, StorageSettings
 from arl.copywriter.models import CopywriterStateFile
 from arl.exporter.models import ExporterStateFile
+from arl.highlights.models import HighlightPlannerStateFile
 from arl.postprocess.reset import PostProcessResetService
 from arl.segmenter.models import (
     MatchStageHint,
@@ -19,6 +20,8 @@ from arl.segmenter.models import (
 from arl.shared.contracts import (
     CopyAsset,
     ExportAsset,
+    HighlightClipWindow,
+    HighlightPlanAsset,
     MatchBoundary,
     MatchStage,
     SubtitleAsset,
@@ -99,6 +102,12 @@ class PostProcessResetServiceTest(unittest.TestCase):
                 ),
             ),
             (
+                "highlight-planner-state.json",
+                HighlightPlannerStateFile(
+                    processed_match_keys=[f"{target}:1", f"{other}:1"]
+                ),
+            ),
+            (
                 "copywriter-state.json",
                 CopywriterStateFile(processed_match_keys=[f"{target}:1", f"{other}:1"]),
             ),
@@ -133,6 +142,7 @@ class PostProcessResetServiceTest(unittest.TestCase):
         self.assertEqual(self._session_ids("match-stage-hints.jsonl", MatchStageHint), [other])
         self.assertEqual(self._session_ids("match-boundaries.jsonl", MatchBoundary), [other])
         self.assertEqual(self._session_ids("subtitle-assets.jsonl", SubtitleAsset), [other])
+        self.assertEqual(self._session_ids("highlight-plans.jsonl", HighlightPlanAsset), [other])
         self.assertEqual(self._session_ids("export-assets.jsonl", ExportAsset), [other])
         self.assertEqual(self._session_ids("copy-assets.jsonl", CopyAsset), [other])
 
@@ -156,6 +166,12 @@ class PostProcessResetServiceTest(unittest.TestCase):
         self.assertEqual(
             self._read_json(self.temp_root / "exporter-state.json")["deferred_match_keys"],
             [f"{other}:2"],
+        )
+        self.assertEqual(
+            self._read_json(self.temp_root / "highlight-planner-state.json")[
+                "processed_match_keys"
+            ],
+            [f"{other}:1"],
         )
         self.assertEqual(
             self._read_json(self.temp_root / "copywriter-state.json")["processed_match_keys"],
@@ -253,6 +269,23 @@ class PostProcessResetServiceTest(unittest.TestCase):
                 match_index=1,
                 path=str(subtitle_path),
                 format="srt",
+            ),
+        )
+        append_model(
+            self.temp_root / "highlight-plans.jsonl",
+            HighlightPlanAsset(
+                session_id=session_id,
+                match_index=1,
+                source_boundary_start_seconds=75.0,
+                source_boundary_end_seconds=1875.0,
+                windows=[
+                    HighlightClipWindow(
+                        started_at_seconds=0.0,
+                        ended_at_seconds=1800.0,
+                        reason="fixture",
+                    )
+                ],
+                created_at=created_at,
             ),
         )
         append_model(

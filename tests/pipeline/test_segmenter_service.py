@@ -144,6 +144,111 @@ class SegmenterServiceTest(unittest.TestCase):
         self.assertEqual(boundaries[1]["started_at_seconds"], 1320.0)
         self.assertEqual(boundaries[1]["ended_at_seconds"], 2400.0)
 
+    def test_segmenter_ends_match_at_post_game_before_next_in_game(self) -> None:
+        append_model(
+            self.recording_assets_path,
+            RecordingAsset(
+                session_id="session-segment-post-game",
+                source_type=SourceType.BROWSER_CAPTURE,
+                path="/tmp/segment-post-game.mp4",
+                started_at=datetime(2026, 6, 9, 6, 0, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 6, 9, 7, 0, tzinfo=timezone.utc),
+            ),
+        )
+        for stage, at_seconds in [
+            (MatchStage.IN_GAME, 0.0),
+            (MatchStage.POST_GAME, 1314.0),
+            (MatchStage.IN_GAME, 1800.0),
+        ]:
+            append_model(
+                self.match_stage_hints_path,
+                MatchStageHint(
+                    session_id="session-segment-post-game",
+                    stage=stage,
+                    at_seconds=at_seconds,
+                ),
+            )
+
+        SegmenterService(self.settings).run()
+        boundaries = _read_jsonl(self.boundaries_path)
+
+        self.assertEqual(len(boundaries), 2)
+        self.assertEqual(boundaries[0]["started_at_seconds"], 0.0)
+        self.assertEqual(boundaries[0]["ended_at_seconds"], 1314.0)
+        self.assertEqual(boundaries[1]["started_at_seconds"], 1800.0)
+        self.assertEqual(boundaries[1]["ended_at_seconds"], 3600.0)
+
+    def test_segmenter_applies_post_game_to_matching_in_game_window(self) -> None:
+        append_model(
+            self.recording_assets_path,
+            RecordingAsset(
+                session_id="session-segment-two-post-game",
+                source_type=SourceType.BROWSER_CAPTURE,
+                path="/tmp/segment-two-post-game.mp4",
+                started_at=datetime(2026, 6, 9, 8, 0, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 6, 9, 9, 30, tzinfo=timezone.utc),
+            ),
+        )
+        for stage, at_seconds in [
+            (MatchStage.IN_GAME, 60.0),
+            (MatchStage.POST_GAME, 1500.0),
+            (MatchStage.IN_GAME, 2100.0),
+            (MatchStage.POST_GAME, 4200.0),
+        ]:
+            append_model(
+                self.match_stage_hints_path,
+                MatchStageHint(
+                    session_id="session-segment-two-post-game",
+                    stage=stage,
+                    at_seconds=at_seconds,
+                ),
+            )
+
+        SegmenterService(self.settings).run()
+        boundaries = _read_jsonl(self.boundaries_path)
+
+        self.assertEqual(len(boundaries), 2)
+        self.assertEqual(boundaries[0]["started_at_seconds"], 60.0)
+        self.assertEqual(boundaries[0]["ended_at_seconds"], 1500.0)
+        self.assertEqual(boundaries[1]["started_at_seconds"], 2100.0)
+        self.assertEqual(boundaries[1]["ended_at_seconds"], 4200.0)
+
+    def test_segmenter_ignores_out_of_range_post_game_hints(self) -> None:
+        append_model(
+            self.recording_assets_path,
+            RecordingAsset(
+                session_id="session-segment-post-game-out-of-range",
+                source_type=SourceType.BROWSER_CAPTURE,
+                path="/tmp/segment-post-game-out-of-range.mp4",
+                started_at=datetime(2026, 6, 9, 10, 0, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 6, 9, 11, 0, tzinfo=timezone.utc),
+            ),
+        )
+        for stage, at_seconds in [
+            (MatchStage.POST_GAME, 0.0),
+            (MatchStage.POST_GAME, 100.0),
+            (MatchStage.IN_GAME, 120.0),
+            (MatchStage.IN_GAME, 1800.0),
+            (MatchStage.POST_GAME, 3700.0),
+        ]:
+            append_model(
+                self.match_stage_hints_path,
+                MatchStageHint(
+                    session_id="session-segment-post-game-out-of-range",
+                    stage=stage,
+                    at_seconds=at_seconds,
+                ),
+            )
+
+        SegmenterService(self.settings).run()
+        boundaries = _read_jsonl(self.boundaries_path)
+
+        self.assertEqual(len(boundaries), 2)
+        self.assertEqual(boundaries[0]["started_at_seconds"], 120.0)
+        self.assertEqual(boundaries[0]["ended_at_seconds"], 1800.0)
+        self.assertEqual(boundaries[1]["started_at_seconds"], 1800.0)
+        self.assertEqual(boundaries[1]["ended_at_seconds"], 3600.0)
+
     def test_segmenter_falls_back_to_single_boundary_without_hints(self) -> None:
         append_model(
             self.recording_assets_path,

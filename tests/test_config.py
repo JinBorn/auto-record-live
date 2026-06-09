@@ -257,6 +257,31 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
 
         self.assertEqual(settings.export.ffmpeg_video_codec, "h265")
 
+    def test_highlight_planner_envs_load(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_HIGHLIGHT_PLANNER_ENABLED"] = "0"
+            os.environ["ARL_HIGHLIGHT_CUE_PADDING_SECONDS"] = "10.5"
+            os.environ["ARL_HIGHLIGHT_KEYWORD_PADDING_SECONDS"] = "24"
+            os.environ["ARL_HIGHLIGHT_MERGE_GAP_SECONDS"] = "60"
+            os.environ["ARL_HIGHLIGHT_KEEP_EDGE_SECONDS"] = "20"
+            os.environ["ARL_HIGHLIGHT_MIN_BOUNDARY_DURATION_SECONDS"] = "300"
+            os.environ["ARL_HIGHLIGHT_MIN_REDUCTION_SECONDS"] = "45"
+            os.environ["ARL_HIGHLIGHT_MIN_RETAINED_SECONDS"] = "180"
+            os.environ["ARL_HIGHLIGHT_MIN_RETAINED_FRACTION"] = "0.4"
+            os.environ["ARL_HIGHLIGHT_MAX_WINDOWS"] = "5"
+            settings = load_settings()
+
+        self.assertFalse(settings.highlights.enabled)
+        self.assertEqual(settings.highlights.cue_padding_seconds, 10.5)
+        self.assertEqual(settings.highlights.highlight_padding_seconds, 24.0)
+        self.assertEqual(settings.highlights.merge_gap_seconds, 60.0)
+        self.assertEqual(settings.highlights.keep_edge_seconds, 20.0)
+        self.assertEqual(settings.highlights.min_boundary_duration_seconds, 300.0)
+        self.assertEqual(settings.highlights.min_reduction_seconds, 45.0)
+        self.assertEqual(settings.highlights.min_retained_seconds, 180.0)
+        self.assertEqual(settings.highlights.min_retained_fraction, 0.4)
+        self.assertEqual(settings.highlights.max_windows, 5)
+
     def test_maintenance_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             os.environ["ARL_MAINTENANCE_MAX_JSONL_BYTES"] = "2048"

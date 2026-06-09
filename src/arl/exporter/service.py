@@ -12,7 +12,13 @@ from arl.config import Settings
 from arl.exporter.models import ExporterAuditEvent, ExporterStateFile
 from arl.orchestrator.state_store import load_orchestrator_state
 from arl.segmenter.durations import recording_duration_seconds
-from arl.shared.contracts import ExportAsset, MatchBoundary, RecordingAsset, SubtitleAsset
+from arl.shared.contracts import (
+    ExportAsset,
+    HighlightPlanAsset,
+    MatchBoundary,
+    RecordingAsset,
+    SubtitleAsset,
+)
 from arl.shared.failure_contracts import FailureDecision, classify_failure_reason
 from arl.shared.ffmpeg_runner import rotate_stderr_logs, run_ffmpeg_attempt
 from arl.shared.jsonl_store import append_model, load_models
@@ -24,6 +30,7 @@ class ExporterService:
         self.settings = settings
         self.boundaries_path = settings.storage.temp_dir / "match-boundaries.jsonl"
         self.subtitles_path = settings.storage.temp_dir / "subtitle-assets.jsonl"
+        self.highlight_plans_path = settings.storage.temp_dir / "highlight-plans.jsonl"
         self.exports_path = settings.storage.temp_dir / "export-assets.jsonl"
         self.state_path = settings.storage.temp_dir / "exporter-state.json"
         self.audit_path = settings.storage.temp_dir / "exporter-events.jsonl"
@@ -60,11 +67,15 @@ class ExporterService:
                 f"session_ids={session_filter} match_indices={match_index_filter}",
             )
         subtitles = load_models(self.subtitles_path, SubtitleAsset)
+        highlight_plans = load_models(self.highlight_plans_path, HighlightPlanAsset)
         recording_assets = load_models(
             self.settings.storage.temp_dir / "recording-assets.jsonl",
             RecordingAsset,
         )
         subtitle_map = {(item.session_id, item.match_index): item for item in subtitles}
+        highlight_plan_map = {
+            (item.session_id, item.match_index): item for item in highlight_plans
+        }
         recording_by_session = {item.session_id: item for item in recording_assets}
         platform_by_session = self._platform_by_session()
         state = self._load_state()
@@ -143,11 +154,16 @@ class ExporterService:
                 continue
 
             platform = platform_by_session.get(boundary.session_id, "unknown")
+            highlight_plan = self._valid_highlight_plan(
+                highlight_plan_map.get((boundary.session_id, boundary.match_index)),
+                boundary,
+            )
             output_path, was_ffmpeg_fallback = self._write_export(
                 boundary,
                 subtitle,
                 recording_asset,
                 platform,
+                highlight_plan,
             )
             if output_path is None:
                 self._mark_deferred(state, deferred_keys, key)
@@ -277,6 +293,7 @@ class ExporterService:
         subtitle: SubtitleAsset,
         recording_asset: RecordingAsset | None,
         platform: str,
+        highlight_plan: HighlightPlanAsset | None = None,
     ) -> tuple[Path | None, bool]:
         ffmpeg_path = shutil.which("ffmpeg")
         if (
@@ -291,6 +308,7 @@ class ExporterService:
                 subtitle,
                 recording_asset,
                 platform,
+                highlight_plan,
             )
 
         if self.settings.export.enable_ffmpeg:
@@ -317,13 +335,23 @@ class ExporterService:
         subtitle: SubtitleAsset,
         recording_asset: RecordingAsset,
         platform: str,
+        highlight_plan: HighlightPlanAsset | None = None,
     ) -> tuple[Path | None, bool]:
         output_dir = self._platform_export_dir(platform)
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{boundary.session_id}_match{boundary.match_index:02d}.mp4"
         subtitle_path = Path(subtitle.path).resolve()
         subtitle_is_placeholder = self._subtitle_is_placeholder(subtitle_path)
-        if subtitle_is_placeholder and self._should_stream_copy_export():
+        if highlight_plan is not None:
+            command = self._planned_ffmpeg_command(
+                boundary=boundary,
+                subtitle_path=subtitle_path,
+                subtitle_is_placeholder=subtitle_is_placeholder,
+                recording_path=recording_asset.path,
+                output_path=output_path,
+                highlight_plan=highlight_plan,
+            )
+        elif subtitle_is_placeholder and self._should_stream_copy_export():
             log(
                 "exporter",
                 "placeholder subtitle detected; using stream copy "
@@ -480,6 +508,106 @@ class ExporterService:
         )
         self._remove_file_if_exists(output_path)
         return None, True
+
+    def _valid_highlight_plan(
+        self,
+        plan: HighlightPlanAsset | None,
+        boundary: MatchBoundary,
+    ) -> HighlightPlanAsset | None:
+        if plan is None:
+            return None
+        tolerance_seconds = 1.0
+        if (
+            abs(plan.source_boundary_start_seconds - boundary.started_at_seconds)
+            > tolerance_seconds
+            or abs(plan.source_boundary_end_seconds - boundary.ended_at_seconds)
+            > tolerance_seconds
+        ):
+            log(
+                "exporter",
+                "ignored stale highlight plan "
+                f"session_id={boundary.session_id} match_index={boundary.match_index}",
+            )
+            return None
+        duration = boundary.ended_at_seconds - boundary.started_at_seconds
+        if duration <= 0.0 or not plan.windows:
+            return None
+        for window in plan.windows:
+            if window.started_at_seconds < 0.0:
+                return None
+            if window.ended_at_seconds <= window.started_at_seconds:
+                return None
+            if window.ended_at_seconds > duration + tolerance_seconds:
+                return None
+        return plan
+
+    def _planned_ffmpeg_command(
+        self,
+        *,
+        boundary: MatchBoundary,
+        subtitle_path: Path,
+        subtitle_is_placeholder: bool,
+        recording_path: str,
+        output_path: Path,
+        highlight_plan: HighlightPlanAsset,
+    ) -> list[str]:
+        duration = boundary.ended_at_seconds - boundary.started_at_seconds
+        video_filter_parts: list[str] = []
+        if not subtitle_is_placeholder:
+            video_filter_parts.append(self._subtitle_filter_arg(subtitle_path))
+        select_expr = self._highlight_select_expr(highlight_plan)
+        video_filter_parts.extend(
+            [
+                f"select='{select_expr}'",
+                "setpts=N/FRAME_RATE/TB",
+            ]
+        )
+        audio_filter = f"aselect='{select_expr}',asetpts=N/SR/TB"
+        log(
+            "exporter",
+            "highlight plan export "
+            f"session_id={boundary.session_id} match_index={boundary.match_index} "
+            f"windows={len(highlight_plan.windows)}",
+        )
+        command = [
+            "ffmpeg",
+            "-y",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            str(boundary.started_at_seconds),
+            "-t",
+            str(duration),
+            "-i",
+            recording_path,
+            "-vf",
+            ",".join(video_filter_parts),
+            "-af",
+            audio_filter,
+        ]
+        command.extend(self._video_codec_args())
+        command.extend(
+            [
+                "-preset",
+                self.settings.export.ffmpeg_preset,
+                "-crf",
+                str(self.settings.export.ffmpeg_crf),
+                str(output_path),
+            ]
+        )
+        return command
+
+    def _highlight_select_expr(self, plan: HighlightPlanAsset) -> str:
+        return "+".join(
+            (
+                "between("
+                f"t,{window.started_at_seconds:.3f},{window.ended_at_seconds:.3f}"
+                ")"
+            )
+            for window in plan.windows
+        )
 
     def _platform_by_session(self) -> dict[str, str]:
         platforms: dict[str, str] = {}

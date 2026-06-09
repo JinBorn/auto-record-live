@@ -149,6 +149,19 @@ class SegmenterSettings(BaseModel):
     template_fallback_enabled: bool = False
 
 
+class HighlightSettings(BaseModel):
+    enabled: bool = True
+    cue_padding_seconds: float = 6.0
+    highlight_padding_seconds: float = 22.0
+    merge_gap_seconds: float = 10.0
+    keep_edge_seconds: float = 30.0
+    min_boundary_duration_seconds: float = 600.0
+    min_reduction_seconds: float = 120.0
+    min_retained_seconds: float = 480.0
+    min_retained_fraction: float = 0.55
+    max_windows: int = 8
+
+
 class ExportSettings(BaseModel):
     enable_ffmpeg: bool = False
     ffmpeg_video_codec: str = "auto"
@@ -200,6 +213,7 @@ class Settings(BaseModel):
     recording: RecordingSettings = Field(default_factory=RecordingSettings)
     orchestrator: OrchestratorSettings = Field(default_factory=OrchestratorSettings)
     segmenter: SegmenterSettings = Field(default_factory=SegmenterSettings)
+    highlights: HighlightSettings = Field(default_factory=HighlightSettings)
     subtitles: SubtitleSettings = Field(default_factory=SubtitleSettings)
     export: ExportSettings = Field(default_factory=ExportSettings)
     maintenance: MaintenanceSettings = Field(default_factory=MaintenanceSettings)
@@ -216,6 +230,13 @@ def _env_int(key: str, default: int) -> int:
     if raw is None or raw.strip() == "":
         return default
     return int(raw)
+
+
+def _env_float(key: str, default: float) -> float:
+    raw = os.getenv(key)
+    if raw is None or raw.strip() == "":
+        return default
+    return float(raw)
 
 
 def _env_bool(key: str, default: bool) -> bool:
@@ -478,6 +499,42 @@ def load_settings() -> Settings:
                 "ARL_SEGMENTER_TEMPLATE_FALLBACK_ENABLED",
                 False,
             ),
+        ),
+        highlights=HighlightSettings(
+            enabled=_env_bool("ARL_HIGHLIGHT_PLANNER_ENABLED", True),
+            cue_padding_seconds=max(
+                0.0,
+                _env_float("ARL_HIGHLIGHT_CUE_PADDING_SECONDS", 6.0),
+            ),
+            highlight_padding_seconds=max(
+                0.0,
+                _env_float("ARL_HIGHLIGHT_KEYWORD_PADDING_SECONDS", 22.0),
+            ),
+            merge_gap_seconds=max(
+                0.0,
+                _env_float("ARL_HIGHLIGHT_MERGE_GAP_SECONDS", 10.0),
+            ),
+            keep_edge_seconds=max(
+                0.0,
+                _env_float("ARL_HIGHLIGHT_KEEP_EDGE_SECONDS", 30.0),
+            ),
+            min_boundary_duration_seconds=max(
+                0.0,
+                _env_float("ARL_HIGHLIGHT_MIN_BOUNDARY_DURATION_SECONDS", 600.0),
+            ),
+            min_reduction_seconds=max(
+                0.0,
+                _env_float("ARL_HIGHLIGHT_MIN_REDUCTION_SECONDS", 120.0),
+            ),
+            min_retained_seconds=max(
+                0.0,
+                _env_float("ARL_HIGHLIGHT_MIN_RETAINED_SECONDS", 480.0),
+            ),
+            min_retained_fraction=min(
+                1.0,
+                max(0.0, _env_float("ARL_HIGHLIGHT_MIN_RETAINED_FRACTION", 0.55)),
+            ),
+            max_windows=max(1, _env_int("ARL_HIGHLIGHT_MAX_WINDOWS", 8)),
         ),
         recording=RecordingSettings(
             preferred_resolution=os.getenv("ARL_RECORDING_PREFERRED_RESOLUTION", "1080p"),

@@ -9,13 +9,20 @@ from pydantic import BaseModel, Field, ValidationError
 from arl.config import Settings
 from arl.copywriter.models import CopywriterStateFile
 from arl.exporter.models import ExporterStateFile
+from arl.highlights.models import HighlightPlannerStateFile
 from arl.segmenter.models import (
     MatchStageHint,
     MatchStageSignal,
     SegmenterStateFile,
     StageSignalIngestStateFile,
 )
-from arl.shared.contracts import CopyAsset, ExportAsset, MatchBoundary, SubtitleAsset
+from arl.shared.contracts import (
+    CopyAsset,
+    ExportAsset,
+    HighlightPlanAsset,
+    MatchBoundary,
+    SubtitleAsset,
+)
 from arl.shared.logging import log
 from arl.subtitles.models import SubtitleStateFile
 
@@ -108,6 +115,12 @@ class PostProcessResetService:
             result=result,
             delete_files=delete_files,
         )
+        self._rewrite_jsonl(
+            self.temp_dir / "highlight-plans.jsonl",
+            HighlightPlanAsset,
+            lambda item: item.session_id in session_ids,
+            result.removed_rows_by_file,
+        )
         self._rewrite_artifact_manifest(
             self.temp_dir / "export-assets.jsonl",
             ExportAsset,
@@ -161,6 +174,15 @@ class PostProcessResetService:
                     state.deferred_match_keys,
                     session_ids,
                 )
+            ),
+            result.removed_state_keys_by_file,
+        )
+        self._rewrite_state(
+            self.temp_dir / "highlight-planner-state.json",
+            HighlightPlannerStateFile,
+            lambda state: self._remove_session_prefixed_keys(
+                state.processed_match_keys,
+                session_ids,
             ),
             result.removed_state_keys_by_file,
         )

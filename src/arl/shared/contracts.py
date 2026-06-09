@@ -49,6 +49,21 @@ class MatchBoundary(BaseModel):
     confidence: float
 
 
+class HighlightClipWindow(BaseModel):
+    started_at_seconds: float
+    ended_at_seconds: float
+    reason: str
+
+
+class HighlightPlanAsset(BaseModel):
+    session_id: str
+    match_index: int
+    source_boundary_start_seconds: float
+    source_boundary_end_seconds: float
+    windows: list[HighlightClipWindow]
+    created_at: datetime
+
+
 class SubtitleAsset(BaseModel):
     session_id: str
     match_index: int

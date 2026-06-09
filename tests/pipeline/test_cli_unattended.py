@@ -161,6 +161,27 @@ class CliUnattendedTest(unittest.TestCase):
         self.assertEqual(args.match_indices, [3, 4])
         self.assertTrue(args.force_reprocess)
 
+    def test_highlight_planner_command_parses_filters(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "highlight-planner",
+                "--session-id",
+                "session-a",
+                "--session-ids",
+                "session-b,session-c",
+                "--match-index",
+                "2",
+                "--match-indices",
+                "3,4",
+            ]
+        )
+
+        self.assertEqual(args.command, "highlight-planner")
+        self.assertEqual(args.session_id, "session-a")
+        self.assertEqual(args.session_ids, "session-b,session-c")
+        self.assertEqual(args.match_index, 2)
+        self.assertEqual(args.match_indices, [3, 4])
+
 
 if __name__ == "__main__":
     unittest.main()
