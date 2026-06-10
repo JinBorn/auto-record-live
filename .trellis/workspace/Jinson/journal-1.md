@@ -1792,3 +1792,37 @@ Added optional H.265 export transcoding, post-game boundary truncation, and cons
 ### Next Steps
 
 - None - task complete
+
+
+## Session 44: Improve ASR quality
+
+**Date**: 2026-06-10
+**Task**: Improve ASR quality
+**Branch**: `main`
+
+### Summary
+
+Added optional ASR audio preprocessing, separate CUDA compute settings, disabled subtitle burn-in control, validated CUDA faster-whisper on GTX 1650, and updated Trellis templates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a476fdc` | (see git log) |
+| `966bb5e` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
