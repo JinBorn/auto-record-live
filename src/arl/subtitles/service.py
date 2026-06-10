@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import inspect
 import os
+import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -34,6 +36,15 @@ class WhisperModelConfig:
     compute_type: str
 
 
+@dataclass(frozen=True)
+class TranscriptionInput:
+    path: Path
+    boundary_start_seconds: float
+    boundary_end_seconds: float
+    clip_timestamps: list[float] | None
+    preprocessed: bool = False
+
+
 class SubtitleService:
     _TRANSCRIBE_SUFFIXES = {
         ".aac",
@@ -58,6 +69,7 @@ class SubtitleService:
         self.assets_path = settings.storage.temp_dir / "subtitle-assets.jsonl"
         self.audit_path = settings.storage.temp_dir / "subtitles-events.jsonl"
         self.state_path = settings.storage.temp_dir / "subtitles-state.json"
+        self.asr_audio_dir = settings.storage.temp_dir / "asr-audio"
         self._whisper_model: Any | None = None
         self._whisper_model_initialized = False
         self._whisper_models: dict[WhisperModelConfig, Any | None] = {}
@@ -303,6 +315,7 @@ class SubtitleService:
                 reason_detail=reason_detail,
             )
 
+        transcription_input = self._prepare_transcription_input(boundary, source_path)
         last_failure: TranscribeOutcome | None = None
         attempted_devices: list[str] = []
         for model_config in self._whisper_model_candidates():
@@ -332,7 +345,7 @@ class SubtitleService:
                 model,
                 model_config,
                 boundary,
-                source_path,
+                transcription_input,
             )
             if model_config.device == "cpu" and "cuda" in attempted_devices:
                 outcome = TranscribeOutcome(
@@ -375,16 +388,18 @@ class SubtitleService:
         model: Any,
         model_config: WhisperModelConfig,
         boundary: MatchBoundary,
-        source_path: Path,
+        transcription_input: TranscriptionInput,
     ) -> TranscribeOutcome:
         try:
-            boundary_start = boundary.started_at_seconds
-            boundary_end = boundary.ended_at_seconds
+            transcribe_kwargs: dict[str, Any] = {
+                "language": self.settings.subtitles.language or None,
+                "word_timestamps": True,
+            }
+            if transcription_input.clip_timestamps is not None:
+                transcribe_kwargs["clip_timestamps"] = transcription_input.clip_timestamps
             segments, info = model.transcribe(
-                str(source_path),
-                language=self.settings.subtitles.language or None,
-                word_timestamps=True,
-                clip_timestamps=[boundary_start, boundary_end],
+                str(transcription_input.path),
+                **transcribe_kwargs,
             )
         except Exception as exc:
             log(
@@ -453,8 +468,8 @@ class SubtitleService:
                 entry = self._entry_from_segment(
                     segment,
                     raw_text,
-                    boundary_start,
-                    boundary_end,
+                    transcription_input.boundary_start_seconds,
+                    transcription_input.boundary_end_seconds,
                 )
                 if entry is None:
                     continue
@@ -598,11 +613,141 @@ class SubtitleService:
         except (TypeError, ValueError):
             return None
 
+    def _prepare_transcription_input(
+        self,
+        boundary: MatchBoundary,
+        source_path: Path,
+    ) -> TranscriptionInput:
+        original_input = TranscriptionInput(
+            path=source_path,
+            boundary_start_seconds=boundary.started_at_seconds,
+            boundary_end_seconds=boundary.ended_at_seconds,
+            clip_timestamps=[
+                boundary.started_at_seconds,
+                boundary.ended_at_seconds,
+            ],
+        )
+        if not self.settings.subtitles.preprocess_audio:
+            return original_input
+
+        ffmpeg_path = shutil.which("ffmpeg")
+        if ffmpeg_path is None:
+            log(
+                "subtitles",
+                (
+                    "audio preprocess skipped "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    "reason=missing_ffmpeg"
+                ),
+            )
+            return original_input
+
+        duration = boundary.ended_at_seconds - boundary.started_at_seconds
+        if duration <= 0:
+            log(
+                "subtitles",
+                (
+                    "audio preprocess skipped "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    "reason=invalid_boundary_duration"
+                ),
+            )
+            return original_input
+
+        output_path = (
+            self.asr_audio_dir
+            / boundary.session_id
+            / f"match-{boundary.match_index:02d}.wav"
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        command = [
+            ffmpeg_path,
+            "-y",
+            "-hide_banner",
+            "-nostdin",
+            "-ss",
+            f"{boundary.started_at_seconds:.3f}",
+            "-t",
+            f"{duration:.3f}",
+            "-i",
+            str(source_path),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-af",
+            self.settings.subtitles.preprocess_audio_filter,
+            "-c:a",
+            "pcm_s16le",
+            str(output_path),
+        ]
+        try:
+            subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=self.settings.subtitles.preprocess_timeout_seconds,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            log(
+                "subtitles",
+                (
+                    "audio preprocess skipped "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    f"reason={self._format_preprocess_failure(exc)}"
+                ),
+            )
+            return original_input
+
+        if not output_path.exists() or output_path.stat().st_size <= 0:
+            log(
+                "subtitles",
+                (
+                    "audio preprocess skipped "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    "reason=output_missing_or_empty"
+                ),
+            )
+            return original_input
+
+        log(
+            "subtitles",
+            (
+                "audio preprocess written "
+                f"session_id={boundary.session_id} match_index={boundary.match_index}"
+            ),
+        )
+        return TranscriptionInput(
+            path=output_path,
+            boundary_start_seconds=0.0,
+            boundary_end_seconds=duration,
+            clip_timestamps=None,
+            preprocessed=True,
+        )
+
+    def _format_preprocess_failure(self, exc: Exception) -> str:
+        if isinstance(exc, subprocess.TimeoutExpired):
+            return f"timeout:{exc.timeout}"
+        if isinstance(exc, subprocess.CalledProcessError):
+            stderr = (exc.stderr or "").strip().splitlines()
+            detail = stderr[-1] if stderr else str(exc)
+            return f"exit_status:{exc.returncode}:{detail[-240:]}"
+        return f"{exc.__class__.__name__}:{str(exc)[-240:]}"
+
     def _whisper_model_candidates(self) -> list[WhisperModelConfig]:
         device = self.settings.subtitles.device
         compute_type = self.settings.subtitles.compute_type
         cpu_compute_type = self.settings.subtitles.cpu_compute_type
-        cuda_compute_type = "float16" if compute_type == "auto" else compute_type
+        configured_cuda_compute_type = self.settings.subtitles.cuda_compute_type
+        cuda_compute_type = (
+            "float16"
+            if configured_cuda_compute_type == "auto"
+            else configured_cuda_compute_type
+        )
+        if compute_type != "auto":
+            cuda_compute_type = compute_type
         resolved_cpu_compute_type = cpu_compute_type if compute_type == "auto" else compute_type
 
         if device == "cpu":

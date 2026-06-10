@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import types
@@ -523,6 +524,22 @@ class SubtitleServiceTest(unittest.TestCase):
         self.assertEqual(audit_rows[0]["device"], "cpu")
         self.assertEqual(audit_rows[0]["fallback_device"], "cpu")
 
+    def test_auto_device_can_use_cuda_compute_type_with_cpu_fallback(self) -> None:
+        settings = self.settings.model_copy(deep=True)
+        settings.subtitles.compute_type = "auto"
+        settings.subtitles.cuda_compute_type = "int8_float16"
+        settings.subtitles.cpu_compute_type = "int8"
+
+        service = SubtitleService(settings)
+
+        self.assertEqual(
+            [
+                (candidate.device, candidate.compute_type)
+                for candidate in service._whisper_model_candidates()
+            ],
+            [("cuda", "int8_float16"), ("cpu", "int8")],
+        )
+
     def test_explicit_cuda_does_not_fallback_to_cpu(self) -> None:
         self._seed_single_media_boundary(session_id="session-subtitle-cuda-only")
         settings = self.settings.model_copy(deep=True)
@@ -559,6 +576,115 @@ class SubtitleServiceTest(unittest.TestCase):
         audit_rows = _read_jsonl(self.temp_root / "subtitles-events.jsonl")
         self.assertEqual(audit_rows[0]["event_type"], "subtitle_transcribe_succeeded")
         self.assertEqual(audit_rows[0]["device"], "cpu")
+
+    def test_preprocessed_audio_is_used_for_transcription(self) -> None:
+        session_id = "session-subtitle-preprocessed"
+        append_model(
+            self.boundaries_path,
+            MatchBoundary(
+                session_id=session_id,
+                match_index=1,
+                started_at_seconds=10.0,
+                ended_at_seconds=40.0,
+                confidence=0.9,
+            ),
+        )
+        recording_path = self.raw_root / session_id / "recording.mp4"
+        recording_path.parent.mkdir(parents=True, exist_ok=True)
+        recording_path.write_text("dummy media placeholder", encoding="utf-8")
+        append_model(
+            self.recording_assets_path,
+            RecordingAsset(
+                session_id=session_id,
+                source_type=SourceType.BROWSER_CAPTURE,
+                path=str(recording_path),
+                started_at=datetime(2026, 4, 26, 9, 0, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 4, 26, 9, 30, tzinfo=timezone.utc),
+            ),
+        )
+        settings = self.settings.model_copy(deep=True)
+        settings.subtitles.device = "cpu"
+        settings.subtitles.preprocess_audio = True
+        model = _WhisperModelStub(
+            language_probability=0.95,
+            language="zh",
+            segments=[_Segment(2.0, 4.0, "preprocessed speech")],
+        )
+        service = SubtitleService(settings)
+        service._load_whisper_model = lambda: model
+
+        def _fake_ffmpeg(command, **kwargs):
+            Path(command[-1]).write_bytes(b"wav")
+            return types.SimpleNamespace(returncode=0)
+
+        with patch("arl.subtitles.service.shutil.which", return_value="ffmpeg"), patch(
+            "arl.subtitles.service.subprocess.run",
+            side_effect=_fake_ffmpeg,
+        ) as mocked_run:
+            service.run()
+
+        mocked_run.assert_called_once()
+        transcribe_kwargs = model.transcribe_kwargs[0]
+        self.assertTrue(str(transcribe_kwargs["path"]).endswith("match-01.wav"))
+        self.assertIsNone(transcribe_kwargs["clip_timestamps"])
+        subtitle_assets = _read_jsonl(self.subtitle_assets_path)
+        subtitle_text = Path(subtitle_assets[0]["path"]).read_text(encoding="utf-8")
+        self.assertIn("00:00:02,000 --> 00:00:04,000", subtitle_text)
+        self.assertIn("preprocessed speech", subtitle_text)
+
+    def test_preprocess_failure_falls_back_to_original_media(self) -> None:
+        session_id = "session-subtitle-preprocess-fallback"
+        append_model(
+            self.boundaries_path,
+            MatchBoundary(
+                session_id=session_id,
+                match_index=1,
+                started_at_seconds=10.0,
+                ended_at_seconds=40.0,
+                confidence=0.9,
+            ),
+        )
+        recording_path = self.raw_root / session_id / "recording.mp4"
+        recording_path.parent.mkdir(parents=True, exist_ok=True)
+        recording_path.write_text("dummy media placeholder", encoding="utf-8")
+        append_model(
+            self.recording_assets_path,
+            RecordingAsset(
+                session_id=session_id,
+                source_type=SourceType.BROWSER_CAPTURE,
+                path=str(recording_path),
+                started_at=datetime(2026, 4, 26, 9, 0, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 4, 26, 9, 30, tzinfo=timezone.utc),
+            ),
+        )
+        settings = self.settings.model_copy(deep=True)
+        settings.subtitles.device = "cpu"
+        settings.subtitles.preprocess_audio = True
+        model = _WhisperModelStub(
+            language_probability=0.95,
+            language="zh",
+            segments=[_Segment(10.0, 12.0, "original speech")],
+        )
+        service = SubtitleService(settings)
+        service._load_whisper_model = lambda: model
+
+        with patch("arl.subtitles.service.shutil.which", return_value="ffmpeg"), patch(
+            "arl.subtitles.service.subprocess.run",
+            side_effect=subprocess.CalledProcessError(
+                1,
+                ["ffmpeg"],
+                stderr="filter failed",
+            ),
+        ):
+            service.run()
+
+        transcribe_kwargs = model.transcribe_kwargs[0]
+        self.assertEqual(transcribe_kwargs["path"], str(recording_path))
+        self.assertEqual(transcribe_kwargs["clip_timestamps"], [10.0, 40.0])
+        subtitle_assets = _read_jsonl(self.subtitle_assets_path)
+        subtitle_text = Path(subtitle_assets[0]["path"]).read_text(encoding="utf-8")
+        self.assertIn("00:00:00,000 --> 00:00:02,000", subtitle_text)
+        self.assertIn("original speech", subtitle_text)
 
     def test_success_emits_succeeded_audit_with_language_fields(self) -> None:
         self._seed_single_media_boundary(session_id="session-subtitle-audit-success")

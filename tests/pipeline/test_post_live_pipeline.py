@@ -61,7 +61,7 @@ class PostLivePipelineTest(unittest.TestCase):
                 recorder_event_log_path=self.temp_root / "recorder-events.jsonl",
                 audit_log_path=self.temp_root / "orchestrator-events.jsonl",
             ),
-            recording=RecordingSettings(enable_ffmpeg=True),
+            recording=RecordingSettings(enable_ffmpeg=False),
             subtitles=SubtitleSettings(enabled=True),
             export=ExportSettings(enable_ffmpeg=True),
         )
@@ -115,19 +115,22 @@ class PostLivePipelineTest(unittest.TestCase):
         boundaries_path = self.temp_root / "match-boundaries.jsonl"
         subtitles_path = self.temp_root / "subtitle-assets.jsonl"
         exports_path = self.temp_root / "export-assets.jsonl"
+        exporter_state_path = self.temp_root / "exporter-state.json"
 
         self.assertEqual(_count_jsonl_lines(recording_assets_path), 1)
         self.assertEqual(_count_jsonl_lines(boundaries_path), 1)
         self.assertEqual(_count_jsonl_lines(subtitles_path), 1)
-        self.assertEqual(_count_jsonl_lines(exports_path), 1)
+        self.assertEqual(_count_jsonl_lines(exports_path), 0)
 
         subtitle_line = subtitles_path.read_text(encoding="utf-8").splitlines()[0]
         subtitle_payload = json.loads(subtitle_line)
         self.assertTrue(Path(subtitle_payload["path"]).exists())
 
-        export_line = exports_path.read_text(encoding="utf-8").splitlines()[0]
-        export_payload = json.loads(export_line)
-        self.assertTrue(Path(export_payload["path"]).exists())
+        exporter_state = json.loads(exporter_state_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            exporter_state["deferred_match_keys"],
+            ["session-20260425010000-abcd1234:1"],
+        )
 
         RecorderService(self.settings).run()
         SegmenterService(self.settings).run()
@@ -137,7 +140,12 @@ class PostLivePipelineTest(unittest.TestCase):
         self.assertEqual(_count_jsonl_lines(recording_assets_path), 1)
         self.assertEqual(_count_jsonl_lines(boundaries_path), 1)
         self.assertEqual(_count_jsonl_lines(subtitles_path), 1)
-        self.assertEqual(_count_jsonl_lines(exports_path), 1)
+        self.assertEqual(_count_jsonl_lines(exports_path), 0)
+        exporter_state = json.loads(exporter_state_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            exporter_state["deferred_match_keys"],
+            ["session-20260425010000-abcd1234:1"],
+        )
 
     def _seed_in_game_hints(self) -> None:
         for asset in load_models(self.temp_root / "recording-assets.jsonl", RecordingAsset):

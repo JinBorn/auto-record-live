@@ -242,6 +242,25 @@ ARL_EXPORT_ENABLE_FFMPEG=0
 ARL_WHISPER_MODEL_SIZE=tiny
 ```
 
+GTX 1650 4GB stable ASR settings:
+
+```env
+ARL_WHISPER_MODEL_SIZE=small
+ARL_WHISPER_DEVICE=auto
+ARL_WHISPER_COMPUTE_TYPE=auto
+ARL_WHISPER_CUDA_COMPUTE_TYPE=int8_float16
+ARL_WHISPER_CPU_COMPUTE_TYPE=int8
+ARL_ASR_PREPROCESS_AUDIO=1
+ARL_EXPORT_BURN_SUBTITLES=0
+```
+
+`ARL_ASR_PREPROCESS_AUDIO=1` extracts and denoises a boundary-scoped WAV before
+Whisper. If ffmpeg preprocessing fails, subtitles fall back to the original media
+input instead of failing the postprocess run. Third-party ASR should be wired as an
+explicit provider with credentials, timeout, quota, and privacy controls; it is not
+enabled by default. `ARL_WHISPER_MODEL_SIZE=medium` can be tested manually, but is
+not recommended for unattended GTX 1650 runs unless a short probe finishes quickly.
+
 多直播间同时开播时，`ARL_RECORDER_MAX_CONCURRENT_JOBS=1` 会让 recorder 一次只跑一个 ffmpeg 录制任务，压力最低。
 
 ## 排查

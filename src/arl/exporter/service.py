@@ -46,6 +46,7 @@ class ExporterService:
         log("exporter", "starting")
         log("exporter", f"ffmpeg_enabled={self.settings.export.enable_ffmpeg}")
         log("exporter", f"ffmpeg_video_codec={self.settings.export.ffmpeg_video_codec}")
+        log("exporter", f"burn_subtitles={int(self.settings.export.burn_subtitles)}")
         rotate_stderr_logs(self.stderr_dir, self.settings.export.stderr_retain_count)
         all_boundaries = load_models(self.boundaries_path, MatchBoundary)
         boundaries = self._filter_boundaries(
@@ -342,19 +343,20 @@ class ExporterService:
         output_path = output_dir / f"{boundary.session_id}_match{boundary.match_index:02d}.mp4"
         subtitle_path = Path(subtitle.path).resolve()
         subtitle_is_placeholder = self._subtitle_is_placeholder(subtitle_path)
+        burn_subtitles = self._should_burn_subtitles(subtitle_is_placeholder)
         if highlight_plan is not None:
             command = self._planned_ffmpeg_command(
                 boundary=boundary,
                 subtitle_path=subtitle_path,
-                subtitle_is_placeholder=subtitle_is_placeholder,
+                burn_subtitles=burn_subtitles,
                 recording_path=recording_asset.path,
                 output_path=output_path,
                 highlight_plan=highlight_plan,
             )
-        elif subtitle_is_placeholder and self._should_stream_copy_export():
+        elif not burn_subtitles and self._should_stream_copy_export():
             log(
                 "exporter",
-                "placeholder subtitle detected; using stream copy "
+                "subtitle burn disabled; using stream copy "
                 f"session_id={boundary.session_id} match_index={boundary.match_index}",
             )
             command = [
@@ -379,6 +381,12 @@ class ExporterService:
                 str(output_path),
             ]
         else:
+            if subtitle_is_placeholder:
+                log(
+                    "exporter",
+                    "placeholder subtitle detected; transcoding without subtitle burn "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index}",
+                )
             command = [
                 "ffmpeg",
                 "-y",
@@ -393,7 +401,7 @@ class ExporterService:
                 "-i",
                 recording_asset.path,
             ]
-            if not subtitle_is_placeholder:
+            if burn_subtitles:
                 command.extend(["-vf", self._subtitle_filter_arg(subtitle_path)])
             command.extend(self._video_codec_args())
             command.extend(
@@ -546,14 +554,14 @@ class ExporterService:
         *,
         boundary: MatchBoundary,
         subtitle_path: Path,
-        subtitle_is_placeholder: bool,
+        burn_subtitles: bool,
         recording_path: str,
         output_path: Path,
         highlight_plan: HighlightPlanAsset,
     ) -> list[str]:
         duration = boundary.ended_at_seconds - boundary.started_at_seconds
         video_filter_parts: list[str] = []
-        if not subtitle_is_placeholder:
+        if burn_subtitles:
             video_filter_parts.append(self._subtitle_filter_arg(subtitle_path))
         select_expr = self._highlight_select_expr(highlight_plan)
         video_filter_parts.extend(
@@ -778,6 +786,9 @@ class ExporterService:
 
     def _should_stream_copy_export(self) -> bool:
         return self.settings.export.ffmpeg_video_codec in {"auto", "copy"}
+
+    def _should_burn_subtitles(self, subtitle_is_placeholder: bool) -> bool:
+        return self.settings.export.burn_subtitles and not subtitle_is_placeholder
 
     def _video_codec_args(self) -> list[str]:
         codec = self.settings.export.ffmpeg_video_codec

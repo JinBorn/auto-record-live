@@ -257,6 +257,13 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
 
         self.assertEqual(settings.export.ffmpeg_video_codec, "h265")
 
+    def test_export_burn_subtitles_env_loads(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_EXPORT_BURN_SUBTITLES"] = "0"
+            settings = load_settings()
+
+        self.assertFalse(settings.export.burn_subtitles)
+
     def test_highlight_planner_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             os.environ["ARL_HIGHLIGHT_PLANNER_ENABLED"] = "0"
@@ -301,7 +308,11 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             os.environ["ARL_WHISPER_MIN_LANGUAGE_PROBABILITY"] = "0.7"
             os.environ["ARL_WHISPER_DEVICE"] = "CPU"
             os.environ["ARL_WHISPER_COMPUTE_TYPE"] = "AUTO"
+            os.environ["ARL_WHISPER_CUDA_COMPUTE_TYPE"] = "INT8_FLOAT16"
             os.environ["ARL_WHISPER_CPU_COMPUTE_TYPE"] = "INT8"
+            os.environ["ARL_ASR_PREPROCESS_AUDIO"] = "1"
+            os.environ["ARL_ASR_PREPROCESS_AUDIO_FILTER"] = "highpass=f=120,loudnorm"
+            os.environ["ARL_ASR_PREPROCESS_TIMEOUT_SECONDS"] = "45"
             settings = load_settings()
 
         self.assertEqual(
@@ -311,7 +322,11 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(settings.subtitles.min_language_probability, 0.7)
         self.assertEqual(settings.subtitles.device, "cpu")
         self.assertEqual(settings.subtitles.compute_type, "auto")
+        self.assertEqual(settings.subtitles.cuda_compute_type, "int8_float16")
         self.assertEqual(settings.subtitles.cpu_compute_type, "int8")
+        self.assertTrue(settings.subtitles.preprocess_audio)
+        self.assertEqual(settings.subtitles.preprocess_audio_filter, "highpass=f=120,loudnorm")
+        self.assertEqual(settings.subtitles.preprocess_timeout_seconds, 45)
 
     def test_segmenter_template_fallback_env_loads(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):

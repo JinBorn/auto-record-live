@@ -7,6 +7,12 @@ from pathlib import Path
 from pydantic import BaseModel, Field, model_validator
 
 
+DEFAULT_ASR_PREPROCESS_AUDIO_FILTER = (
+    "highpass=f=80,lowpass=f=7800,afftdn=nf=-25,"
+    "loudnorm=I=-16:TP=-1.5:LRA=11"
+)
+
+
 def _load_dotenv(dotenv_path: Path) -> None:
     if not dotenv_path.exists():
         return
@@ -141,7 +147,11 @@ class SubtitleSettings(BaseModel):
     min_language_probability: float = 0.5
     device: str = "auto"
     compute_type: str = "auto"
+    cuda_compute_type: str = "auto"
     cpu_compute_type: str = "int8"
+    preprocess_audio: bool = False
+    preprocess_audio_filter: str = DEFAULT_ASR_PREPROCESS_AUDIO_FILTER
+    preprocess_timeout_seconds: int = 120
 
 
 class SegmenterSettings(BaseModel):
@@ -165,6 +175,7 @@ class HighlightSettings(BaseModel):
 class ExportSettings(BaseModel):
     enable_ffmpeg: bool = False
     ffmpeg_video_codec: str = "auto"
+    burn_subtitles: bool = True
     ffmpeg_preset: str = "veryfast"
     ffmpeg_crf: int = 23
     ffmpeg_timeout_seconds: int = 120
@@ -488,9 +499,23 @@ def load_settings() -> Settings:
             compute_type=(
                 os.getenv("ARL_WHISPER_COMPUTE_TYPE", "auto").strip().lower() or "auto"
             ),
+            cuda_compute_type=(
+                os.getenv("ARL_WHISPER_CUDA_COMPUTE_TYPE", "auto").strip().lower()
+                or "auto"
+            ),
             cpu_compute_type=(
                 os.getenv("ARL_WHISPER_CPU_COMPUTE_TYPE", "int8").strip().lower()
                 or "int8"
+            ),
+            preprocess_audio=_env_bool("ARL_ASR_PREPROCESS_AUDIO", False),
+            preprocess_audio_filter=os.getenv(
+                "ARL_ASR_PREPROCESS_AUDIO_FILTER",
+                DEFAULT_ASR_PREPROCESS_AUDIO_FILTER,
+            ).strip()
+            or DEFAULT_ASR_PREPROCESS_AUDIO_FILTER,
+            preprocess_timeout_seconds=max(
+                10,
+                _env_int("ARL_ASR_PREPROCESS_TIMEOUT_SECONDS", 120),
             ),
         ),
         segmenter=SegmenterSettings(
@@ -594,6 +619,7 @@ def load_settings() -> Settings:
         export=ExportSettings(
             enable_ffmpeg=os.getenv("ARL_EXPORT_ENABLE_FFMPEG", "0") == "1",
             ffmpeg_video_codec=os.getenv("ARL_EXPORT_FFMPEG_VIDEO_CODEC", "auto"),
+            burn_subtitles=_env_bool("ARL_EXPORT_BURN_SUBTITLES", True),
             ffmpeg_preset=os.getenv("ARL_EXPORT_FFMPEG_PRESET", "veryfast"),
             ffmpeg_crf=int(os.getenv("ARL_EXPORT_FFMPEG_CRF", "23")),
             ffmpeg_timeout_seconds=max(
