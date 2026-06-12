@@ -298,6 +298,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional operator message for resolved/failed status updates.",
     )
     subparsers.add_parser("segmenter", help="Run the match segmenter worker.")
+    detect_matches = subparsers.add_parser(
+        "detect-matches",
+        help="Detect match segments from raw recordings using vision.",
+    )
+    detect_matches.add_argument(
+        "--session-id",
+        help="Session ID to detect matches for.",
+    )
+    detect_matches.add_argument(
+        "--session-ids",
+        help="Comma-separated list of session IDs.",
+    )
+    detect_matches.add_argument(
+        "--force-reprocess",
+        action="store_true",
+        help="Force re-detection even if cached.",
+    )
     postprocess = subparsers.add_parser(
         "postprocess",
         help="Run the post-live processing chain once.",
@@ -686,6 +703,45 @@ def main() -> int:
 
     if args.command == "segmenter":
         SegmenterService(settings).run()
+        return 0
+
+    if args.command == "detect-matches":
+        from pathlib import Path
+        from arl.vision import VisionMatchDetector
+        from arl.shared.contracts import RecordingAsset
+        from arl.shared.jsonl_store import load_models
+
+        session_ids = _collect_session_ids(args)
+        if not session_ids:
+            parser.error("detect-matches requires --session-id or --session-ids")
+
+        recording_assets_path = settings.storage.temp_dir / "recording-assets.jsonl"
+        assets = load_models(recording_assets_path, RecordingAsset)
+        matched_assets = [a for a in assets if a.session_id in session_ids]
+
+        if not matched_assets:
+            print(f"No recording assets found for session_ids={','.join(sorted(session_ids))}")
+            return 0
+
+        detector = VisionMatchDetector(settings.vision)
+        for asset in matched_assets:
+            recording_path = Path(asset.path)
+            if not recording_path.exists():
+                print(f"Recording not found: {recording_path}")
+                continue
+
+            print(f"\nDetecting matches for session_id={asset.session_id}")
+            segments = detector.detect(recording_path)
+            print(f"Detected {len(segments)} segments:")
+            for idx, seg in enumerate(segments, start=1):
+                print(
+                    f"  Match {idx}: "
+                    f"{seg.start_seconds:.1f}s - {seg.end_seconds:.1f}s "
+                    f"(duration={(seg.end_seconds - seg.start_seconds):.1f}s) "
+                    f"complete={seg.is_complete} "
+                    f"confidence={seg.confidence:.2f} "
+                    f"reason={seg.reason}"
+                )
         return 0
 
     if args.command == "postprocess":

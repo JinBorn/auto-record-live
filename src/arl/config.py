@@ -159,6 +159,15 @@ class SegmenterSettings(BaseModel):
     template_fallback_enabled: bool = False
 
 
+class VisionSettings(BaseModel):
+    match_detection_enabled: bool = True
+    frame_sample_interval_seconds: float = 20.0
+    timer_ocr_detector: str = "auto"
+    timer_crop_region: tuple[int, int, int, int] = (1770, 5, 150, 50)
+    match_start_threshold_seconds: float = 120.0
+    lobby_gap_threshold_seconds: float = 40.0
+
+
 class HighlightSettings(BaseModel):
     enabled: bool = True
     cue_padding_seconds: float = 6.0
@@ -224,6 +233,7 @@ class Settings(BaseModel):
     recording: RecordingSettings = Field(default_factory=RecordingSettings)
     orchestrator: OrchestratorSettings = Field(default_factory=OrchestratorSettings)
     segmenter: SegmenterSettings = Field(default_factory=SegmenterSettings)
+    vision: VisionSettings = Field(default_factory=VisionSettings)
     highlights: HighlightSettings = Field(default_factory=HighlightSettings)
     subtitles: SubtitleSettings = Field(default_factory=SubtitleSettings)
     export: ExportSettings = Field(default_factory=ExportSettings)
@@ -523,6 +533,19 @@ def load_settings() -> Settings:
             template_fallback_enabled=_env_bool(
                 "ARL_SEGMENTER_TEMPLATE_FALLBACK_ENABLED",
                 False,
+            ),
+        ),
+        vision=VisionSettings(
+            match_detection_enabled=_env_bool("ARL_VISION_MATCH_DETECTION_ENABLED", True),
+            frame_sample_interval_seconds=_env_float(
+                "ARL_VISION_FRAME_SAMPLE_INTERVAL_SECONDS", 20.0
+            ),
+            timer_ocr_detector=os.getenv("ARL_VISION_TIMER_OCR_DETECTOR", "auto"),
+            match_start_threshold_seconds=_env_float(
+                "ARL_VISION_MATCH_START_THRESHOLD_SECONDS", 120.0
+            ),
+            lobby_gap_threshold_seconds=_env_float(
+                "ARL_VISION_LOBBY_GAP_THRESHOLD_SECONDS", 40.0
             ),
         ),
         highlights=HighlightSettings(

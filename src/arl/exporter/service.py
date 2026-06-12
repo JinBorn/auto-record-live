@@ -123,6 +123,16 @@ class ExporterService:
                 )
 
             recording_asset = recording_by_session.get(boundary.session_id)
+
+            # Skip incomplete matches from vision detection (confidence < 0.8)
+            if boundary.confidence < 0.8:
+                log(
+                    "exporter",
+                    f"skip incomplete match confidence={boundary.confidence:.2f} "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index}",
+                )
+                continue
+
             if (
                 not force_reprocess
                 and self._is_low_confidence_full_recording_boundary(

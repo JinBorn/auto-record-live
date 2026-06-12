@@ -366,6 +366,239 @@ event = {
 - Keep `src/arl/windows_agent/models.py` and `src/arl/orchestrator/models.py` structurally aligned.
 - Prefer additive contract changes over breaking renames during MVP; if a rename is unavoidable, update both producer and consumer in the same change and extend tests first.
 
+## Scenario: Vision-based match detection
+
+### 1. Scope / Trigger
+
+- Trigger: New `src/arl/vision/` module introduces computer-vision detection for multi-match recordings.
+- Trigger: `MatchBoundary.confidence` semantics change from hint-quality indicator to complete/incomplete match classifier.
+- Trigger: Segmenter gains optional vision-driven path that bypasses subtitle/hint-based fallback.
+- Trigger: Exporter filters boundaries by confidence threshold before processing.
+
+### 2. Signatures
+
+- Vision settings in `src/arl/config.py`:
+
+```python
+class VisionSettings(BaseModel):
+    match_detection_enabled: bool = False
+    frame_sample_interval_seconds: int = 20
+    timer_ocr_detector: str = "auto"  # "auto" | "template" | "tesseract" | "easyocr"
+    match_start_timer_threshold_seconds: int = 120  # game_time <= 2:00
+    match_end_lobby_gap_seconds: int = 40  # timer disappears for >=40s
+```
+
+- Vision models in `src/arl/vision/models.py`:
+
+```python
+@dataclass
+class TimerReading:
+    timestamp_seconds: float  # relative to recording start
+    game_time_text: str | None  # "MM:SS" or None when lobby/non-game
+    confidence: float
+
+@dataclass
+class MatchSegment:
+    start_seconds: float
+    end_seconds: float
+    is_complete: bool  # has_start and has_natural_end
+    confidence: float  # 0.95 if complete, 0.3-0.5 if incomplete
+    reason: str | None  # diagnostic: "incomplete_no_start" | "incomplete_no_end" | None
+```
+
+- CLI signature for manual vision detection:
+
+```bash
+arl detect-matches --session-id <id> | --session-ids <csv> [--force-reprocess]
+```
+
+- Environment keys:
+  - `ARL_VISION_MATCH_DETECTION_ENABLED` (0/1, default `0`)
+  - `ARL_VISION_FRAME_SAMPLE_INTERVAL_SECONDS` (int >= 10, default `20`)
+  - `ARL_VISION_TIMER_OCR_DETECTOR` (string, default `auto`)
+  - `ARL_VISION_MATCH_START_TIMER_THRESHOLD_SECONDS` (int >= 0, default `120`)
+  - `ARL_VISION_MATCH_END_LOBBY_GAP_SECONDS` (int >= 20, default `40`)
+
+### 3. Contracts
+
+- Vision detection cache:
+  - Results cached to `data/tmp/vision-match-detection.jsonl` (one row per session)
+  - Cache keyed by `session_id`; `--force-reprocess` bypasses cache
+  - Missing cache file is not an error; detection runs fresh
+- `MatchBoundary.confidence` semantic contract:
+  - **0.95**: complete match (has start ≈0:00 + natural end)
+  - **0.3-0.5**: incomplete match (recording joined mid-game or ended before victory/defeat)
+  - **≤0.5**: legacy low-confidence full-recording fallback (single boundary, no vision/hints)
+- Segmenter vision integration:
+  - Check `settings.vision.match_detection_enabled` before vision path
+  - When enabled: call `VisionMatchDetector.detect(recording_path)` → list of `MatchSegment`
+  - Convert each `MatchSegment` → one `MatchBoundary` with sequential `match_index` (1-based)
+  - On vision exception: log warning with reason, fall back to legacy stage-hints path
+  - Legacy segmenter remains unchanged when vision disabled or fails
+- Vision detection algorithm:
+  - Frame sampler: extract frames every N seconds (default 20s) via opencv `VideoCapture`
+  - Timer OCR: read game timer from top-right region of each frame
+    - Template matching (primary, LoL-specific): fast, no external deps
+    - Tesseract fallback: if `tesseract` binary available
+    - EasyOCR fallback: ~100MB model download, last resort
+  - Match stitcher: group consecutive in-game readings into match segments
+    - Match start: first timer ≤ 2:00 in a span
+    - Match end: timer present → absent for ≥40s (2+ samples)
+    - `is_complete = has_start and has_end`
+    - `confidence = 0.95 if complete else random.uniform(0.3, 0.5)`
+- Exporter confidence gating:
+  - Before processing boundary: check `boundary.confidence < 0.8`
+  - If True: log skip reason (`incomplete_match` or `low_confidence_full_recording`), do NOT create export artifacts, continue to next boundary
+  - Audit event: `export_skipped_incomplete_match` with `session_id`, `match_index`, `confidence`, `reason`
+  - High-confidence boundaries (≥0.8) proceed through normal export flow
+- `arl detect-matches` command:
+  - Reads `recording-assets.jsonl`, filters by session ids
+  - Runs `VisionMatchDetector.detect()` on each recording
+  - Prints detected segments with: start/end/duration/complete/confidence/reason
+  - Does NOT write to `match-boundaries.jsonl` (detection preview only)
+  - Segmenter is the canonical boundary emitter
+- Backward compatibility:
+  - Vision module is opt-in via `ARL_VISION_MATCH_DETECTION_ENABLED=1`
+  - Legacy subtitle/hint segmenter remains as fallback when vision disabled or fails
+  - Existing `MatchBoundary` contract preserved (confidence field already exists)
+- Dependencies:
+  - Core: `opencv-python`, `numpy`, `pillow` (bundled in `pyproject.toml` optional `[vision]`)
+  - Optional OCR: `pytesseract` (requires system `tesseract` binary)
+  - Vision extras install: `pip install -e ".[vision]"`
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|-----------|-------------------|
+| Vision detection enabled but opencv import fails | Log error, fall back to legacy segmenter, emit one low-confidence boundary |
+| Vision detection fails mid-run (e.g., corrupt video file) | Log exception with session_id, fall back to legacy segmenter for that session |
+| Detected match segment has `start > end` | Validation error, log warning, skip invalid segment |
+| Detected match segment outside recording duration | Clip to `[0, recording_duration]`, log clipping |
+| Vision detects 0 matches (no timer readings) | Emit no boundaries, or fall back to legacy single-boundary |
+| Vision detects multiple incomplete matches only | Emit all as separate boundaries with confidence 0.3-0.5 |
+| Vision detects 1 complete + 2 incomplete matches | Emit 3 boundaries: complete (0.95), incomplete (0.3-0.5), incomplete (0.3-0.5) |
+| Exporter sees boundary with confidence=0.4 | Skip export, log `export_skipped_incomplete_match`, do NOT create .mp4 or .txt |
+| Exporter sees boundary with confidence=0.95 | Proceed with normal export flow |
+| `arl detect-matches` called with no session filters | Error: requires `--session-id` or `--session-ids` |
+| `arl detect-matches` filters match no recordings | Print "No recording assets found", exit 0 |
+| Vision cache exists and `--force-reprocess` not set | Use cached results, skip re-detection |
+| Vision cache exists and `--force-reprocess` set | Ignore cache, re-run detection, overwrite cache |
+
+### 5. Good / Base / Bad Cases
+
+- Good:
+  - Vision detects 3 matches from a 63-min recording: incomplete (23 min), complete (20 min), incomplete (15 min).
+  - Segmenter emits 3 boundaries with sequential match_index and correct confidence.
+  - Exporter processes only the complete match (match_index=2), skips matches 1 and 3.
+  - Operator sees one 20-min export for the complete game.
+- Base:
+  - Vision detection disabled, segmenter falls back to legacy stage-hints.
+  - Segmenter emits one low-confidence boundary covering full recording.
+  - Exporter defers low-confidence boundary (no export).
+- Bad:
+  - Vision detects matches but segmenter still uses legacy fallback (integration missing).
+  - Exporter processes incomplete matches, producing unusable 5-min clips mid-game.
+  - Vision exception crashes segmenter instead of falling back.
+  - Confidence threshold hardcoded in exporter, no visibility into skip reason.
+
+### 6. Tests Required
+
+- Unit test: `VisionMatchDetector.detect()` returns list of `MatchSegment` from synthetic recording.
+  - Assert complete match (timer 0:00 → 30:00 → None) has `is_complete=True`, `confidence=0.95`.
+  - Assert incomplete head (timer starts 23:00 → 30:00 → None) has `is_complete=False`, `confidence` in [0.3, 0.5], `reason="incomplete_no_start"`.
+  - Assert incomplete tail (timer 0:00 → 15:00, no end) has `is_complete=False`, `reason="incomplete_no_end"`.
+- Unit test: frame sampler extracts frames at configured interval.
+  - Assert 60s video with 20s interval → 4 frames (t=0, 20, 40, 60).
+- Unit test: timer OCR template matching reads known LoL timer crops.
+  - Assert timer image "22:57" → `TimerReading(game_time_text="22:57", confidence > 0.9)`.
+  - Assert lobby frame → `TimerReading(game_time_text=None, confidence < 0.5)`.
+- Unit test: match stitcher groups consecutive in-game readings.
+  - Assert readings `[None, "00:34", "05:12", "34:56", None, None]` → 1 complete match.
+  - Assert readings `["23:45", "28:12", None]` → 1 incomplete match (`incomplete_no_start`).
+- Unit test: segmenter calls vision detector when enabled.
+  - Assert `settings.vision.match_detection_enabled=True` → vision path runs.
+  - Assert vision exception → falls back to legacy, logs warning.
+- Unit test: segmenter converts `MatchSegment` → `MatchBoundary`.
+  - Assert 2 segments → 2 boundaries with `match_index=1,2`.
+  - Assert complete segment → `boundary.confidence=0.95`.
+  - Assert incomplete segment → `boundary.confidence` in [0.3, 0.5].
+- Unit test: exporter skips boundaries with confidence < 0.8.
+  - Assert `boundary.confidence=0.4` → no `.mp4` created, audit event emitted.
+  - Assert `boundary.confidence=0.95` → normal export flow.
+- Unit test: `arl detect-matches` prints segment details.
+  - Assert output includes start/end/duration/complete/confidence/reason per segment.
+- Integration test: end-to-end vision detection on real session (manual/fixture).
+  - Use session-20260610124818-f00e5b00 (multi-match 69-min recording).
+  - Assert detects 3 segments.
+  - Assert segment[1] (middle match) is `is_complete=True`, spans ~1230→3600s.
+  - Assert segments[0] and [2] are `is_complete=False`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+# Segmenter directly calls vision without fallback
+segments = VisionMatchDetector.detect(recording_path)  # raises on failure
+boundaries = [convert(seg) for seg in segments]
+```
+
+- Crashes segmenter when vision fails (corrupt video, missing deps)
+- No legacy fallback path
+
+#### Correct
+
+```python
+if settings.vision.match_detection_enabled:
+    try:
+        segments = VisionMatchDetector.detect(recording_path)
+        boundaries = [convert(seg) for seg in segments]
+    except Exception as e:
+        log(f"vision detection failed: {e}, falling back to legacy")
+        boundaries = legacy_segment(recording, hints)
+else:
+    boundaries = legacy_segment(recording, hints)
+```
+
+#### Wrong
+
+```python
+# Exporter exports all boundaries regardless of confidence
+for boundary in boundaries:
+    export(boundary)
+```
+
+- Exports incomplete matches, producing mid-game clips
+- No confidence gating
+
+#### Correct
+
+```python
+for boundary in boundaries:
+    if boundary.confidence < 0.8:
+        log(f"skip incomplete match session={boundary.session_id} match={boundary.match_index}")
+        append_audit("export_skipped_incomplete_match", boundary)
+        continue
+    export(boundary)
+```
+
+#### Wrong
+
+```python
+# Vision detector returns confidence=1.0 for all matches
+return MatchSegment(..., confidence=1.0)
+```
+
+- Loses semantic distinction between complete/incomplete matches
+- Exporter cannot filter incomplete matches
+
+#### Correct
+
+```python
+confidence = 0.95 if (has_start and has_end) else random.uniform(0.3, 0.5)
+return MatchSegment(..., is_complete=(has_start and has_end), confidence=confidence)
+```
+
 ## Scenario: Post-recording media pipeline contracts
 
 ### 1. Scope / Trigger

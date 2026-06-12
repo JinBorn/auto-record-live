@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from arl.config import Settings
 from arl.segmenter.durations import recording_duration_seconds
 from arl.segmenter.models import MatchStageHint, SegmenterStateFile
@@ -50,7 +52,7 @@ class SegmenterService:
                 )
 
             duration = self._duration_seconds(asset)
-            boundaries = self._build_boundaries(
+            boundaries = self._build_boundaries_with_vision(
                 asset,
                 duration,
                 hints_by_session.get(asset.session_id, []),
@@ -207,3 +209,60 @@ class SegmenterService:
     def _save_state(self, state: SegmenterStateFile) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.write_text(state.model_dump_json(indent=2) + "\n", encoding="utf-8")
+
+    def _build_boundaries_with_vision(
+        self,
+        asset: RecordingAsset,
+        duration: float,
+        stage_hints: list[MatchStageHint],
+    ) -> list[MatchBoundary]:
+        """Build boundaries using vision detection if enabled, else fall back to legacy."""
+        if self.settings.vision.match_detection_enabled:
+            try:
+                return self._detect_matches_visually(asset, duration)
+            except Exception as e:
+                log(
+                    "segmenter",
+                    f"vision detection failed: {e}, falling back to legacy session_id={asset.session_id}",
+                )
+        return self._build_boundaries(asset, duration, stage_hints)
+
+    def _detect_matches_visually(
+        self,
+        asset: RecordingAsset,
+        duration: float,
+    ) -> list[MatchBoundary]:
+        """Use vision module to detect match boundaries."""
+        from arl.vision import VisionMatchDetector
+
+        recording_path = Path(asset.path)
+        if not recording_path.exists():
+            raise FileNotFoundError(f"Recording not found: {recording_path}")
+
+        detector = VisionMatchDetector(self.settings.vision)
+        segments = detector.detect(recording_path)
+
+        if not segments:
+            log(
+                "segmenter",
+                f"vision detected no segments, using fallback session_id={asset.session_id}",
+            )
+            return [self._fallback_boundary(asset, duration)]
+
+        boundaries: list[MatchBoundary] = []
+        for idx, segment in enumerate(segments, start=1):
+            boundaries.append(
+                MatchBoundary(
+                    session_id=asset.session_id,
+                    match_index=idx,
+                    started_at_seconds=segment.start_seconds,
+                    ended_at_seconds=segment.end_seconds,
+                    confidence=segment.confidence,
+                )
+            )
+
+        log(
+            "segmenter",
+            f"vision detected {len(boundaries)} segments session_id={asset.session_id}",
+        )
+        return boundaries
