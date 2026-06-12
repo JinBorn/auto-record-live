@@ -1826,3 +1826,37 @@ Added optional ASR audio preprocessing, separate CUDA compute settings, disabled
 ### Next Steps
 
 - None - task complete
+
+
+## Session 45: Implement vision-based match detection system
+
+**Date**: 2026-06-12
+**Task**: Implement vision-based match detection system
+**Branch**: `fix/highlight-condensing-budget`
+
+### Summary
+
+Implemented complete vision module (frame sampler, timer OCR, match stitcher, detector) with segmenter/exporter integration. All unit tests pass. Discovered limitation: Douyin live recordings lack visible game UI timers - code architecture complete but AC1-AC3 blocked pending proper test data or alternative detection method (easyocr/subtitle-based).
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0aaa5c5` | (see git log) |
+| `425d1eb` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
