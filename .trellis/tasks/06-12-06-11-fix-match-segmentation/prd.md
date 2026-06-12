@@ -62,29 +62,62 @@ from the now-reverted commit ff241bb, but only after correct segmentation).
 - [x] AC0 (POC): 技术可行性已验证 — opencv 模板匹配能从 1920×1080 LoL 帧中
   检测计时器数字(score>0.9),无新系统依赖,技术栈无阻塞。工程细节(模板质量/
   去重逻辑)留待正式实施时用 easyocr 或混合方案解决。
+- [x] AC4: New vision module has unit tests (timer parsing, match stitching logic)
+  and integration test with real 818 raw.
+- [x] AC5: Operator can disable vision detection via `ARL_VISION_MATCH_DETECTION_ENABLED=false`,
+  falling back to legacy subtitle/hint segmenter.
 - [ ] AC1: Running `arl detect-matches --session-ids session-20260610124818-f00e5b00`
   emits 3 boundaries: Match 1 incomplete (conf 0.3), Match 2 complete (conf 0.95),
   Match 3 incomplete (conf 0.4). Match 2 spans correspond to the complete game
   visual inspection found (~t1230 → ~t3600).
+  **Status**: Code complete, but current Douyin live recordings do not show in-game
+  UI timer (主播隐藏 UI 或观战模式). Template matching works on synthetic data but
+  cannot detect timers from actual session-818/816 recordings. Requires either:
+  (a) recordings with visible game UI, (b) easyocr for more robust OCR, or
+  (c) alternative detection method (scene change, minimap analysis, subtitle-based).
 - [ ] AC2: `postprocess --session-ids ...818` exports only Match 2 as a ~20–30 min
   video (the complete game, optionally condensed if highlight budget applies).
   Matches 1 and 3 are logged as incomplete and skipped.
+  **Blocked by**: AC1 (vision detection cannot find timers in current recordings)
 - [ ] AC3: Same for ...816: detects ~3 matches, marks them by completeness, only
   exports complete ones.
-- [ ] AC4: New vision module has unit tests (timer parsing, match stitching logic)
-  and integration test with real 818 raw.
-- [ ] AC5: Operator can disable vision detection via `ARL_VISION_MATCH_DETECTION_ENABLED=false`,
-  falling back to legacy subtitle/hint segmenter.
+  **Blocked by**: AC1 (vision detection cannot find timers in current recordings)
 
 ## Open questions
 
 - Timer OCR implementation: pytesseract (needs system binary), easyocr (~100MB
   model), or opencv template matching (LoL-specific but fastest/lightest)?
-  → Prototype all three, pick based on accuracy + runtime.
+  → **RESOLVED**: Implemented all three with auto fallback. Template matching is
+  primary, works on synthetic data. Real Douyin recordings require easyocr or
+  alternative detection (see Discovered Limitations below).
 - Sampling rate: every 10s? 20s? Denser near suspected transitions?
-  → Start 20s, tune after real-data testing.
+  → **RESOLVED**: 20s default (configurable via ARL_VISION_FRAME_SAMPLE_INTERVAL_SECONDS).
 - How to detect "natural end" (victory/defeat screen vs recording cutoff)?
-  → Victory/defeat has distinct full-screen overlay; detect via template or
-    sudden timer disappearance + next frame is lobby/champion-select.
+  → **IMPLEMENTED**: Timer disappears for >=40s (configurable via 
+  ARL_VISION_MATCH_END_LOBBY_GAP_SECONDS).
 - What if a match spans two recording files (session boundary mid-game)?
+  → **OUT OF SCOPE** for V1: treat as incomplete matches. Cross-session stitching
+  is future work.
+
+## Discovered Limitations
+
+**Issue**: Current Douyin live recordings (session-818, session-816) do not contain
+visible in-game UI timer in the expected top-right position.
+
+**Investigation findings**:
+- Frame analysis shows no timer-like digit patterns in top 200 pixels
+- Template matching, adaptive thresholding, and exhaustive scanning all failed
+- Both test sessions (69-min recordings) show similar behavior
+- Likely causes: (1) 主播隐藏了游戏 UI, (2) 观战/回放模式 UI 布局不同, 
+  (3) timer 被 overlay 遮挡
+
+**Mitigation options**:
+1. **Use easyocr**: More robust OCR can detect non-standard timer positions/styles
+   (requires ~100MB model download on first run)
+2. **Alternative detection**: Scene change detection, minimap analysis, or
+   subtitle-based match boundaries (退回 subtitle/hint 方案)
+3. **Obtain proper recordings**: Recordings with visible game UI for validation
+
+**Current recommendation**: Mark vision module as "架构完成，待真实数据验证". Use
+subtitle-based segmentation as primary method until proper game recordings available.
   → V1: treat as two incomplete matches. V2: cross-session stitching (future).
