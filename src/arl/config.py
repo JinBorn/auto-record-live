@@ -184,15 +184,19 @@ class HighlightSettings(BaseModel):
 class ExportSettings(BaseModel):
     enable_ffmpeg: bool = False
     ffmpeg_video_codec: str = "auto"
-    burn_subtitles: bool = True
-    ffmpeg_preset: str = "veryfast"
-    ffmpeg_crf: int = 23
+    burn_subtitles: bool = False
+    ffmpeg_preset: str = "slow"
+    ffmpeg_crf: int = 18
+    ffmpeg_bitrate: str | None = None
+    ffmpeg_max_bitrate: str | None = None
     ffmpeg_timeout_seconds: int = 120
     ffmpeg_max_retries: int = 1
     stderr_retain_count: int = 200
     backoff_initial_seconds: float = 2.0
     backoff_max_seconds: float = 8.0
     batch_fallback_budget: int = 3
+    use_highlight_plans: bool = False
+    use_hardware_encoding: bool = False
 
     @model_validator(mode="after")
     def _normalize_ffmpeg_video_codec(self) -> "ExportSettings":
@@ -642,9 +646,11 @@ def load_settings() -> Settings:
         export=ExportSettings(
             enable_ffmpeg=os.getenv("ARL_EXPORT_ENABLE_FFMPEG", "0") == "1",
             ffmpeg_video_codec=os.getenv("ARL_EXPORT_FFMPEG_VIDEO_CODEC", "auto"),
-            burn_subtitles=_env_bool("ARL_EXPORT_BURN_SUBTITLES", True),
-            ffmpeg_preset=os.getenv("ARL_EXPORT_FFMPEG_PRESET", "veryfast"),
-            ffmpeg_crf=int(os.getenv("ARL_EXPORT_FFMPEG_CRF", "23")),
+            burn_subtitles=_env_bool("ARL_EXPORT_BURN_SUBTITLES", False),
+            ffmpeg_preset=os.getenv("ARL_EXPORT_FFMPEG_PRESET", "slow"),
+            ffmpeg_crf=int(os.getenv("ARL_EXPORT_FFMPEG_CRF", "18")),
+            ffmpeg_bitrate=os.getenv("ARL_EXPORT_FFMPEG_BITRATE") or None,
+            ffmpeg_max_bitrate=os.getenv("ARL_EXPORT_FFMPEG_MAX_BITRATE") or None,
             ffmpeg_timeout_seconds=max(
                 10, int(os.getenv("ARL_EXPORT_FFMPEG_TIMEOUT_SECONDS", "120"))
             ),
@@ -666,6 +672,8 @@ def load_settings() -> Settings:
                 1,
                 int(os.getenv("ARL_EXPORTER_BATCH_FALLBACK_BUDGET", "3")),
             ),
+            use_highlight_plans=_env_bool("ARL_EXPORT_USE_HIGHLIGHT_PLANS", False),
+            use_hardware_encoding=_env_bool("ARL_EXPORT_USE_HARDWARE_ENCODING", False),
         ),
         maintenance=MaintenanceSettings(
             max_jsonl_bytes=max(
