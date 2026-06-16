@@ -47,6 +47,10 @@ class ExporterService:
         log("exporter", f"ffmpeg_enabled={self.settings.export.enable_ffmpeg}")
         log("exporter", f"ffmpeg_video_codec={self.settings.export.ffmpeg_video_codec}")
         log("exporter", f"burn_subtitles={int(self.settings.export.burn_subtitles)}")
+        log(
+            "exporter",
+            f"use_highlight_plans={int(self.settings.export.use_highlight_plans)}",
+        )
         rotate_stderr_logs(self.stderr_dir, self.settings.export.stderr_retain_count)
         all_boundaries = load_models(self.boundaries_path, MatchBoundary)
         boundaries = self._filter_boundaries(
@@ -68,7 +72,11 @@ class ExporterService:
                 f"session_ids={session_filter} match_indices={match_index_filter}",
             )
         subtitles = load_models(self.subtitles_path, SubtitleAsset)
-        highlight_plans = load_models(self.highlight_plans_path, HighlightPlanAsset)
+        highlight_plans = (
+            load_models(self.highlight_plans_path, HighlightPlanAsset)
+            if self.settings.export.use_highlight_plans
+            else []
+        )
         recording_assets = load_models(
             self.settings.storage.temp_dir / "recording-assets.jsonl",
             RecordingAsset,
@@ -123,6 +131,18 @@ class ExporterService:
                 )
 
             recording_asset = recording_by_session.get(boundary.session_id)
+
+            if self._is_incomplete_boundary(boundary):
+                log(
+                    "exporter",
+                    "skip incomplete match boundary "
+                    f"session_id={boundary.session_id} "
+                    f"match_index={boundary.match_index} "
+                    f"confidence={boundary.confidence:.2f} "
+                    f"reason={boundary.reason or 'unknown'}",
+                )
+                continue
+
             if (
                 not force_reprocess
                 and self._is_low_confidence_full_recording_boundary(
@@ -155,9 +175,13 @@ class ExporterService:
                 continue
 
             platform = platform_by_session.get(boundary.session_id, "unknown")
-            highlight_plan = self._valid_highlight_plan(
-                highlight_plan_map.get((boundary.session_id, boundary.match_index)),
-                boundary,
+            highlight_plan = (
+                self._valid_highlight_plan(
+                    highlight_plan_map.get((boundary.session_id, boundary.match_index)),
+                    boundary,
+                )
+                if self.settings.export.use_highlight_plans
+                else None
             )
             output_path, was_ffmpeg_fallback = self._write_export(
                 boundary,
@@ -288,6 +312,10 @@ class ExporterService:
         tolerance_seconds = 2.0
         return abs(boundary.ended_at_seconds - duration) <= tolerance_seconds
 
+    @staticmethod
+    def _is_incomplete_boundary(boundary: MatchBoundary) -> bool:
+        return (not boundary.is_complete) or boundary.confidence < 0.8
+
     def _write_export(
         self,
         boundary: MatchBoundary,
@@ -356,7 +384,7 @@ class ExporterService:
         elif not burn_subtitles and self._should_stream_copy_export():
             log(
                 "exporter",
-                "subtitle burn disabled; using stream copy "
+                "subtitle burn disabled; using quality-preserving stream copy "
                 f"session_id={boundary.session_id} match_index={boundary.match_index}",
             )
             command = [
@@ -372,14 +400,38 @@ class ExporterService:
                 str(boundary.ended_at_seconds),
                 "-i",
                 recording_asset.path,
-                "-map",
-                "0",
-                "-c",
-                "copy",
-                "-movflags",
-                "+faststart",
-                str(output_path),
             ]
+            if subtitle_is_placeholder:
+                command.extend(
+                    [
+                        "-map",
+                        "0",
+                        "-c",
+                        "copy",
+                    ]
+                )
+            else:
+                command.extend(
+                    [
+                        "-i",
+                        str(subtitle_path),
+                        "-map",
+                        "0:v?",
+                        "-map",
+                        "0:a?",
+                        "-map",
+                        "1:0",
+                        "-c:v",
+                        "copy",
+                        "-c:a",
+                        "copy",
+                        "-c:s",
+                        "mov_text",
+                        "-metadata:s:s:0",
+                        "language=chi",
+                    ]
+                )
+            command.extend(["-movflags", "+faststart", str(output_path)])
         else:
             if subtitle_is_placeholder:
                 log(
@@ -403,13 +455,12 @@ class ExporterService:
             ]
             if burn_subtitles:
                 command.extend(["-vf", self._subtitle_filter_arg(subtitle_path)])
-            command.extend(self._video_codec_args())
+            command.extend(self._video_encode_args())
+            command.extend(self._video_quality_args())
             command.extend(
                 [
-                    "-preset",
-                    self.settings.export.ffmpeg_preset,
-                    "-crf",
-                    str(self.settings.export.ffmpeg_crf),
+                    "-c:a",
+                    "copy",
                     str(output_path),
                 ]
             )
@@ -595,16 +646,9 @@ class ExporterService:
             "-af",
             audio_filter,
         ]
-        command.extend(self._video_codec_args())
-        command.extend(
-            [
-                "-preset",
-                self.settings.export.ffmpeg_preset,
-                "-crf",
-                str(self.settings.export.ffmpeg_crf),
-                str(output_path),
-            ]
-        )
+        command.extend(self._video_encode_args())
+        command.extend(self._video_quality_args())
+        command.extend([str(output_path)])
         return command
 
     def _highlight_select_expr(self, plan: HighlightPlanAsset) -> str:
@@ -794,11 +838,44 @@ class ExporterService:
         codec = self.settings.export.ffmpeg_video_codec
         if codec in {"auto", "copy"}:
             return []
+
+        # Hardware encoding support (NVENC/QSV/AMF)
+        if self.settings.export.use_hardware_encoding:
+            if codec == "h264":
+                # Try NVENC first, fallback to QSV, then AMF
+                return ["-c:v", "h264_nvenc"]
+            if codec == "h265":
+                return ["-c:v", "hevc_nvenc", "-tag:v", "hvc1"]
+
+        # CPU software encoding (fallback or default)
         if codec == "h264":
             return ["-c:v", "libx264"]
         if codec == "h265":
             return ["-c:v", "libx265", "-tag:v", "hvc1"]
         raise ValueError(f"unsupported export video codec: {codec}")
+
+    def _video_quality_args(self) -> list[str]:
+        """Generate quality control arguments: bitrate or CRF mode."""
+        args = ["-preset", self.settings.export.ffmpeg_preset]
+
+        # Prefer fixed bitrate if configured (better quality preservation)
+        if self.settings.export.ffmpeg_bitrate:
+            args.extend(["-b:v", self.settings.export.ffmpeg_bitrate])
+            if self.settings.export.ffmpeg_max_bitrate:
+                args.extend(["-maxrate", self.settings.export.ffmpeg_max_bitrate])
+                # Add bufsize (typically 2x maxrate for smooth encoding)
+                args.extend(["-bufsize", "8M"])
+        else:
+            # Fallback to CRF mode
+            args.extend(["-crf", str(self.settings.export.ffmpeg_crf)])
+
+        return args
+
+    def _video_encode_args(self) -> list[str]:
+        codec = self.settings.export.ffmpeg_video_codec
+        if codec in {"auto", "copy"}:
+            return ["-c:v", "libx264"]
+        return self._video_codec_args()
 
     def _subtitle_filter_arg(self, subtitle_path: Path) -> str:
         escaped = subtitle_path.as_posix().replace(":", "\\:")

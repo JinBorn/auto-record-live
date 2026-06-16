@@ -315,6 +315,32 @@ class StatusServiceTest(unittest.TestCase):
             ],
         )
 
+    def test_incomplete_boundaries_do_not_count_as_missing_outputs(self) -> None:
+        session_id = "session-status-incomplete"
+        self._write_orchestrator_state(session_id=session_id)
+        append_model(
+            self.temp_root / "match-boundaries.jsonl",
+            MatchBoundary(
+                session_id=session_id,
+                match_index=1,
+                started_at_seconds=0.0,
+                ended_at_seconds=900.0,
+                confidence=0.95,
+                is_complete=False,
+                reason="incomplete_no_end",
+            ),
+        )
+
+        status = StatusService(self.settings).build()
+
+        self.assertEqual(status["summary"]["health"], "ok")
+        self.assertEqual(status["postprocess"]["match_boundaries"], 1)
+        self.assertEqual(status["postprocess"]["complete_match_boundaries"], 0)
+        self.assertEqual(status["postprocess"]["incomplete_match_boundaries"], 1)
+        self.assertEqual(status["postprocess"]["missing_subtitles"], 0)
+        self.assertEqual(status["postprocess"]["missing_exports"], 0)
+        self.assertEqual(status["postprocess"]["missing_copies"], 0)
+
     def test_status_ignores_exporter_failures_resolved_by_later_mp4(self) -> None:
         session_id = "session-exporter-resolved"
         subtitle_path = self._write_file("processed", session_id, "match-01.srt")

@@ -366,6 +366,254 @@ event = {
 - Keep `src/arl/windows_agent/models.py` and `src/arl/orchestrator/models.py` structurally aligned.
 - Prefer additive contract changes over breaking renames during MVP; if a rename is unavoidable, update both producer and consumer in the same change and extend tests first.
 
+## Scenario: Vision-based match detection
+
+### 1. Scope / Trigger
+
+- Trigger: New `src/arl/vision/` module introduces computer-vision detection for multi-match recordings.
+- Trigger: `MatchBoundary` carries explicit completeness metadata so incomplete detected spans do not become usable exports.
+- Trigger: Segmenter gains optional vision-driven path that bypasses subtitle/hint-based fallback.
+- Trigger: Subtitles, highlights, exporter, and status must all agree on the same complete-vs-incomplete boundary contract.
+
+### 2. Signatures
+
+- Vision settings in `src/arl/config.py`:
+
+```python
+class VisionSettings(BaseModel):
+    match_detection_enabled: bool = False
+    frame_sample_interval_seconds: int = 20
+    timer_ocr_detector: str = "auto"  # "auto" | "template" | "tesseract" | "easyocr"
+    match_start_timer_threshold_seconds: int = 120  # game_time <= 2:00
+    match_end_lobby_gap_seconds: int = 40  # timer disappears for >=40s
+```
+
+- Vision models in `src/arl/vision/models.py`:
+
+```python
+@dataclass
+class TimerReading:
+    timestamp_seconds: float  # relative to recording start
+    game_time_text: str | None  # "MM:SS" or None when lobby/non-game
+    confidence: float
+
+@dataclass
+class MatchSegment:
+    start_seconds: float
+    end_seconds: float
+    is_complete: bool  # has_start and has_natural_end
+    confidence: float  # 0.95 if complete, 0.3-0.5 if incomplete
+    reason: str | None  # diagnostic: "incomplete_no_start" | "incomplete_no_end" | None
+```
+
+- Shared postprocess boundary payload in `src/arl/shared/contracts.py`:
+
+```python
+class MatchBoundary(BaseModel):
+    session_id: str
+    match_index: int
+    started_at_seconds: float
+    ended_at_seconds: float
+    confidence: float
+    is_complete: bool = True
+    reason: str | None = None
+```
+
+- CLI signature for manual vision detection:
+
+```bash
+arl detect-matches --session-id <id> | --session-ids <csv> [--force-reprocess]
+```
+
+- Environment keys:
+  - `ARL_VISION_MATCH_DETECTION_ENABLED` (0/1, default `0`)
+  - `ARL_VISION_FRAME_SAMPLE_INTERVAL_SECONDS` (int >= 10, default `20`)
+  - `ARL_VISION_TIMER_OCR_DETECTOR` (string, default `auto`)
+  - `ARL_VISION_MATCH_START_TIMER_THRESHOLD_SECONDS` (int >= 0, default `120`)
+  - `ARL_VISION_MATCH_END_LOBBY_GAP_SECONDS` (int >= 20, default `40`)
+
+### 3. Contracts
+
+- Vision detection cache:
+  - Results cached to `data/tmp/vision-match-detection.jsonl` (one row per session)
+  - Cache keyed by `session_id`; `--force-reprocess` bypasses cache
+  - Missing cache file is not an error; detection runs fresh
+- `MatchBoundary` completeness contract:
+  - `is_complete=True`: downstream stages may treat the boundary as a usable full match.
+  - `is_complete=False`: boundary is diagnostic/unusable; subtitles, highlight planner, and exporter must skip it and `status` must not count it as a missing subtitle/export/copy.
+  - `reason` should carry a stable diagnostic such as `complete`, `incomplete_no_start`, `incomplete_no_end`, or `fallback_no_reliable_match_signal`.
+  - `confidence` remains an auxiliary quality score and backward-compat guard. Exporter should still skip `confidence < 0.8`, but explicit `is_complete=False` is the primary contract.
+- Segmenter vision integration:
+  - Check `settings.vision.match_detection_enabled` before vision path
+  - When enabled: call `VisionMatchDetector.detect(recording_path)` → list of `MatchSegment`
+  - Convert each `MatchSegment` → one `MatchBoundary` with sequential `match_index` (1-based), preserving `is_complete`, `confidence`, and `reason`
+  - On vision exception: log warning with reason, fall back to legacy stage-hints path
+  - Legacy segmenter remains available when vision disabled or fails; pure fallback boundaries with no reliable match signal must set `is_complete=False`
+- Vision detection algorithm:
+  - Frame sampler: extract frames every N seconds (default 20s) via opencv `VideoCapture`
+  - Timer OCR: read game timer from top-right region of each frame
+    - Template matching (primary, LoL-specific): fast, no external deps
+    - Tesseract fallback: if `tesseract` binary available
+    - EasyOCR fallback: ~100MB model download, last resort
+  - Match stitcher: group consecutive in-game readings into match segments
+    - Match start: first timer ≤ 2:00 in a span
+    - Match end: timer present → absent for ≥40s (2+ samples)
+    - `is_complete = has_start and has_end`
+    - `confidence = 0.95 if complete else random.uniform(0.3, 0.5)`
+- Downstream completeness gating:
+  - Subtitles: if `boundary.is_complete is False`, log `skip incomplete match boundary`, mark the match key handled, and do not write a placeholder SRT.
+  - Highlight planner: if `boundary.is_complete is False`, do not emit a `HighlightPlanAsset`.
+  - Exporter: before processing a boundary, skip when `not boundary.is_complete` or `boundary.confidence < 0.8`; do not create `.mp4`, `.txt`, or `ExportAsset` artifacts.
+  - Status: `missing_subtitles`, `missing_exports`, and `missing_copies` are computed from complete boundaries only; incomplete boundaries are counted separately for diagnostics.
+- `arl detect-matches` command:
+  - Reads `recording-assets.jsonl`, filters by session ids
+  - Runs `VisionMatchDetector.detect()` on each recording
+  - Prints detected segments with: start/end/duration/complete/confidence/reason
+  - Does NOT write to `match-boundaries.jsonl` (detection preview only)
+  - Segmenter is the canonical boundary emitter
+- Backward compatibility:
+  - Vision module is opt-in via `ARL_VISION_MATCH_DETECTION_ENABLED=1`
+  - Legacy subtitle/hint segmenter remains as fallback when vision disabled or fails
+  - Older `MatchBoundary` JSONL rows without `is_complete` load as `is_complete=True`; only new producers can mark known unusable spans explicitly.
+- Dependencies:
+  - Core: `opencv-python`, `numpy`, `pillow` (bundled in `pyproject.toml` optional `[vision]`)
+  - Optional OCR: `pytesseract` (requires system `tesseract` binary)
+  - Vision extras install: `pip install -e ".[vision]"`
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|-----------|-------------------|
+| Vision detection enabled but opencv import fails | Log error, fall back to legacy segmenter, emit one low-confidence boundary |
+| Vision detection fails mid-run (e.g., corrupt video file) | Log exception with session_id, fall back to legacy segmenter for that session |
+| Detected match segment has `start > end` | Validation error, log warning, skip invalid segment |
+| Detected match segment outside recording duration | Clip to `[0, recording_duration]`, log clipping |
+| Vision detects 0 matches (no timer readings) | Emit no usable complete boundaries, or fall back to a single `is_complete=False` diagnostic boundary |
+| Vision detects multiple incomplete matches only | Emit boundaries with `is_complete=False`, confidence 0.3-0.5, and reason per span |
+| Vision detects 1 complete + 2 incomplete matches | Emit 3 boundaries; only the complete row has `is_complete=True` |
+| Exporter sees boundary with `is_complete=False` | Skip export, log the reason, do NOT create .mp4 or .txt |
+| Exporter sees boundary with `is_complete=True` and confidence=0.95 | Proceed with normal export flow |
+| `arl detect-matches` called with no session filters | Error: requires `--session-id` or `--session-ids` |
+| `arl detect-matches` filters match no recordings | Print "No recording assets found", exit 0 |
+| Vision cache exists and `--force-reprocess` not set | Use cached results, skip re-detection |
+| Vision cache exists and `--force-reprocess` set | Ignore cache, re-run detection, overwrite cache |
+
+### 5. Good / Base / Bad Cases
+
+- Good:
+  - Vision detects 3 matches from a 63-min recording: incomplete (23 min), complete (20 min), incomplete (15 min).
+  - Segmenter emits 3 boundaries with sequential match_index and correct `is_complete` / `reason` / confidence metadata.
+  - Exporter processes only the complete match (match_index=2), skips matches 1 and 3.
+  - Operator sees one 20-min export for the complete game.
+- Base:
+  - Vision detection disabled, segmenter falls back to legacy stage-hints.
+  - Segmenter emits one `is_complete=False` boundary covering full recording.
+  - Subtitles/exporter skip that boundary (no SRT/export assets).
+- Bad:
+  - Vision detects matches but segmenter still uses legacy fallback (integration missing).
+  - Exporter processes incomplete matches, producing unusable 5-min clips mid-game.
+  - Vision exception crashes segmenter instead of falling back.
+  - Segmenter drops `MatchSegment.is_complete` and downstream stages infer usability from duration or filenames.
+
+### 6. Tests Required
+
+- Unit test: `VisionMatchDetector.detect()` returns list of `MatchSegment` from synthetic recording.
+  - Assert complete match (timer 0:00 → 30:00 → None) has `is_complete=True`, `confidence=0.95`.
+  - Assert incomplete head (timer starts 23:00 → 30:00 → None) has `is_complete=False`, `confidence` in [0.3, 0.5], `reason="incomplete_no_start"`.
+  - Assert incomplete tail (timer 0:00 → 15:00, no end) has `is_complete=False`, `reason="incomplete_no_end"`.
+- Unit test: frame sampler extracts frames at configured interval.
+  - Assert 60s video with 20s interval → 4 frames (t=0, 20, 40, 60).
+- Unit test: timer OCR template matching reads known LoL timer crops.
+  - Assert timer image "22:57" → `TimerReading(game_time_text="22:57", confidence > 0.9)`.
+  - Assert lobby frame → `TimerReading(game_time_text=None, confidence < 0.5)`.
+- Unit test: match stitcher groups consecutive in-game readings.
+  - Assert readings `[None, "00:34", "05:12", "34:56", None, None]` → 1 complete match.
+  - Assert readings `["23:45", "28:12", None]` → 1 incomplete match (`incomplete_no_start`).
+- Unit test: segmenter calls vision detector when enabled.
+  - Assert `settings.vision.match_detection_enabled=True` → vision path runs.
+  - Assert vision exception → falls back to legacy, logs warning.
+- Unit test: segmenter converts `MatchSegment` → `MatchBoundary`.
+  - Assert 2 segments → 2 boundaries with `match_index=1,2`.
+  - Assert complete segment → `boundary.is_complete=True`, `reason="complete"`, `confidence=0.95`.
+  - Assert incomplete segment → `boundary.is_complete=False`, reason preserved, `confidence` in [0.3, 0.5].
+- Unit test: subtitles/exporter skip incomplete boundaries.
+  - Assert `boundary.is_complete=False` → no SRT/MP4/export asset created and Whisper/ffmpeg are not invoked.
+  - Assert status does not count incomplete boundaries as missing outputs.
+  - Assert `boundary.is_complete=True` and `confidence=0.95` → normal flow.
+- Unit test: `arl detect-matches` prints segment details.
+  - Assert output includes start/end/duration/complete/confidence/reason per segment.
+- Integration test: end-to-end vision detection on real session (manual/fixture).
+  - Use session-20260610124818-f00e5b00 (multi-match 69-min recording).
+  - Assert detects 3 segments.
+  - Assert segment[1] (middle match) is `is_complete=True`, spans ~1230→3600s.
+  - Assert segments[0] and [2] are `is_complete=False`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+# Segmenter directly calls vision without fallback
+segments = VisionMatchDetector.detect(recording_path)  # raises on failure
+boundaries = [convert(seg) for seg in segments]
+```
+
+- Crashes segmenter when vision fails (corrupt video, missing deps)
+- No legacy fallback path
+
+#### Correct
+
+```python
+if settings.vision.match_detection_enabled:
+    try:
+        segments = VisionMatchDetector.detect(recording_path)
+        boundaries = [convert(seg) for seg in segments]
+    except Exception as e:
+        log(f"vision detection failed: {e}, falling back to legacy")
+        boundaries = legacy_segment(recording, hints)
+else:
+    boundaries = legacy_segment(recording, hints)
+```
+
+#### Wrong
+
+```python
+# Exporter exports all boundaries regardless of confidence
+for boundary in boundaries:
+    export(boundary)
+```
+
+- Exports incomplete matches, producing mid-game clips
+- No confidence gating
+
+#### Correct
+
+```python
+for boundary in boundaries:
+    if boundary.confidence < 0.8:
+        log(f"skip incomplete match session={boundary.session_id} match={boundary.match_index}")
+        append_audit("export_skipped_incomplete_match", boundary)
+        continue
+    export(boundary)
+```
+
+#### Wrong
+
+```python
+# Vision detector returns confidence=1.0 for all matches
+return MatchSegment(..., confidence=1.0)
+```
+
+- Loses semantic distinction between complete/incomplete matches
+- Exporter cannot filter incomplete matches
+
+#### Correct
+
+```python
+confidence = 0.95 if (has_start and has_end) else random.uniform(0.3, 0.5)
+return MatchSegment(..., is_complete=(has_start and has_end), confidence=confidence)
+```
+
 ## Scenario: Post-recording media pipeline contracts
 
 ### 1. Scope / Trigger
@@ -667,12 +915,16 @@ class CopyAsset(BaseModel):
 - Exporter mirrors the same observability discipline through `data/tmp/exporter-events.jsonl` (writer = `ExporterService`; **reader = grep / future recovery tooling only — orchestrator does NOT consume this file**, no state machine transitions depend on it). Registered event types: `ffmpeg_export_failed`, `ffmpeg_export_succeeded`, `ffmpeg_export_fallback_placeholder`, `ffmpeg_export_batch_aborted`. Per-row identity uses `session_id` + `match_index` (no `job_id` because exporter is not job-scoped). `ffmpeg_export_failed`, `ffmpeg_export_fallback_placeholder`, and `ffmpeg_export_batch_aborted` rows must carry the same canonical decision tuple (`decision` / `failure_category` / `is_retryable` / `reason_code` / `reason_detail`) as recorder; `ffmpeg_export_succeeded` rows omit those fields (mirrors `ffmpeg_record_succeeded`). Exporter does NOT do yield-on-transient — `decision` on a failed exporter row is always `attempt_failed` (placeholder row uses `decision="fallback_placeholder"`). The placeholder row inherits the last-attempt classification so operators can grep one row to learn what root-caused exhaustion. `ffmpeg_export_batch_aborted` uses `decision="batch_aborted"`, inherits the last fallback classification, and adds `consecutive_fallbacks` plus `remaining_matches`.
 - Exporter ffmpeg success must be validated with `ffprobe` before emitting `ffmpeg_export_succeeded`: the output file must exist, be non-empty, and contain a probeable video stream with non-zero duration when duration metadata is present. A zero-stream/empty-shell MP4 is treated as `ffmpeg_export_failed` with canonical decision fields, removed, then replaced by the deterministic placeholder export.
 - Exporter ffmpeg failure fallback must delete any partial target `.mp4` before writing the deterministic `.txt` placeholder so a timed-out mux cannot be mistaken for a playable export.
-- Exporter must use stream-copy clipping (`-map 0 -c copy -movflags +faststart`) when the subtitle file is the deterministic placeholder SRT. Burning placeholder subtitles forces a full re-encode of long recordings and can time out without adding useful text.
+- Exporter full-match/quality-preservation contract:
+  - Default export output is the full `MatchBoundary` interval, not a highlight-condensed edit. `ARL_EXPORT_USE_HIGHLIGHT_PLANS=1` is required before exporter may apply `HighlightPlanAsset` windows.
+  - Default subtitle mode is soft subtitles (`ARL_EXPORT_BURN_SUBTITLES=0`). With `ffmpeg_video_codec in {"auto", "copy"}` and a real SRT, exporter must clip the video/audio with stream copy and mux the SRT as `mov_text` (`-map 0:v? -map 0:a? -map 1:0 -c:v copy -c:a copy -c:s mov_text -movflags +faststart`).
+  - Placeholder SRTs still use plain stream-copy clipping (`-map 0 -c copy -movflags +faststart`) and do not add a subtitle track.
+  - Hard subtitle burn-in (`ARL_EXPORT_BURN_SUBTITLES=1`) is an explicit quality tradeoff because it requires video re-encoding. The default encode fallback is near-transparent (`ARL_EXPORT_FFMPEG_CRF=18`, `ARL_EXPORT_FFMPEG_PRESET=slow`) and should copy audio when no audio filter is applied.
 - `arl exporter --session-id/--session-ids --match-index/--match-indices --force-reprocess` must support scoped recovery runs. Filters use intersection semantics; `--force-reprocess` bypasses exporter processed-state/output idempotency for matched boundaries only.
 - Exporter subtitle burn-in must build ffmpeg's `subtitles` filter path from the resolved subtitle path using forward slashes, escape any drive colon, and wrap the path in single quotes (for example `subtitles='D\:/code/auto-record-live/data/processed/session/match-01.srt'`). Windows backslash paths or unquoted `D:/...` filter values can be parsed by ffmpeg as filter options instead of a subtitle filename.
-- When a valid `HighlightPlanAsset` exists for `(session_id, match_index)`, exporter must treat it as an optional edit plan: seek to the original match boundary, burn subtitles before cutting when subtitles are real, keep only planned windows with `select` / `aselect`, and reset timestamps with `setpts` / `asetpts`.
+- When `ARL_EXPORT_USE_HIGHLIGHT_PLANS=1` and a valid `HighlightPlanAsset` exists for `(session_id, match_index)`, exporter may treat it as an optional edit plan: seek to the original match boundary, burn subtitles before cutting when subtitles are real and burn-in is enabled, keep only planned windows with `select` / `aselect`, and reset timestamps with `setpts` / `asetpts`.
 - Exporter must ignore stale or invalid highlight plans whose recorded source boundary differs from the current `MatchBoundary`, whose windows are empty, reversed, negative, or outside the boundary duration. Ignored plans fall back to the no-plan export path.
-- When no highlight plan exists, exporter command construction remains the existing boundary export behavior.
+- When highlight plans are disabled, missing, stale, or invalid, exporter command construction must use the complete boundary export path.
 - Copywriter generation contract:
   - `CopywriterService` reads typed `SubtitleAsset` rows and optional matching `ExportAsset` rows keyed by `(session_id, match_index)`.
   - for each subtitle asset with an existing SRT file, it writes `data/processed/<session_id>/match-<idx>-copy.json` and appends one `CopyAsset` row to `data/tmp/copy-assets.jsonl`.
@@ -815,8 +1067,11 @@ class CopyAsset(BaseModel):
 | `arl copywriter` runs repeatedly on unchanged manifests/state | Do not duplicate copy JSON manifest rows |
 | `arl highlight-planner` sees a high-confidence boundary plus subtitle cues with long silent gaps | Append one conservative `HighlightPlanAsset` with padded, merged keep windows |
 | `arl highlight-planner` sees weak data, missing subtitles, a low-confidence fallback boundary, or no meaningful reduction | Write no plan; missing subtitle paths must not mark the key processed |
-| Exporter sees a valid highlight plan for a match | Use `select` / `aselect` with `setpts` / `asetpts` and append the normal `ExportAsset` on success |
-| Exporter sees no highlight plan or an invalid/stale highlight plan | Use the existing no-plan boundary export path |
+| Exporter sees a valid highlight plan while `ARL_EXPORT_USE_HIGHLIGHT_PLANS=0` | Ignore the plan and export the full `MatchBoundary` interval |
+| Exporter sees a valid highlight plan while `ARL_EXPORT_USE_HIGHLIGHT_PLANS=1` | Use `select` / `aselect` with `setpts` / `asetpts` and append the normal `ExportAsset` on success |
+| Exporter sees no highlight plan or an invalid/stale highlight plan | Use the complete boundary export path |
+| Exporter sees real SRT and default `auto/copy` codec with burn-in disabled | Stream-copy video/audio and mux SRT as `mov_text` soft subtitles |
+| Exporter sees `boundary.is_complete=false` | Skip subtitles/highlights/export for that boundary and do not report missing outputs for it in status |
 | `arl postprocess-reset --session-id <id>` runs after bad generated boundaries/subtitles/exports | Remove only that session's generated postprocess rows/state and generated files; keep raw recording assets intact for a later rerun |
 | `arl postprocess-reset --session-id <id>` sees orphan generated files not present in manifests | Remove target-session files under `storage.processed_dir/<session_id>/` and export files named `<session_id>_match*` under `storage.export_dir` |
 | `arl postprocess-reset` sees a removed artifact path outside `storage.processed_dir` / `storage.export_dir` | Remove the manifest row but skip file deletion and report the skipped path reason |
@@ -943,6 +1198,10 @@ class CopyAsset(BaseModel):
 - Unit test: exporter reads selected-recording orchestrator state files when resolving a session platform.
 - Unit test: exporter removes partial MP4 output before deferring a failed export.
 - Unit test: exporter uses stream copy instead of subtitle burn-in when subtitle input is the deterministic placeholder SRT.
+- Unit test: exporter uses stream copy plus `mov_text` soft subtitles for real SRT inputs when burn-in is disabled.
+- Unit test: exporter ignores highlight plans by default and exports the full boundary interval.
+- Unit test: exporter applies highlight plan `select` / `aselect` filters only when `ARL_EXPORT_USE_HIGHLIGHT_PLANS=1`.
+- Unit test: subtitles/exporter/status honor `MatchBoundary.is_complete=False` as an unavailable match.
 - Unit test: exporter CLI supports scoped session/match filters and force reprocess.
 - Unit test: exporter defers low-confidence full-recording fallback boundaries without writing `.mp4` or `.txt` artifacts.
 - Unit test: exporter ffmpeg failure records `deferred_match_keys` without appending placeholder `ExportAsset` rows.
@@ -1070,3 +1329,35 @@ copywriter_state.processed_match_keys.append(f"{draft.session_id}:{draft.match_i
 - Keeps the JSON artifact discoverable through the typed `CopyAsset` manifest
 - Preserves stage idempotency through `copywriter-state.json`
 - Lets `arl status` compute `missing_copies` from the manifest contract
+
+#### Wrong
+
+```python
+plan = highlight_plan_map.get((boundary.session_id, boundary.match_index))
+if plan is not None:
+    command = planned_ffmpeg_command(boundary, plan)
+else:
+    command = full_boundary_command(boundary)
+```
+
+- Makes highlight-condensed clips the default export whenever a plan file exists.
+- Can turn a complete 60+ minute match boundary into a short unusable clip that ends before the base explosion.
+- Forces re-encoding when subtitles or select filters are applied, degrading source quality.
+
+#### Correct
+
+```python
+if settings.export.use_highlight_plans:
+    plan = valid_highlight_plan(highlight_plan_map.get(key), boundary)
+else:
+    plan = None
+
+if plan is None and settings.export.ffmpeg_video_codec in {"auto", "copy"}:
+    command = stream_copy_full_boundary_with_soft_subtitles(boundary, subtitle)
+else:
+    command = planned_or_explicit_encode_command(boundary, plan, subtitle)
+```
+
+- Full-match export remains the default and produces a boundary from game entry to match end.
+- Highlight condensation is an explicit opt-in via `ARL_EXPORT_USE_HIGHLIGHT_PLANS=1`.
+- Default real-SRT exports preserve source video/audio by stream-copying and muxing subtitles as `mov_text`.

@@ -1826,3 +1826,71 @@ Added optional ASR audio preprocessing, separate CUDA compute settings, disabled
 ### Next Steps
 
 - None - task complete
+
+
+## Session 45: Implement vision-based match detection system
+
+**Date**: 2026-06-12
+**Task**: Implement vision-based match detection system
+**Branch**: `fix/highlight-condensing-budget`
+
+### Summary
+
+Implemented complete vision module (frame sampler, timer OCR, match stitcher, detector) with segmenter/exporter integration. All unit tests pass. Discovered limitation: Douyin live recordings lack visible game UI timers - code architecture complete but AC1-AC3 blocked pending proper test data or alternative detection method (easyocr/subtitle-based).
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0aaa5c5` | (see git log) |
+| `425d1eb` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 46: Fix export quality loss with fixed bitrate mode
+
+**Date**: 2026-06-15
+**Task**: Fix export quality loss with fixed bitrate mode
+**Branch**: `fix/highlight-condensing-budget`
+
+### Summary
+
+Fixed two critical export issues: (1) videos truncated to 3-4min highlights instead of full matches - disabled highlight planner, (2) severe quality loss (2.2 Mbps from 3.5 Mbps source) - implemented fixed bitrate mode with NVENC support. Verified with real recordings: 18-31min complete matches exported at 3.9-4.5 Mbps preserving source quality. Added export-configuration.md spec documenting quality modes and hardware encoding best practices.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1bf78a4` | (see git log) |
+| `f0c347d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

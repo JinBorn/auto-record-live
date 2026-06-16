@@ -138,6 +138,21 @@ class CliUnattendedTest(unittest.TestCase):
         self.assertEqual(args.command, "repair-recording-assets")
         self.assertEqual(args.min_age_seconds, 10.0)
 
+    def test_segmenter_command_parses_filters(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "segmenter",
+                "--session-id",
+                "session-a",
+                "--session-ids",
+                "session-b,session-c",
+            ]
+        )
+
+        self.assertEqual(args.command, "segmenter")
+        self.assertEqual(args.session_id, "session-a")
+        self.assertEqual(args.session_ids, "session-b,session-c")
+
     def test_exporter_command_parses_filters_and_force(self) -> None:
         args = build_parser().parse_args(
             [
