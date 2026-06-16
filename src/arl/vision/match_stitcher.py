@@ -59,12 +59,18 @@ def stitch_scene_readings(
     readings: list[SceneReading],
     *,
     match_start_threshold_seconds: float = 120.0,
+    min_match_duration_seconds: float = 300.0,
 ) -> list[MatchSegment]:
     """Group coarse scene readings into match segments.
 
     Loading-screen frames are kept as the match start when they immediately
     precede in-game HUD frames. The first non-game frame after a HUD span is
     treated as the natural game end.
+
+    Args:
+        readings: Scene readings from frame samples
+        match_start_threshold_seconds: Timer threshold for match start detection
+        min_match_duration_seconds: Minimum duration to consider as complete match
     """
     if not readings:
         return []
@@ -87,6 +93,7 @@ def stitch_scene_readings(
                         start_seconds=current_start,
                         started_from_loading=current_start_from_loading,
                         match_start_threshold_seconds=match_start_threshold_seconds,
+                        min_match_duration_seconds=min_match_duration_seconds,
                         end_seconds=reading.timestamp_seconds,
                     )
                 )
@@ -108,13 +115,23 @@ def stitch_scene_readings(
             current_span.append(reading)
             continue
 
+        # "other" scene: check if it's a short gap within a match
         if current_span:
+            # Allow short gaps (≤60s) within a match to handle replays/kill-cams
+            last_in_game_time = current_span[-1].timestamp_seconds
+            gap = reading.timestamp_seconds - last_in_game_time
+            if gap <= 60.0:
+                # Skip this "other" frame, continue the current span
+                continue
+
+            # Long gap: end the current match
             segments.append(
                 _analyze_scene_span(
                     span=current_span,
                     start_seconds=current_start,
                     started_from_loading=current_start_from_loading,
                     match_start_threshold_seconds=match_start_threshold_seconds,
+                    min_match_duration_seconds=min_match_duration_seconds,
                     end_seconds=reading.timestamp_seconds,
                 )
             )
@@ -130,6 +147,7 @@ def stitch_scene_readings(
                 start_seconds=current_start,
                 started_from_loading=current_start_from_loading,
                 match_start_threshold_seconds=match_start_threshold_seconds,
+                min_match_duration_seconds=min_match_duration_seconds,
                 has_natural_end=False,
             )
         )
@@ -156,6 +174,7 @@ def _analyze_scene_span(
     start_seconds: float | None,
     started_from_loading: bool,
     match_start_threshold_seconds: float,
+    min_match_duration_seconds: float,
     end_seconds: float | None = None,
     has_natural_end: bool = True,
 ) -> MatchSegment:
@@ -165,11 +184,28 @@ def _analyze_scene_span(
     first_in_game = span[0].timestamp_seconds
     resolved_start = start_seconds if start_seconds is not None else first_in_game
     resolved_end = end_seconds if end_seconds is not None else span[-1].timestamp_seconds
+    duration = resolved_end - resolved_start
+
     has_start = (
         started_from_loading
         or first_in_game <= match_start_threshold_seconds
     )
     timer_trace = [(reading.timestamp_seconds, reading.scene) for reading in span]
+
+    # Heuristic: long segments (≥10min) with natural end are likely complete matches
+    # even if we didn't detect loading screen or early start
+    is_long_segment = duration >= 600.0  # 10 minutes
+
+    # Filter: reject segments shorter than minimum duration if marked as "complete"
+    if has_start and has_natural_end and duration < min_match_duration_seconds:
+        return MatchSegment(
+            start_seconds=resolved_start,
+            end_seconds=resolved_end,
+            timer_trace=timer_trace,
+            is_complete=False,
+            confidence=0.2,
+            reason="incomplete_too_short",
+        )
 
     if has_start and has_natural_end:
         return MatchSegment(
@@ -180,6 +216,18 @@ def _analyze_scene_span(
             confidence=0.9,
             reason="complete",
         )
+
+    # Heuristic: long segment with natural end → likely complete
+    if is_long_segment and has_natural_end:
+        return MatchSegment(
+            start_seconds=resolved_start,
+            end_seconds=resolved_end,
+            timer_trace=timer_trace,
+            is_complete=True,
+            confidence=0.8,
+            reason="complete",
+        )
+
     if not has_natural_end:
         return MatchSegment(
             start_seconds=resolved_start,

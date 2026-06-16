@@ -46,6 +46,7 @@ class VisionMatchDetector:
         scene_segments = stitch_scene_readings(
             scene_readings,
             match_start_threshold_seconds=self.settings.match_start_threshold_seconds,
+            min_match_duration_seconds=self.settings.min_match_duration_seconds,
         )
         if scene_segments:
             return scene_segments

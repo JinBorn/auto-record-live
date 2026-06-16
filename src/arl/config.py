@@ -166,6 +166,7 @@ class VisionSettings(BaseModel):
     timer_crop_region: tuple[int, int, int, int] = (1770, 5, 150, 50)
     match_start_threshold_seconds: float = 120.0
     lobby_gap_threshold_seconds: float = 40.0
+    min_match_duration_seconds: float = 300.0  # 5 minutes minimum
 
 
 class HighlightSettings(BaseModel):
