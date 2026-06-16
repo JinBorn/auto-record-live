@@ -117,10 +117,14 @@ def stitch_scene_readings(
 
         # "other" scene: check if it's a short gap within a match
         if current_span:
-            # Allow short gaps (≤60s) within a match to handle replays/kill-cams
+            # Allow longer gaps (≤300s/5min) within a match to handle:
+            # - Observer perspective switches
+            # - Extended replays
+            # - Post-match ceremonies/interviews
+            # This is especially important for casted/spectated games
             last_in_game_time = current_span[-1].timestamp_seconds
             gap = reading.timestamp_seconds - last_in_game_time
-            if gap <= 60.0:
+            if gap <= 300.0:
                 # Skip this "other" frame, continue the current span
                 continue
 
@@ -152,7 +156,9 @@ def stitch_scene_readings(
             )
         )
 
-    return segments
+    # Post-processing: merge segments separated by short gaps
+    # This handles cases where scene classifier fails intermittently during a match
+    return _merge_close_segments(segments, max_gap_seconds=600.0)
 
 
 def _loading_to_in_game_gap_limit(readings: list[SceneReading]) -> float:
@@ -166,6 +172,60 @@ def _loading_to_in_game_gap_limit(readings: list[SceneReading]) -> float:
     if not gaps:
         return 180.0
     return max(180.0, median(gaps) * 3.0)
+
+
+def _merge_close_segments(
+    segments: list[MatchSegment],
+    max_gap_seconds: float = 600.0,
+) -> list[MatchSegment]:
+    """Merge segments separated by short gaps.
+
+    This handles cases where scene classifier intermittently fails during a match,
+    causing a continuous match to be split into multiple segments.
+
+    Args:
+        segments: Initial segments from scene stitching
+        max_gap_seconds: Maximum gap between segments to merge (default 10min)
+
+    Returns:
+        Merged segments
+    """
+    if len(segments) <= 1:
+        return segments
+
+    sorted_segments = sorted(segments, key=lambda s: s.start_seconds)
+    merged: list[MatchSegment] = []
+    current = sorted_segments[0]
+
+    for next_seg in sorted_segments[1:]:
+        gap = next_seg.start_seconds - current.end_seconds
+
+        # Merge if gap is small relative to combined duration
+        if gap <= max_gap_seconds:
+            # Merge: extend current segment to include next
+            merged_trace = current.timer_trace + next_seg.timer_trace
+            merged_duration = next_seg.end_seconds - current.start_seconds
+
+            # Inherit best confidence and completeness
+            merged_confidence = max(current.confidence, next_seg.confidence)
+            merged_complete = current.is_complete or next_seg.is_complete
+            merged_reason = current.reason if current.is_complete else next_seg.reason
+
+            current = MatchSegment(
+                start_seconds=current.start_seconds,
+                end_seconds=next_seg.end_seconds,
+                timer_trace=merged_trace,
+                is_complete=merged_complete,
+                confidence=merged_confidence,
+                reason=merged_reason,
+            )
+        else:
+            # Gap too large: keep current, start new
+            merged.append(current)
+            current = next_seg
+
+    merged.append(current)
+    return merged
 
 
 def _analyze_scene_span(
