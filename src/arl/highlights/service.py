@@ -84,6 +84,132 @@ _HIGHLIGHT_KEYWORDS = tuple(
     ]
 )
 
+_TACTICAL_KEYWORDS = tuple(
+    item.lower()
+    for item in [
+        # \u53ec\u5524\u5e08\u6280\u80fd\uff08\u4e2d\u82f1\uff09
+        "flash",
+        "tp",
+        "teleport",
+        "ignite",
+        "heal",
+        "cleanse",
+        "exhaust",
+        "barrier",
+        "ghost",
+        "\u95ea\u73b0",
+        "\u4f20\u9001",
+        "\u70b9\u71c3",
+        "\u6cbb\u7597",
+        "\u51c0\u5316",
+        "\u865a\u5f31",
+        "\u5c4f\u969c",
+        "\u75be\u8dd1",
+        # \u4f4d\u7f6e\u548c\u79fb\u52a8
+        "top",
+        "mid",
+        "bot",
+        "jungle",
+        "river",
+        "lane",
+        "bush",
+        "\u4e0a\u8def",
+        "\u4e2d\u8def",
+        "\u4e0b\u8def",
+        "\u6253\u91ce",
+        "\u91ce\u533a",
+        "\u6cb3\u9053",
+        "\u7ebf",
+        "\u8349\u4e1b",
+        "\u4e09\u89d2\u8349",
+        "gank",
+        "push",
+        "retreat",
+        "roam",
+        "\u56de\u9632",
+        "\u6293",
+        "\u63a8",
+        "\u64a4",
+        "\u5b88",
+        "\u6e38\u8d70",
+        "\u652f\u63f4",
+        # \u88c5\u5907\u548c\u7ecf\u6d4e
+        "build",
+        "item",
+        "gold",
+        "buy",
+        "\u88c5\u5907",
+        "\u51fa\u88c5",
+        "\u7ecf\u6d4e",
+        "\u8865\u5200",
+        "\u4e70",
+        "\u5408\u6210",
+        "\u795e\u8bdd",
+        "\u4f20\u8bf4",
+        "\u7834\u8d25",
+        "\u65e0\u5c3d",
+        "\u706b\u70ae",
+        "\u7f8a\u5200",
+        "\u91d1\u8eab",
+        "\u4e2d\u4e9a",
+        # \u89c6\u91ce\u548c\u6218\u672f
+        "ward",
+        "vision",
+        "pink",
+        "control ward",
+        "\u773c",
+        "\u89c6\u91ce",
+        "\u771f\u773c",
+        "\u63a7\u5236\u5b88\u536b",
+        "\u8e72",
+        "\u57cb\u4f0f",
+        "\u53cd\u8e72",
+        "\u6392\u773c",
+        # \u6280\u80fd\u548cCD
+        "ult",
+        "ultimate",
+        "cd",
+        "cooldown",
+        "skill",
+        "\u5927\u62db",
+        "\u6280\u80fd",
+        "\u51b7\u5374",
+        "\u6ca1\u5927",
+        "\u6709\u5927",
+        "\u5927\u62db\u597d\u4e86",
+        # \u56e2\u961f\u534f\u4f5c
+        "group",
+        "split",
+        "engage",
+        "disengage",
+        "peel",
+        "focus",
+        "\u5f00\u56e2",
+        "\u96c6\u5408",
+        "\u5206\u63a8",
+        "\u5e26\u7ebf",
+        "\u4fdd\u62a4",
+        "\u5207",
+        "\u79d2",
+        # \u8d44\u6e90\u548c\u76ee\u6807
+        "buff",
+        "\u7ea2",
+        "\u84dd",
+        "\u77f3\u5934\u4eba",
+        "\u4e09\u72fc",
+        "\u6cb3\u87f9",
+        # \u6e38\u620f\u72b6\u6001
+        "level",
+        "\u7ecf\u9a8c",
+        "\u7b49\u7ea7",
+        "\u590d\u6d3b",
+        "\u6cc9\u6c34",
+        "\u5175\u7ebf",
+        "\u70ae\u8f66",
+        "\u8d85\u7ea7\u5175",
+    ]
+)
+
 
 class HighlightPlannerService:
     def __init__(self, settings: Settings) -> None:
@@ -179,7 +305,19 @@ class HighlightPlannerService:
                 continue
 
             cues = self._parse_srt_cues(Path(subtitle.path))
-            plan = self._build_plan(boundary=boundary, cues=cues)
+
+            # 模式路由：根据 highlights.mode 分发
+            if self.settings.highlights.mode == "highlight":
+                plan = self._build_highlight_plan(boundary=boundary, cues=cues)
+            elif self.settings.highlights.mode == "condensed":
+                plan = self._build_condensed_plan(
+                    boundary=boundary,
+                    cues=cues,
+                    subtitle=subtitle,
+                )
+            else:  # "disabled"
+                plan = None
+
             if plan is None:
                 skipped_no_plan += 1
                 continue
@@ -221,7 +359,7 @@ class HighlightPlannerService:
             <= tolerance_seconds
         )
 
-    def _build_plan(
+    def _build_highlight_plan(
         self,
         *,
         boundary: MatchBoundary,
@@ -481,3 +619,127 @@ class HighlightPlannerService:
     @staticmethod
     def _key(session_id: str, match_index: int) -> str:
         return f"{session_id}:{match_index}"
+
+    def _build_condensed_plan(
+        self,
+        *,
+        boundary: MatchBoundary,
+        cues: list[_SrtCue],
+        subtitle: SubtitleAsset,
+    ) -> HighlightPlanAsset | None:
+        """构建condensed模式的highlight plan。
+
+        流程：
+        1. 基本门槛检查（时长、完整性、置信度）
+        2. 字幕分类（classify_cues）
+        3. 内容密度分析（analyze_content_density）
+        4. 窗口优化（optimize_windows）
+        5. 构造HighlightPlanAsset
+        """
+        from pathlib import Path
+
+        from arl.highlights.content_analyzer import analyze_content_density
+        from arl.highlights.cue_classifier import classify_cues
+        from arl.highlights.window_optimizer import optimize_windows
+
+        duration = boundary.ended_at_seconds - boundary.started_at_seconds
+        if duration <= 0.0:
+            return None
+        if not boundary.is_complete:
+            return None
+        if boundary.confidence <= 0.5:
+            return None
+
+        # condensed模式：放宽最小时长要求（允许短对局）
+        min_duration_for_condensed = 360.0  # 6分钟
+        if duration < min_duration_for_condensed:
+            log(
+                "highlights",
+                f"skip condensed plan session_id={boundary.session_id} "
+                f"match_index={boundary.match_index} "
+                f"reason=duration_too_short duration={duration:.1f}s",
+            )
+            return None
+
+        meaningful_cues = [
+            cue for cue in cues if not self._is_placeholder_text(cue.text)
+        ]
+        if not meaningful_cues:
+            return None
+
+        # 1. 字幕分类
+        all_tactical_keywords = _TACTICAL_KEYWORDS + tuple(
+            kw.lower() for kw in self.settings.highlights.custom_tactical_keywords
+        )
+        classified_cues = classify_cues(
+            cues=[(c.started_at_seconds, c.ended_at_seconds, c.text) for c in meaningful_cues],
+            highlight_keywords=_HIGHLIGHT_KEYWORDS,
+            tactical_keywords=all_tactical_keywords,
+            low_value_min_length=self.settings.highlights.condensed_low_value_min_length,
+            low_value_similarity_threshold=self.settings.highlights.condensed_low_value_similarity_threshold,
+            low_value_repeat_window_seconds=self.settings.highlights.condensed_low_value_repeat_window_seconds,
+        )
+
+        # 2. 内容密度分析
+        # 尝试找到对应的录像文件用于视觉分析
+        video_path = None
+        if self.settings.highlights.condensed_use_visual_analysis:
+            recording_assets_path = self.settings.storage.temp_dir / "recording-assets.jsonl"
+            if recording_assets_path.exists():
+                from arl.shared.contracts import RecordingAsset
+
+                recordings = load_models(recording_assets_path, RecordingAsset)
+                for rec in recordings:
+                    if rec.session_id == boundary.session_id:
+                        recording_path = Path(rec.path)
+                        if recording_path.exists() and recording_path.suffix == ".mp4":
+                            video_path = recording_path
+                            break
+
+        density_result = analyze_content_density(
+            classified_cues=classified_cues,
+            match_duration_seconds=duration,
+            video_path=video_path,
+            weight_highlight_events=self.settings.highlights.condensed_weight_highlight_events,
+            weight_narration=self.settings.highlights.condensed_weight_narration,
+            weight_visual=self.settings.highlights.condensed_weight_visual,
+            weight_baseline=self.settings.highlights.condensed_weight_baseline,
+            use_visual_analysis=self.settings.highlights.condensed_use_visual_analysis,
+            visual_sample_interval=self.settings.highlights.condensed_visual_sample_interval_seconds,
+            high_density_threshold=self.settings.highlights.condensed_high_density_threshold,
+            low_density_threshold=self.settings.highlights.condensed_low_density_threshold,
+            high_density_duration_range=self.settings.highlights.condensed_high_density_duration_range,
+            mid_density_duration_range=self.settings.highlights.condensed_mid_density_duration_range,
+            low_density_duration_range=self.settings.highlights.condensed_low_density_duration_range,
+        )
+
+        # 3. 窗口优化
+        windows = optimize_windows(
+            classified_cues=classified_cues,
+            target_duration_seconds=density_result.target_duration_seconds,
+            match_duration_seconds=duration,
+            context_padding_seconds=self.settings.highlights.condensed_context_padding_seconds,
+            merge_gap_seconds=self.settings.highlights.condensed_merge_gap_seconds,
+            min_window_duration_seconds=self.settings.highlights.condensed_min_window_duration_seconds,
+            boring_gap_threshold_seconds=self.settings.highlights.condensed_boring_gap_threshold_seconds,
+        )
+
+        if not windows:
+            return None
+
+        # 4. 构造HighlightPlanAsset
+        return HighlightPlanAsset(
+            session_id=boundary.session_id,
+            match_index=boundary.match_index,
+            source_boundary_start_seconds=boundary.started_at_seconds,
+            source_boundary_end_seconds=boundary.ended_at_seconds,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=round(w.started_at_seconds, 3),
+                    ended_at_seconds=round(w.ended_at_seconds, 3),
+                    reason=w.reason,
+                )
+                for w in windows
+            ],
+            created_at=datetime.now(timezone.utc),
+        )

@@ -1,1 +1,3 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Module organization pattern for adding new highlights submodules"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Forbidden patterns, Pydantic model contracts, UTF-8 encoding discipline, testing requirements"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Search-first discipline before creating new utilities, constant reuse patterns"}

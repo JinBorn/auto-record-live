@@ -170,6 +170,9 @@ class VisionSettings(BaseModel):
 
 class HighlightSettings(BaseModel):
     enabled: bool = True
+    mode: str = "highlight"  # "highlight" | "condensed" | "disabled"
+
+    # === highlight模式参数（现有，保持不变）===
     cue_padding_seconds: float = 6.0
     highlight_padding_seconds: float = 22.0
     merge_gap_seconds: float = 10.0
@@ -179,6 +182,57 @@ class HighlightSettings(BaseModel):
     min_retained_seconds: float = 480.0
     min_retained_fraction: float = 0.55
     max_windows: int = 8
+
+    # === condensed模式参数（新增）===
+    # 内容密度权重
+    condensed_weight_highlight_events: float = 0.5
+    condensed_weight_narration: float = 0.25
+    condensed_weight_visual: float = 0.15
+    condensed_weight_baseline: float = 0.1
+
+    # 目标时长映射
+    condensed_target_duration_range: tuple[int, int] = (6, 25)  # 分钟
+    condensed_high_density_threshold: float = 0.8
+    condensed_low_density_threshold: float = 0.5
+    condensed_high_density_duration_range: tuple[int, int] = (20, 25)
+    condensed_mid_density_duration_range: tuple[int, int] = (12, 18)
+    condensed_low_density_duration_range: tuple[int, int] = (6, 10)
+
+    # 窗口生成参数
+    condensed_context_padding_seconds: float = 5.0
+    condensed_merge_gap_seconds: float = 8.0
+    condensed_min_window_duration_seconds: float = 3.0
+    condensed_silent_gap_threshold_seconds: float = 60.0
+    condensed_boring_gap_threshold_seconds: float = 120.0
+
+    # 优先级权重
+    condensed_priority_key_event: float = 1.0
+    condensed_priority_tactical: float = 0.7
+    condensed_priority_narration: float = 0.4
+
+    # 低价值对话过滤
+    condensed_low_value_min_length: int = 3
+    condensed_low_value_similarity_threshold: float = 0.8
+    condensed_low_value_repeat_window_seconds: float = 30.0
+
+    # 视觉分析
+    condensed_use_visual_analysis: bool = True
+    condensed_visual_sample_interval_seconds: float = 10.0
+    condensed_visual_weight_scene_change: float = 0.5
+    condensed_visual_weight_minimap: float = 0.3
+    condensed_visual_weight_edge_density: float = 0.2
+
+    # 用户自定义术语
+    custom_tactical_keywords: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_mode(self) -> "HighlightSettings":
+        """Validate mode field is one of the allowed values."""
+        if self.mode not in {"highlight", "condensed", "disabled"}:
+            raise ValueError(
+                f"highlights.mode must be one of 'highlight', 'condensed', or 'disabled', got '{self.mode}'"
+            )
+        return self
 
 
 class ExportSettings(BaseModel):
