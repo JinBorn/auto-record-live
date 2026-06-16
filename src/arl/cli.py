@@ -297,7 +297,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--message",
         help="Optional operator message for resolved/failed status updates.",
     )
-    subparsers.add_parser("segmenter", help="Run the match segmenter worker.")
+    segmenter = subparsers.add_parser("segmenter", help="Run the match segmenter worker.")
+    segmenter.add_argument(
+        "--session-id",
+        help="Only segment one session id.",
+    )
+    segmenter.add_argument(
+        "--session-ids",
+        help="Only segment comma-separated session ids.",
+    )
     detect_matches = subparsers.add_parser(
         "detect-matches",
         help="Detect match segments from raw recordings using vision.",
@@ -702,11 +710,10 @@ def main() -> int:
         return 0
 
     if args.command == "segmenter":
-        SegmenterService(settings).run()
+        SegmenterService(settings).run(session_ids=_collect_session_ids(args))
         return 0
 
     if args.command == "detect-matches":
-        from pathlib import Path
         from arl.vision import VisionMatchDetector
         from arl.shared.contracts import RecordingAsset
         from arl.shared.jsonl_store import load_models

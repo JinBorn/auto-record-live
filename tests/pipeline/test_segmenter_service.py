@@ -5,12 +5,14 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from arl.config import Settings, StorageSettings
 from arl.segmenter.models import MatchStageHint
 from arl.segmenter.service import SegmenterService
 from arl.shared.contracts import MatchStage, RecordingAsset, SourceType
 from arl.shared.jsonl_store import append_model
+from arl.vision.models import MatchSegment
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -307,6 +309,50 @@ class SegmenterServiceTest(unittest.TestCase):
         self.assertEqual(len(boundaries), 1)
         self.assertEqual(boundaries[0]["started_at_seconds"], 0.0)
         self.assertEqual(boundaries[0]["ended_at_seconds"], 30.0)
+
+    def test_segmenter_persists_vision_completeness_metadata(self) -> None:
+        recording_path = self.temp_root / "recording-source.mp4"
+        recording_path.parent.mkdir(parents=True, exist_ok=True)
+        recording_path.write_text("fake media", encoding="utf-8")
+        append_model(
+            self.recording_assets_path,
+            RecordingAsset(
+                session_id="session-vision-completeness",
+                source_type=SourceType.DIRECT_STREAM,
+                path=str(recording_path),
+                started_at=datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 6, 10, 12, 30, tzinfo=timezone.utc),
+            ),
+        )
+
+        detector_segments = [
+            MatchSegment(
+                start_seconds=20.0,
+                end_seconds=300.0,
+                timer_trace=[],
+                is_complete=False,
+                confidence=0.4,
+                reason="incomplete_no_end",
+            ),
+            MatchSegment(
+                start_seconds=420.0,
+                end_seconds=1500.0,
+                timer_trace=[],
+                is_complete=True,
+                confidence=0.95,
+                reason="complete",
+            ),
+        ]
+        with patch("arl.vision.VisionMatchDetector") as detector_cls:
+            detector_cls.return_value.detect.return_value = detector_segments
+            SegmenterService(self.settings).run()
+
+        boundaries = _read_jsonl(self.boundaries_path)
+        self.assertEqual(len(boundaries), 2)
+        self.assertFalse(boundaries[0]["is_complete"])
+        self.assertEqual(boundaries[0]["reason"], "incomplete_no_end")
+        self.assertTrue(boundaries[1]["is_complete"])
+        self.assertEqual(boundaries[1]["reason"], "complete")
 
 
 if __name__ == "__main__":

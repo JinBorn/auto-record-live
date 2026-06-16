@@ -5,8 +5,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from arl.vision.match_stitcher import stitch_matches
-from arl.vision.models import TimerReading
+from arl.vision.match_stitcher import stitch_matches, stitch_scene_readings
+from arl.vision.models import SceneReading, TimerReading
 
 
 def test_complete_match():
@@ -90,9 +90,40 @@ def test_multiple_matches():
     assert segments[2].is_complete is False
 
 
+def test_scene_stitching_splits_multi_game_recording():
+    """Test scene-based splitting for multi-game recordings with trailing partial."""
+    readings = [
+        SceneReading(0.0, "loading", 0.9),
+        SceneReading(20.0, "in_game", 0.9),
+        SceneReading(1800.0, "in_game", 0.9),
+        SceneReading(1860.0, "other", 0.7),
+        SceneReading(2040.0, "other", 0.7),
+        SceneReading(2220.0, "loading", 0.9),
+        SceneReading(2280.0, "in_game", 0.9),
+        SceneReading(3640.0, "in_game", 0.9),
+        SceneReading(3660.0, "other", 0.7),
+        SceneReading(3840.0, "other", 0.7),
+        SceneReading(4020.0, "in_game", 0.9),
+        SceneReading(4140.0, "in_game", 0.9),
+    ]
+
+    segments = stitch_scene_readings(readings)
+
+    assert len(segments) == 3
+    assert segments[0].is_complete is True
+    assert segments[0].start_seconds == 0.0
+    assert segments[0].end_seconds == 1860.0
+    assert segments[1].is_complete is True
+    assert segments[1].start_seconds == 2220.0
+    assert segments[1].end_seconds == 3660.0
+    assert segments[2].is_complete is False
+    assert segments[2].reason == "incomplete_no_end"
+
+
 if __name__ == "__main__":
     test_complete_match()
     test_incomplete_no_start()
     test_incomplete_no_end()
     test_multiple_matches()
+    test_scene_stitching_splits_multi_game_recording()
     print("All tests passed!")

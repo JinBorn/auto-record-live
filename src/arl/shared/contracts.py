@@ -47,6 +47,8 @@ class MatchBoundary(BaseModel):
     started_at_seconds: float
     ended_at_seconds: float
     confidence: float
+    is_complete: bool = True
+    reason: str | None = None
 
 
 class HighlightClipWindow(BaseModel):

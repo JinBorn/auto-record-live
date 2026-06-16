@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from .models import MatchSegment, TimerReading
+from statistics import median
+
+from .models import MatchSegment, SceneReading, TimerReading
 
 
 def stitch_matches(
@@ -51,6 +53,150 @@ def stitch_matches(
         segments.append(segment)
 
     return segments
+
+
+def stitch_scene_readings(
+    readings: list[SceneReading],
+    *,
+    match_start_threshold_seconds: float = 120.0,
+) -> list[MatchSegment]:
+    """Group coarse scene readings into match segments.
+
+    Loading-screen frames are kept as the match start when they immediately
+    precede in-game HUD frames. The first non-game frame after a HUD span is
+    treated as the natural game end.
+    """
+    if not readings:
+        return []
+
+    sorted_readings = sorted(readings, key=lambda reading: reading.timestamp_seconds)
+    loading_gap_limit = _loading_to_in_game_gap_limit(sorted_readings)
+
+    segments: list[MatchSegment] = []
+    current_span: list[SceneReading] = []
+    current_start: float | None = None
+    current_start_from_loading = False
+    pending_loading_start: float | None = None
+
+    for reading in sorted_readings:
+        if reading.scene == "loading":
+            if current_span:
+                segments.append(
+                    _analyze_scene_span(
+                        span=current_span,
+                        start_seconds=current_start,
+                        started_from_loading=current_start_from_loading,
+                        match_start_threshold_seconds=match_start_threshold_seconds,
+                        end_seconds=reading.timestamp_seconds,
+                    )
+                )
+                current_span = []
+                current_start = None
+                current_start_from_loading = False
+            pending_loading_start = reading.timestamp_seconds
+            continue
+
+        if reading.scene == "in_game":
+            if not current_span:
+                start_from_loading = (
+                    pending_loading_start is not None
+                    and reading.timestamp_seconds - pending_loading_start <= loading_gap_limit
+                )
+                current_start = pending_loading_start if start_from_loading else reading.timestamp_seconds
+                current_start_from_loading = start_from_loading
+                pending_loading_start = None
+            current_span.append(reading)
+            continue
+
+        if current_span:
+            segments.append(
+                _analyze_scene_span(
+                    span=current_span,
+                    start_seconds=current_start,
+                    started_from_loading=current_start_from_loading,
+                    match_start_threshold_seconds=match_start_threshold_seconds,
+                    end_seconds=reading.timestamp_seconds,
+                )
+            )
+            current_span = []
+            current_start = None
+            current_start_from_loading = False
+        pending_loading_start = None
+
+    if current_span:
+        segments.append(
+            _analyze_scene_span(
+                span=current_span,
+                start_seconds=current_start,
+                started_from_loading=current_start_from_loading,
+                match_start_threshold_seconds=match_start_threshold_seconds,
+                has_natural_end=False,
+            )
+        )
+
+    return segments
+
+
+def _loading_to_in_game_gap_limit(readings: list[SceneReading]) -> float:
+    if len(readings) < 2:
+        return 180.0
+    gaps = [
+        current.timestamp_seconds - previous.timestamp_seconds
+        for previous, current in zip(readings, readings[1:])
+        if current.timestamp_seconds > previous.timestamp_seconds
+    ]
+    if not gaps:
+        return 180.0
+    return max(180.0, median(gaps) * 3.0)
+
+
+def _analyze_scene_span(
+    *,
+    span: list[SceneReading],
+    start_seconds: float | None,
+    started_from_loading: bool,
+    match_start_threshold_seconds: float,
+    end_seconds: float | None = None,
+    has_natural_end: bool = True,
+) -> MatchSegment:
+    if not span:
+        raise ValueError("Empty scene span")
+
+    first_in_game = span[0].timestamp_seconds
+    resolved_start = start_seconds if start_seconds is not None else first_in_game
+    resolved_end = end_seconds if end_seconds is not None else span[-1].timestamp_seconds
+    has_start = (
+        started_from_loading
+        or first_in_game <= match_start_threshold_seconds
+    )
+    timer_trace = [(reading.timestamp_seconds, reading.scene) for reading in span]
+
+    if has_start and has_natural_end:
+        return MatchSegment(
+            start_seconds=resolved_start,
+            end_seconds=resolved_end,
+            timer_trace=timer_trace,
+            is_complete=True,
+            confidence=0.9,
+            reason="complete",
+        )
+    if not has_natural_end:
+        return MatchSegment(
+            start_seconds=resolved_start,
+            end_seconds=resolved_end,
+            timer_trace=timer_trace,
+            is_complete=False,
+            confidence=0.4,
+            reason="incomplete_no_end",
+        )
+    return MatchSegment(
+        start_seconds=resolved_start,
+        end_seconds=resolved_end,
+        timer_trace=timer_trace,
+        is_complete=False,
+        confidence=0.3,
+        reason="incomplete_no_start",
+    )
 
 
 def _analyze_span(

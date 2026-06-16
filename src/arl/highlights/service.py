@@ -230,6 +230,8 @@ class HighlightPlannerService:
         duration = boundary.ended_at_seconds - boundary.started_at_seconds
         if duration <= 0.0:
             return None
+        if not boundary.is_complete:
+            return None
         if boundary.confidence <= 0.5:
             return None
         if duration < self.settings.highlights.min_boundary_duration_seconds:

@@ -70,10 +70,16 @@ class StatusService:
             ExporterAuditEvent,
         )
         recovery_summary = RecoveryService(self.settings).summary()
+        complete_boundaries = [
+            boundary for boundary in boundaries if boundary.is_complete
+        ]
 
-        missing_subtitles = self._count_missing_subtitles(boundaries, subtitle_assets)
-        missing_exports = self._count_missing_exports(boundaries, export_assets)
-        missing_copies = self._count_missing_copies(boundaries, copy_assets)
+        missing_subtitles = self._count_missing_subtitles(
+            complete_boundaries,
+            subtitle_assets,
+        )
+        missing_exports = self._count_missing_exports(complete_boundaries, export_assets)
+        missing_copies = self._count_missing_copies(complete_boundaries, copy_assets)
         subtitle_fallback_reasons = self._subtitle_fallback_reasons(subtitle_events)
         recorder_failure_events = self._recorder_failure_events(recorder_events)
         bilibili_cookie_expired_events = [
@@ -165,6 +171,8 @@ class StatusService:
             },
             "postprocess": {
                 "match_boundaries": len(boundaries),
+                "complete_match_boundaries": len(complete_boundaries),
+                "incomplete_match_boundaries": len(boundaries) - len(complete_boundaries),
                 "subtitle_assets": len(subtitle_assets),
                 "highlight_plans": len(highlight_plans),
                 "export_assets": len(export_assets),

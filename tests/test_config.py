@@ -257,12 +257,31 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
 
         self.assertEqual(settings.export.ffmpeg_video_codec, "h265")
 
-    def test_export_burn_subtitles_env_loads(self) -> None:
+    def test_export_quality_preserving_defaults(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
-            os.environ["ARL_EXPORT_BURN_SUBTITLES"] = "0"
             settings = load_settings()
 
         self.assertFalse(settings.export.burn_subtitles)
+        self.assertEqual(settings.export.ffmpeg_crf, 18)
+        self.assertEqual(settings.export.ffmpeg_preset, "slow")
+        self.assertFalse(settings.export.use_highlight_plans)
+        self.assertFalse(settings.export.use_hardware_encoding)
+
+    def test_export_burn_subtitles_env_loads(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_EXPORT_BURN_SUBTITLES"] = "1"
+            settings = load_settings()
+
+        self.assertTrue(settings.export.burn_subtitles)
+
+    def test_export_optional_processing_envs_load(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_EXPORT_USE_HIGHLIGHT_PLANS"] = "1"
+            os.environ["ARL_EXPORT_USE_HARDWARE_ENCODING"] = "1"
+            settings = load_settings()
+
+        self.assertTrue(settings.export.use_highlight_plans)
+        self.assertTrue(settings.export.use_hardware_encoding)
 
     def test_highlight_planner_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):

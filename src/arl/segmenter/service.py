@@ -115,6 +115,8 @@ class SegmenterService:
                     started_at_seconds=start,
                     ended_at_seconds=end,
                     confidence=0.8,
+                    is_complete=True,
+                    reason="stage_hints",
                 )
             )
 
@@ -188,6 +190,8 @@ class SegmenterService:
             started_at_seconds=0.0,
             ended_at_seconds=duration,
             confidence=0.5,
+            is_complete=False,
+            reason="fallback_no_reliable_match_signal",
         )
 
     def _group_hints_by_session(
@@ -251,6 +255,13 @@ class SegmenterService:
 
         boundaries: list[MatchBoundary] = []
         for idx, segment in enumerate(segments, start=1):
+            if not segment.is_complete:
+                log(
+                    "segmenter",
+                    "vision marked incomplete match "
+                    f"session_id={asset.session_id} match_index={idx} "
+                    f"reason={segment.reason} confidence={segment.confidence:.2f}",
+                )
             boundaries.append(
                 MatchBoundary(
                     session_id=asset.session_id,
@@ -258,6 +269,8 @@ class SegmenterService:
                     started_at_seconds=segment.start_seconds,
                     ended_at_seconds=segment.end_seconds,
                     confidence=segment.confidence,
+                    is_complete=segment.is_complete,
+                    reason=segment.reason,
                 )
             )
 

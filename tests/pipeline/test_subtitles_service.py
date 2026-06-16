@@ -249,6 +249,30 @@ class SubtitleServiceTest(unittest.TestCase):
         subtitle_assets = _read_jsonl(self.subtitle_assets_path)
         self.assertEqual(len(subtitle_assets), 1)
 
+    def test_subtitle_service_skips_incomplete_match_boundary(self) -> None:
+        append_model(
+            self.boundaries_path,
+            MatchBoundary(
+                session_id="session-subtitle-incomplete",
+                match_index=1,
+                started_at_seconds=0.0,
+                ended_at_seconds=900.0,
+                confidence=0.95,
+                is_complete=False,
+                reason="incomplete_no_end",
+            ),
+        )
+        service = SubtitleService(self.settings)
+        service._load_whisper_model = lambda: self.fail("Whisper should not load")
+
+        service.run()
+
+        self.assertFalse(self.subtitle_assets_path.exists())
+        state = json.loads(
+            (self.temp_root / "subtitles-state.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(state["processed_match_keys"], ["session-subtitle-incomplete:1"])
+
     def test_subtitle_service_writes_transcribed_srt_when_entries_available(self) -> None:
         append_model(
             self.boundaries_path,

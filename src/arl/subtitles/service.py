@@ -146,6 +146,18 @@ class SubtitleService:
         processed = 0
         for boundary in filtered_boundaries:
             key = self._key(boundary.session_id, boundary.match_index)
+            if not boundary.is_complete:
+                if key not in processed_keys:
+                    log(
+                        "subtitles",
+                        "skip incomplete match boundary "
+                        f"session_id={boundary.session_id} "
+                        f"match_index={boundary.match_index} "
+                        f"reason={boundary.reason or 'unknown'}",
+                    )
+                    state.processed_match_keys.append(key)
+                    processed_keys.add(key)
+                continue
             if key in processed_keys and key in existing_output_keys:
                 continue
             if key in processed_keys:

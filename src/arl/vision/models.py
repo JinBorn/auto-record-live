@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
+
+
+FrameScene = Literal["in_game", "loading", "other"]
 
 
 @dataclass
 class TimerReading:
     timestamp_seconds: float
     game_time_text: str | None
+    confidence: float
+
+
+@dataclass
+class SceneReading:
+    timestamp_seconds: float
+    scene: FrameScene
     confidence: float
 
 

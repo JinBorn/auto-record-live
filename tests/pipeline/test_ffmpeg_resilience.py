@@ -2788,6 +2788,8 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         placeholder_subtitle: bool = False,
         boundary_ended_at_seconds: float = 60.0,
         boundary_confidence: float = 0.9,
+        boundary_is_complete: bool = True,
+        boundary_reason: str | None = None,
     ) -> None:
         started_at = datetime(2026, 5, 12, 1, 0, tzinfo=timezone.utc)
         ended_at = datetime(2026, 5, 12, 1, 10, tzinfo=timezone.utc)
@@ -2797,6 +2799,8 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
             started_at_seconds=0.0,
             ended_at_seconds=boundary_ended_at_seconds,
             confidence=boundary_confidence,
+            is_complete=boundary_is_complete,
+            reason=boundary_reason,
         )
         subtitle_file = self.processed_root / session_id / f"match-{match_index:02d}.srt"
         subtitle_file.parent.mkdir(parents=True, exist_ok=True)
@@ -2934,6 +2938,29 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
             ).exists()
         )
 
+    def test_incomplete_match_boundary_is_not_exported(self) -> None:
+        self._seed_export_inputs(
+            session_id="session-incomplete",
+            boundary_confidence=0.95,
+            boundary_is_complete=False,
+            boundary_reason="incomplete_no_end",
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(self.settings).run()
+
+        self.assertEqual(mocked_run.call_count, 0)
+        self.assertFalse((self.temp_root / "export-assets.jsonl").exists())
+        self.assertFalse(
+            (self.export_root / "douyin" / "session-incomplete_match01.mp4").exists()
+        )
+
     def test_failure_emits_canonical_audit_with_stderr_excerpt_and_log_path(self) -> None:
         self._seed_export_inputs()
         # Helper extracts the LAST stderr line as the failure reason, so the
@@ -3060,11 +3087,17 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
             for call in mocked_run.call_args_list
             if call.args[0][0].endswith("ffmpeg")
         ][0]
-        subtitle_path = (
-            self.processed_root / "session-e" / "match-01.srt"
-        ).resolve().as_posix().replace(":", "\\:")
-        self.assertIn("-vf", command)
-        self.assertEqual(command[command.index("-vf") + 1], f"subtitles='{subtitle_path}'")
+        subtitle_path = self.processed_root / "session-e" / "match-01.srt"
+        self.assertNotIn("-vf", command)
+        self.assertIn("-to", command)
+        self.assertEqual(command[command.index("-to") + 1], "60.0")
+        self.assertIn(str(subtitle_path.resolve()), command)
+        self.assertIn("-c:v", command)
+        self.assertEqual(command[command.index("-c:v") + 1], "copy")
+        self.assertIn("-c:a", command)
+        self.assertEqual(command[command.index("-c:a") + 1], "copy")
+        self.assertIn("-c:s", command)
+        self.assertEqual(command[command.index("-c:s") + 1], "mov_text")
         payloads = self._audit_payloads()
         self.assertEqual(len(payloads), 1)
         self.assertEqual(payloads[0]["event_type"], "ffmpeg_export_succeeded")
@@ -3095,11 +3128,42 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
             for call in mocked_run.call_args_list
             if call.args[0][0].endswith("ffmpeg")
         ][0]
-        self.assertIn("-vf", command)
+        self.assertNotIn("-vf", command)
         self.assertIn("-c:v", command)
         self.assertEqual(command[command.index("-c:v") + 1], "libx265")
         self.assertIn("-tag:v", command)
         self.assertEqual(command[command.index("-tag:v") + 1], "hvc1")
+
+    def test_export_can_burn_subtitles_when_enabled(self) -> None:
+        self._seed_export_inputs()
+        settings = self.settings.model_copy(deep=True)
+        settings.export.burn_subtitles = True
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        subtitle_path = (
+            self.processed_root / "session-e" / "match-01.srt"
+        ).resolve().as_posix().replace(":", "\\:")
+        self.assertIn("-vf", command)
+        self.assertEqual(command[command.index("-vf") + 1], f"subtitles='{subtitle_path}'")
+        self.assertIn("-c:v", command)
+        self.assertEqual(command[command.index("-c:v") + 1], "libx264")
+        self.assertIn("-crf", command)
+        self.assertEqual(command[command.index("-crf") + 1], "18")
+        self.assertIn("-c:a", command)
+        self.assertEqual(command[command.index("-c:a") + 1], "copy")
 
     def test_export_can_disable_subtitle_burn_in(self) -> None:
         self._seed_export_inputs()
@@ -3122,12 +3186,17 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         ][0]
         self.assertNotIn("-vf", command)
         self.assertIn("-map", command)
-        self.assertEqual(command[command.index("-map") + 1], "0")
-        self.assertIn("-c", command)
-        self.assertEqual(command[command.index("-c") + 1], "copy")
+        self.assertEqual(command[command.index("-map") + 1], "0:v?")
+        self.assertIn("-c:v", command)
+        self.assertEqual(command[command.index("-c:v") + 1], "copy")
+        self.assertIn("-c:s", command)
+        self.assertEqual(command[command.index("-c:s") + 1], "mov_text")
 
     def test_highlight_plan_export_uses_select_filters(self) -> None:
         self._seed_export_inputs(boundary_ended_at_seconds=120.0)
+        settings = self.settings.model_copy(deep=True)
+        settings.export.use_highlight_plans = True
+        settings.export.burn_subtitles = True
         append_model(
             self.temp_root / "highlight-plans.jsonl",
             HighlightPlanAsset(
@@ -3158,7 +3227,7 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
             "arl.exporter.service.subprocess.run",
             side_effect=self._fake_successful_export_run,
         ) as mocked_run:
-            ExporterService(self.settings).run()
+            ExporterService(settings).run()
 
         command = [
             list(call.args[0])
@@ -3179,6 +3248,7 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
     def test_highlight_plan_export_can_disable_subtitle_burn_in(self) -> None:
         self._seed_export_inputs(boundary_ended_at_seconds=120.0)
         settings = self.settings.model_copy(deep=True)
+        settings.export.use_highlight_plans = True
         settings.export.burn_subtitles = False
         append_model(
             self.temp_root / "highlight-plans.jsonl",
@@ -3221,6 +3291,51 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertNotIn("subtitles=", video_filter)
         self.assertIn("select='between(t,0.000,30.000)+between(t,90.000,120.000)'", video_filter)
         self.assertIn("setpts=N/FRAME_RATE/TB", video_filter)
+
+    def test_highlight_plan_is_ignored_by_default_for_full_match_export(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=120.0)
+        append_model(
+            self.temp_root / "highlight-plans.jsonl",
+            HighlightPlanAsset(
+                session_id="session-e",
+                match_index=1,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=120.0,
+                windows=[
+                    HighlightClipWindow(
+                        started_at_seconds=0.0,
+                        ended_at_seconds=30.0,
+                        reason="narration",
+                    ),
+                    HighlightClipWindow(
+                        started_at_seconds=90.0,
+                        ended_at_seconds=120.0,
+                        reason="highlight_keyword",
+                    ),
+                ],
+                created_at=datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(self.settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        self.assertIn("-to", command)
+        self.assertEqual(command[command.index("-to") + 1], "120.0")
+        self.assertNotIn("-t", command)
+        self.assertNotIn("-vf", command)
+        self.assertNotIn("-af", command)
 
     def test_export_path_uses_platform_subdirectory(self) -> None:
         self._seed_export_inputs(platform="bilibili")
