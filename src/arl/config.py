@@ -609,6 +609,7 @@ def load_settings() -> Settings:
         ),
         highlights=HighlightSettings(
             enabled=_env_bool("ARL_HIGHLIGHT_PLANNER_ENABLED", True),
+            mode=os.getenv("ARL_HIGHLIGHT_MODE", "highlight"),
             cue_padding_seconds=max(
                 0.0,
                 _env_float("ARL_HIGHLIGHT_CUE_PADDING_SECONDS", 6.0),
