@@ -1139,6 +1139,54 @@ class SubtitleServiceTest(unittest.TestCase):
             ],
         )
 
+    def test_subtitle_force_reprocess_rewrites_existing_asset_and_reingests_signals(
+        self,
+    ) -> None:
+        session_id = "session-subtitle-force"
+        append_model(
+            self.boundaries_path,
+            MatchBoundary(
+                session_id=session_id,
+                match_index=1,
+                started_at_seconds=0.0,
+                ended_at_seconds=600.0,
+                confidence=0.9,
+            ),
+        )
+        settings = self.settings.model_copy(deep=True)
+        first_service = _FakeSubtitleService(
+            settings,
+            entries=[(10.0, 20.0, "In game first signal.")],
+        )
+        first_service.run()
+
+        second_service = _FakeSubtitleService(
+            settings,
+            entries=[
+                (10.0, 20.0, "In game first signal."),
+                (300.0, 320.0, "Victory game over."),
+            ],
+        )
+        second_service.run(
+            session_ids={session_id},
+            match_indices={1},
+            force_reprocess=True,
+        )
+
+        subtitle_assets = _read_jsonl(self.subtitle_assets_path)
+        self.assertEqual(len(subtitle_assets), 2)
+        subtitle_text = Path(subtitle_assets[-1]["path"]).read_text(encoding="utf-8")
+        self.assertIn("Victory game over.", subtitle_text)
+
+        signals = load_models(self.temp_root / "match-stage-signals.jsonl", MatchStageSignal)
+        self.assertEqual(
+            [(signal.text, signal.at_seconds) for signal in signals],
+            [
+                ("In game first signal.", 10.0),
+                ("Victory game over.", 300.0),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

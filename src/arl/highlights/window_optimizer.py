@@ -64,6 +64,13 @@ def optimize_windows(
     drafts = _adjust_to_target_duration(
         drafts, target_duration_seconds, boring_gap_threshold_seconds, match_duration_seconds
     )
+    drafts = _ensure_key_events_preserved(
+        drafts,
+        classified_cues,
+        context_padding_seconds,
+        match_duration_seconds,
+    )
+    drafts = _clamp_windows_to_match(drafts, match_duration_seconds)
     current_duration = sum(d.ended_at_seconds - d.started_at_seconds for d in drafts)
     log(
         "highlights",
@@ -72,6 +79,7 @@ def optimize_windows(
     )
 
     # Phase 5: 质量检查
+    _validate_key_events_preserved(drafts, classified_cues)
     _validate_key_events_preserved(drafts, classified_cues)
     log("highlights", f"window_optimizer: Phase 5 quality check passed")
 
@@ -252,6 +260,67 @@ def _reduce_by_priority(
     # 恢复时间顺序
     retained.sort(key=lambda d: d.started_at_seconds)
     return retained
+
+
+def _ensure_key_events_preserved(
+    drafts: list[WindowDraft],
+    classified_cues: list[ClassifiedCue],
+    context_padding: float,
+    match_duration: float,
+) -> list[WindowDraft]:
+    key_event_cues = [cue for cue in classified_cues if cue.category == "key_event"]
+    if not key_event_cues:
+        return drafts
+
+    restored: list[WindowDraft] = []
+    for cue in key_event_cues:
+        if _cue_is_covered(cue, drafts):
+            continue
+        restored.append(
+            WindowDraft(
+                started_at_seconds=max(0.0, cue.started_at_seconds - context_padding),
+                ended_at_seconds=min(match_duration, cue.ended_at_seconds + context_padding),
+                reason="condensed_key_event",
+                priority=cue.priority,
+            )
+        )
+
+    if not restored:
+        return drafts
+
+    log(
+        "highlights",
+        f"window_optimizer: restored {len(restored)} missing key-event windows",
+    )
+    return _merge_windows(drafts + restored, merge_gap=0.0)
+
+
+def _clamp_windows_to_match(
+    drafts: list[WindowDraft], match_duration: float
+) -> list[WindowDraft]:
+    clamped: list[WindowDraft] = []
+    for draft in drafts:
+        start = max(0.0, min(match_duration, draft.started_at_seconds))
+        end = max(0.0, min(match_duration, draft.ended_at_seconds))
+        if end <= start:
+            continue
+        clamped.append(
+            WindowDraft(
+                started_at_seconds=start,
+                ended_at_seconds=end,
+                reason=draft.reason,
+                priority=draft.priority,
+            )
+        )
+    return clamped
+
+
+def _cue_is_covered(cue: ClassifiedCue, drafts: list[WindowDraft]) -> bool:
+    return any(
+        d.started_at_seconds <= cue.started_at_seconds <= d.ended_at_seconds
+        or d.started_at_seconds <= cue.ended_at_seconds <= d.ended_at_seconds
+        for d in drafts
+    )
 
 
 def _validate_key_events_preserved(

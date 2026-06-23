@@ -3337,6 +3337,47 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertNotIn("-vf", command)
         self.assertNotIn("-af", command)
 
+    def test_visual_only_highlight_plan_is_ignored(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=120.0)
+        settings = self.settings.model_copy(deep=True)
+        settings.export.use_highlight_plans = True
+        append_model(
+            self.temp_root / "highlight-plans.jsonl",
+            HighlightPlanAsset(
+                session_id="session-e",
+                match_index=1,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=120.0,
+                windows=[
+                    HighlightClipWindow(
+                        started_at_seconds=0.0,
+                        ended_at_seconds=30.0,
+                        reason="condensed_visual_activity",
+                    )
+                ],
+                created_at=datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        self.assertIn("-to", command)
+        self.assertEqual(command[command.index("-to") + 1], "120.0")
+        self.assertNotIn("-vf", command)
+        self.assertNotIn("-af", command)
+
     def test_export_path_uses_platform_subdirectory(self) -> None:
         self._seed_export_inputs(platform="bilibili")
 

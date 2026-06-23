@@ -83,6 +83,7 @@ class SubtitleService:
         *,
         session_ids: set[str] | None = None,
         match_indices: set[int] | None = None,
+        force_reprocess: bool = False,
     ) -> None:
         log("subtitles", "starting")
         log(
@@ -158,12 +159,18 @@ class SubtitleService:
                     state.processed_match_keys.append(key)
                     processed_keys.add(key)
                 continue
-            if key in processed_keys and key in existing_output_keys:
+            if key in processed_keys and key in existing_output_keys and not force_reprocess:
                 continue
-            if key in processed_keys:
+            if key in processed_keys and not force_reprocess:
                 log(
                     "subtitles",
                     "reprocessing missing subtitle output "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index}",
+                )
+            elif key in processed_keys:
+                log(
+                    "subtitles",
+                    "force reprocessing subtitle output "
                     f"session_id={boundary.session_id} match_index={boundary.match_index}",
                 )
 
@@ -200,6 +207,7 @@ class SubtitleService:
         log("subtitles", f"processed_matches={processed}")
         try:
             StageSignalFromSubtitlesService(self.settings).run(
+                force_reprocess=force_reprocess,
                 session_ids=session_ids,
                 match_indices=match_indices,
             )

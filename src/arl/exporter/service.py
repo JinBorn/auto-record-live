@@ -591,6 +591,15 @@ class ExporterService:
         duration = boundary.ended_at_seconds - boundary.started_at_seconds
         if duration <= 0.0 or not plan.windows:
             return None
+        if all(
+            window.reason == "condensed_visual_activity" for window in plan.windows
+        ):
+            log(
+                "exporter",
+                "ignored visual-only highlight plan "
+                f"session_id={boundary.session_id} match_index={boundary.match_index}",
+            )
+            return None
         for window in plan.windows:
             if window.started_at_seconds < 0.0:
                 return None

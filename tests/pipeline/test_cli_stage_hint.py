@@ -397,9 +397,11 @@ class StageKeywordPathCliOverrideTest(unittest.TestCase):
                 *,
                 session_ids: set[str] | None = None,
                 match_indices: set[int] | None = None,
+                force_reprocess: bool = False,
             ) -> None:
                 captured["session_ids"] = session_ids
                 captured["match_indices"] = match_indices
+                captured["force_reprocess"] = force_reprocess
 
         with patch.object(
             sys,
@@ -427,6 +429,7 @@ class StageKeywordPathCliOverrideTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(captured.get("session_ids"), {"session-a", "session-b", "session-c"})
         self.assertEqual(captured.get("match_indices"), {2, 3, 4})
+        self.assertFalse(captured.get("force_reprocess"))
 
 
 if __name__ == "__main__":

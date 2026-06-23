@@ -224,6 +224,7 @@ class HighlightPlannerService:
         *,
         session_ids: set[str] | None = None,
         match_indices: set[int] | None = None,
+        force_reprocess: bool = False,
     ) -> None:
         log("highlights", "starting")
         if not self.settings.highlights.enabled:
@@ -274,14 +275,20 @@ class HighlightPlannerService:
                 (boundary.session_id, boundary.match_index)
             )
             existing_plan_matches = self._plan_matches_boundary(existing_plan, boundary)
-            if key in processed_keys and existing_plan_matches:
+            if key in processed_keys and existing_plan_matches and not force_reprocess:
                 continue
-            if existing_plan_matches:
+            if existing_plan_matches and not force_reprocess:
                 if key not in processed_keys:
                     state.processed_match_keys.append(key)
                     processed_keys.add(key)
                 continue
-            if existing_plan is not None:
+            if existing_plan is not None and force_reprocess:
+                log(
+                    "highlights",
+                    "force replanning highlight plan "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index}",
+                )
+            elif existing_plan is not None:
                 log(
                     "highlights",
                     "replanning stale highlight plan "
@@ -665,7 +672,27 @@ class HighlightPlannerService:
             cue for cue in cues if not self._is_placeholder_text(cue.text)
         ]
         if not meaningful_cues:
+            log(
+                "highlights",
+                "skip condensed plan "
+                f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                "reason=meaningful_subtitle_required",
+            )
             return None
+
+        video_path = None
+        if self.settings.highlights.condensed_use_visual_analysis:
+            recording_assets_path = self.settings.storage.temp_dir / "recording-assets.jsonl"
+            if recording_assets_path.exists():
+                from arl.shared.contracts import RecordingAsset
+
+                recordings = load_models(recording_assets_path, RecordingAsset)
+                for rec in recordings:
+                    if rec.session_id == boundary.session_id:
+                        recording_path = Path(rec.path)
+                        if recording_path.exists() and recording_path.suffix == ".mp4":
+                            video_path = recording_path
+                            break
 
         # 1. 字幕分类
         all_tactical_keywords = _TACTICAL_KEYWORDS + tuple(
@@ -681,21 +708,6 @@ class HighlightPlannerService:
         )
 
         # 2. 内容密度分析
-        # 尝试找到对应的录像文件用于视觉分析
-        video_path = None
-        if self.settings.highlights.condensed_use_visual_analysis:
-            recording_assets_path = self.settings.storage.temp_dir / "recording-assets.jsonl"
-            if recording_assets_path.exists():
-                from arl.shared.contracts import RecordingAsset
-
-                recordings = load_models(recording_assets_path, RecordingAsset)
-                for rec in recordings:
-                    if rec.session_id == boundary.session_id:
-                        recording_path = Path(rec.path)
-                        if recording_path.exists() and recording_path.suffix == ".mp4":
-                            video_path = recording_path
-                            break
-
         density_result = analyze_content_density(
             classified_cues=classified_cues,
             match_duration_seconds=duration,
@@ -704,7 +716,10 @@ class HighlightPlannerService:
             weight_narration=self.settings.highlights.condensed_weight_narration,
             weight_visual=self.settings.highlights.condensed_weight_visual,
             weight_baseline=self.settings.highlights.condensed_weight_baseline,
-            use_visual_analysis=self.settings.highlights.condensed_use_visual_analysis,
+            use_visual_analysis=(
+                self.settings.highlights.condensed_use_visual_analysis
+                and bool(classified_cues)
+            ),
             visual_sample_interval=self.settings.highlights.condensed_visual_sample_interval_seconds,
             high_density_threshold=self.settings.highlights.condensed_high_density_threshold,
             low_density_threshold=self.settings.highlights.condensed_low_density_threshold,

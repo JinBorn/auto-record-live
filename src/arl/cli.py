@@ -469,6 +469,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subtitles = subparsers.add_parser("subtitles", help="Run the subtitle worker.")
     subtitles.add_argument(
+        "--force-reprocess",
+        action="store_true",
+        help=(
+            "Regenerate targeted subtitle assets even when subtitle state and files "
+            "already exist. Subtitle-derived stage signals are re-ingested with "
+            "deduplication."
+        ),
+    )
+    subtitles.add_argument(
         "--stage-keywords-path",
         type=Path,
         help=(
@@ -498,6 +507,11 @@ def build_parser() -> argparse.ArgumentParser:
     highlight_planner = subparsers.add_parser(
         "highlight-planner",
         help="Run the conservative highlight planner worker.",
+    )
+    highlight_planner.add_argument(
+        "--force-reprocess",
+        action="store_true",
+        help="Regenerate targeted highlight plans even when a matching plan already exists.",
     )
     highlight_planner.add_argument(
         "--session-id",
@@ -845,6 +859,7 @@ def main() -> int:
         SubtitleService(settings).run(
             session_ids=subtitle_session_ids,
             match_indices=subtitle_match_indices,
+            force_reprocess=args.force_reprocess,
         )
         return 0
 
@@ -864,6 +879,7 @@ def main() -> int:
         HighlightPlannerService(settings).run(
             session_ids=highlight_session_ids,
             match_indices=highlight_match_indices,
+            force_reprocess=args.force_reprocess,
         )
         return 0
 

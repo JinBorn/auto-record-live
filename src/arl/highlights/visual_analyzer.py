@@ -123,12 +123,14 @@ def _sample_frames_for_condensed(
         if not ret or frame is None:
             continue
 
-        # 转为灰度图以降低计算量
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        height, width = gray.shape
+        if width > 320:
+            target_height = max(1, int(height * (320 / width)))
+            gray = cv2.resize(gray, (320, target_height), interpolation=cv2.INTER_AREA)
         frames.append(gray)
 
     return frames
-
 
 def _compute_scene_change_rate(frames: list[np.ndarray]) -> float:
     """计算场景变化率：相邻帧之间的平均差异。

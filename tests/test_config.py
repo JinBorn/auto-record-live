@@ -239,6 +239,13 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
 
         self.assertEqual(settings.recording.direct_stream_finalize_headroom_seconds, 90)
 
+    def test_vision_min_match_duration_env_loads(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_VISION_MIN_MATCH_DURATION_SECONDS"] = "420"
+            settings = load_settings()
+
+        self.assertEqual(settings.vision.min_match_duration_seconds, 420.0)
+
     def test_exporter_backoff_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             os.environ["ARL_EXPORTER_BACKOFF_INITIAL_SECONDS"] = "1.5"
@@ -295,6 +302,7 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             os.environ["ARL_HIGHLIGHT_MIN_RETAINED_SECONDS"] = "180"
             os.environ["ARL_HIGHLIGHT_MIN_RETAINED_FRACTION"] = "0.4"
             os.environ["ARL_HIGHLIGHT_MAX_WINDOWS"] = "5"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_VISUAL_SAMPLE_INTERVAL_SECONDS"] = "30"
             settings = load_settings()
 
         self.assertFalse(settings.highlights.enabled)
@@ -307,6 +315,7 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(settings.highlights.min_retained_seconds, 180.0)
         self.assertEqual(settings.highlights.min_retained_fraction, 0.4)
         self.assertEqual(settings.highlights.max_windows, 5)
+        self.assertEqual(settings.highlights.condensed_visual_sample_interval_seconds, 30.0)
 
     def test_maintenance_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
