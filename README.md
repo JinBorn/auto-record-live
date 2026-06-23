@@ -271,6 +271,64 @@ not recommended for unattended GTX 1650 runs unless a short probe finishes quick
 .\.venv\Scripts\python.exe -m arl.cli status
 ```
 
+### 验证对局边界检测是否正常
+
+如果发现导出的对局视频开头已经打到很高级别（例如开局已经 6/10/11 级），或者一个 session 应该有多局但只裁出了一局，说明视觉对局检测的边界有问题。更新代码后可以按以下步骤重新验证：
+
+**1. 重置旧的后处理结果（不会删除原始录制文件）：**
+
+```powershell
+.\.venv\Scripts\python.exe -m arl.cli postprocess-reset --session-id session-20260617073649-4b5ec478
+```
+
+**2. 重新跑后处理（会在 segmenter 阶段用新代码重新检测对局边界）：**
+
+```powershell
+.\.venv\Scripts\python.exe -m arl.cli postprocess --once --session-id session-20260617073649-4b5ec478
+```
+
+**3. 查看检测到的对局边界：**
+
+```powershell
+Get-Content data/tmp/match-boundaries.jsonl | Select-String "session-20260617073649-4b5ec478"
+```
+
+关注输出里的 `is_complete`、`confidence`、`reason` 和 `started_at_seconds`。完整的对局应该是 `"is_complete":true`、`"confidence"` ≥ 0.8，且 `started_at_seconds` 接近该局真正的开局时间戳。
+
+**4. 如果边界仍有问题，可以调细自适应采样参数：**
+
+```powershell
+# 默认粗采样 20s + 未识别起点时自动细采样 5s
+# 可以调细粗采样（增加整体帧数）或调细搜索窗口
+$env:ARL_VISION_FRAME_SAMPLE_INTERVAL_SECONDS = "10"
+$env:ARL_VISION_MATCH_START_REFINE_INTERVAL_SECONDS = "3"
+$env:ARL_VISION_MATCH_START_REFINE_LOOKBACK_SECONDS = "180"
+.\.venv\Scripts\python.exe -m arl.cli postprocess --once --session-id session-20260617073649-4b5ec478
+```
+
+相关环境变量：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `ARL_VISION_MATCH_DETECTION_ENABLED` | `1` | 启用视觉对局检测 |
+| `ARL_VISION_FRAME_SAMPLE_INTERVAL_SECONDS` | `20` | 粗采样间隔（秒）；值越小越精确，但耗时增加 |
+| `ARL_VISION_MATCH_START_THRESHOLD_SECONDS` | `120` | 游戏计时器 ≤ 此值时判定为有效开局 |
+| `ARL_VISION_MATCH_START_REFINE_INTERVAL_SECONDS` | `5` | 对未识别到起点的对局，在此区域以该间隔细采样 |
+| `ARL_VISION_MATCH_START_REFINE_LOOKBACK_SECONDS` | `120` | 细采样时从当前起点往前搜索多少秒 |
+| `ARL_VISION_MIN_MATCH_DURATION_SECONDS` | `360` | 最短对局时长（秒）；短于此值的不会被标记为完整对局 |
+
+**5. 确认边界正确后再导出：**
+
+```powershell
+.\.venv\Scripts\python.exe -m arl.cli exporter --session-id session-20260617073649-4b5ec478
+```
+
+如果想批量重处理多个有问题的 session：
+
+```powershell
+.\.venv\Scripts\python.exe -m arl.cli postprocess --once --session-ids session-abc,session-def,session-ghi
+```
+
 检查 Cookie / SESSDATA 是否有效：
 
 ```powershell
