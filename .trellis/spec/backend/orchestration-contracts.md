@@ -381,11 +381,16 @@ event = {
 
 ```python
 class VisionSettings(BaseModel):
-    match_detection_enabled: bool = False
-    frame_sample_interval_seconds: int = 20
+    match_detection_enabled: bool = True
+    frame_sample_interval_seconds: float = 20.0
     timer_ocr_detector: str = "auto"  # "auto" | "template" | "tesseract" | "easyocr"
-    match_start_timer_threshold_seconds: int = 120  # game_time <= 2:00
-    match_end_lobby_gap_seconds: int = 40  # timer disappears for >=40s
+    match_start_threshold_seconds: float = 120.0  # game_time <= 2:00
+    lobby_gap_threshold_seconds: float = 40.0
+    min_match_duration_seconds: float = 360.0  # complete scene spans shorter than this are unusable
+    # Adaptive refinement: re-sample start regions at finer interval to catch
+    # loading screens shorter than the coarse sample interval.
+    match_start_refine_interval_seconds: float = 5.0
+    match_start_refine_lookback_seconds: float = 120.0
 ```
 
 - Vision models in `src/arl/vision/models.py`:
@@ -426,11 +431,14 @@ arl detect-matches --session-id <id> | --session-ids <csv> [--force-reprocess]
 ```
 
 - Environment keys:
-  - `ARL_VISION_MATCH_DETECTION_ENABLED` (0/1, default `0`)
-  - `ARL_VISION_FRAME_SAMPLE_INTERVAL_SECONDS` (int >= 10, default `20`)
+  - `ARL_VISION_MATCH_DETECTION_ENABLED` (0/1, default `1`)
+  - `ARL_VISION_FRAME_SAMPLE_INTERVAL_SECONDS` (float, default `20.0`)
   - `ARL_VISION_TIMER_OCR_DETECTOR` (string, default `auto`)
-  - `ARL_VISION_MATCH_START_TIMER_THRESHOLD_SECONDS` (int >= 0, default `120`)
-  - `ARL_VISION_MATCH_END_LOBBY_GAP_SECONDS` (int >= 20, default `40`)
+  - `ARL_VISION_MATCH_START_THRESHOLD_SECONDS` (float >= 0, default `120.0`)
+  - `ARL_VISION_LOBBY_GAP_THRESHOLD_SECONDS` (float >= 0, default `40.0`)
+  - `ARL_VISION_MIN_MATCH_DURATION_SECONDS` (float >= 60, default `360.0`)
+  - `ARL_VISION_MATCH_START_REFINE_INTERVAL_SECONDS` (float >= 1, default `5.0`)
+  - `ARL_VISION_MATCH_START_REFINE_LOOKBACK_SECONDS` (float >= 30, default `120.0`)
 
 ### 3. Contracts
 
@@ -460,6 +468,16 @@ arl detect-matches --session-id <id> | --session-ids <csv> [--force-reprocess]
     - Match end: timer present → absent for ≥40s (2+ samples)
     - `is_complete = has_start and has_end`
     - `confidence = 0.95 if complete else random.uniform(0.3, 0.5)`
+  - Scene stitcher:
+    - A `loading` reading followed by an `in_game` reading starts a new match segment.
+    - Once an in-game span has a following `other` reading, that first `other` timestamp is the candidate natural end unless a later `in_game` reading returns within the tolerated in-match gap.
+    - A loading-to-natural-end scene span shorter than `min_match_duration_seconds` must be emitted as `is_complete=False`, `reason="incomplete_too_short"` instead of a usable complete match. This prevents short menu/replay fragments from becoming publishable long-form match exports.
+    - A later `loading` reading is a hard boundary. Post-processing must not merge a previous segment into a segment that started from loading.
+    - Post-processing may merge short classifier fragments only when both segments are incomplete and the next segment did not start from loading. Complete segments are treated as real match boundaries.
+    - **Death-screen guard** (NEW): A `loading` frame appearing ≤90 s after the last in-game frame with no intervening `other` frames is treated as a death/respawn misclassification and skipped (the match is NOT split). Real game boundaries always have several minutes of post-game lobby "other" frames before the next loading screen.
+    - **Timer cross-validation** (NEW): When timer OCR readings are available, the stitcher validates segment starts after initial scene stitching but before merge. Segments marked complete whose first in-game timer shows mid-game time (>`match_start_threshold_seconds`) are downgraded to `incomplete_no_start`. Segments marked `incomplete_no_start` whose first in-game timer shows early-game time (≤ threshold) are upgraded to complete.
+    - **Merge with timer downgrade** (NEW): After timer validation downgrades a segment (mid-game timer → likely death-screen false split), the merge logic allows merging it back into the previous segment even when that segment is complete. This recovers from death-screen splits that evaded the abrupt-loading guard.
+    - **Adaptive refinement pass** (NEW): After stitching, segments still marked `incomplete_no_start` are re-examined. A narrow window around the segment start (lookback `match_start_refine_lookback_seconds`, default 120 s) is re-sampled at a finer interval (`match_start_refine_interval_seconds`, default 5 s). If a real loading screen (followed by in-game with low timer) is found, the segment start is shifted back and marked complete. This catches loading screens shorter than the coarse 20 s sample interval.
 - Downstream completeness gating:
   - Subtitles: if `boundary.is_complete is False`, log `skip incomplete match boundary`, mark the match key handled, and do not write a placeholder SRT.
   - Highlight planner: if `boundary.is_complete is False`, do not emit a `HighlightPlanAsset`.
@@ -491,6 +509,17 @@ arl detect-matches --session-id <id> | --session-ids <csv> [--force-reprocess]
 | Vision detects 0 matches (no timer readings) | Emit no usable complete boundaries, or fall back to a single `is_complete=False` diagnostic boundary |
 | Vision detects multiple incomplete matches only | Emit boundaries with `is_complete=False`, confidence 0.3-0.5, and reason per span |
 | Vision detects 1 complete + 2 incomplete matches | Emit 3 boundaries; only the complete row has `is_complete=True` |
+| Scene span has loading, natural end, and duration < `min_match_duration_seconds` | Emit `is_complete=False`, `confidence=0.2`, `reason=incomplete_too_short` |
+| Scene readings show `in_game -> other -> loading -> in_game` | Split at the first `other`; do not merge across the new loading-started segment |
+| Scene readings show short `in_game -> other -> in_game` classifier gaps without loading | Merge incomplete fragments when the gap is within the stitcher merge threshold |
+| Scene stitcher emits a complete segment followed by another segment within the merge threshold | Keep them separate; complete segments are real boundaries |
+| Death screen misclassified as loading (HUD edge density ≥0.05) | Classifier returns `scene="other"`, avoiding false split at source |
+| Loading frame ≤90 s after last in-game with no intervening "other" | Stitcher skips the frame (abrupt-loading guard); match is NOT split |
+| Segment marked complete but first in-game timer reads >120 s | Timer validation downgrades to `incomplete_no_start`; may be merged back |
+| Segment marked `incomplete_no_start` but first in-game timer reads ≤120 s | Timer validation upgrades to `is_complete=True` (loading screen was missed by coarse sampler) |
+| Segment still `incomplete_no_start` after coarse pass + timer validation | Refinement pass re-samples start region at 5 s interval to search for missed loading screen |
+| Refinement finds loading screen followed by in-game with timer ≤180 s | Segment start shifted to loading frame, marked `is_complete=True` |
+| Refinement finds no valid loading screen | Segment remains `incomplete_no_start` |
 | Exporter sees boundary with `is_complete=False` | Skip export, log the reason, do NOT create .mp4 or .txt |
 | Exporter sees boundary with `is_complete=True` and confidence=0.95 | Proceed with normal export flow |
 | `arl detect-matches` called with no session filters | Error: requires `--session-id` or `--session-ids` |
@@ -512,6 +541,7 @@ arl detect-matches --session-id <id> | --session-ids <csv> [--force-reprocess]
 - Bad:
   - Vision detects matches but segmenter still uses legacy fallback (integration missing).
   - Exporter processes incomplete matches, producing unusable 5-min clips mid-game.
+  - Scene post-processing merges two games because their gap is under 10 minutes, causing one exported match to contain unrelated games.
   - Vision exception crashes segmenter instead of falling back.
   - Segmenter drops `MatchSegment.is_complete` and downstream stages infer usability from duration or filenames.
 
@@ -529,6 +559,16 @@ arl detect-matches --session-id <id> | --session-ids <csv> [--force-reprocess]
 - Unit test: match stitcher groups consecutive in-game readings.
   - Assert readings `[None, "00:34", "05:12", "34:56", None, None]` → 1 complete match.
   - Assert readings `["23:45", "28:12", None]` → 1 incomplete match (`incomplete_no_start`).
+  - Assert scene readings with `loading` between games produce separate segments and do not merge across loading.
+  - Assert scene readings with short classifier gaps and no loading still merge incomplete fragments into one segment.
+  - Assert abrupt loading guard: `in_game -> loading(≤90s) -> in_game` with no intervening `other` → no split.
+  - Assert timer validation upgrades `incomplete_no_start` segment whose first timer reads ≤120 s → `is_complete=True`.
+  - Assert timer validation downgrades complete segment whose first timer reads >120 s → `incomplete_no_start`.
+  - Assert timer-downgraded segment is merged back into previous complete segment.
+  - Assert `_find_real_loading` returns loading timestamp when followed by in-game with timer ≤180 s.
+  - Assert `_find_real_loading` returns None when followed by mid-game timer.
+- Unit test: scene classifier distinguishes death screen from loading screen.
+  - Assert death screen with visible HUD (ability bar edges) → NOT classified as "loading".
 - Unit test: segmenter calls vision detector when enabled.
   - Assert `settings.vision.match_detection_enabled=True` → vision path runs.
   - Assert vision exception → falls back to legacy, logs warning.
@@ -612,6 +652,31 @@ return MatchSegment(..., confidence=1.0)
 ```python
 confidence = 0.95 if (has_start and has_end) else random.uniform(0.3, 0.5)
 return MatchSegment(..., is_complete=(has_start and has_end), confidence=confidence)
+```
+
+#### Wrong
+
+```python
+for next_segment in segments[1:]:
+    if next_segment.start_seconds - current.end_seconds <= 600:
+        current = merge(current, next_segment)
+```
+
+- Merges different games when a new loading screen appears within the merge window.
+- Extends complete match segments into unrelated later gameplay.
+
+#### Correct
+
+```python
+if (
+    gap <= 600
+    and not current.is_complete
+    and not next_segment.is_complete
+    and not segment_started_from_loading(next_segment)
+):
+    current = merge(current, next_segment)
+else:
+    keep_separate(current, next_segment)
 ```
 
 ## Scenario: Post-recording media pipeline contracts
@@ -1142,6 +1207,7 @@ class CopyAsset(BaseModel):
 - Unit test: recorder manifest or asset output includes source type, path, and start and end timestamps.
 - Unit test: segment boundary validation rejects negative or reversed ranges.
 - Unit test: segmenter derives multi-match boundaries from `in_game` stage hints and keeps `match_index` sequential.
+- Unit test: vision scene stitching does not classify short loading-to-end spans under the configured minimum complete-match duration as complete matches.
 - Unit test: segmenter accepts `detected_at` hints by converting them relative to recording start.
 - Unit test: segmenter preserves idempotency and does not duplicate boundaries on rerun.
 - Unit test: segmenter keeps single-boundary fallback when hints are missing or unusable.
