@@ -26,6 +26,19 @@ def classify_scene(frame: np.ndarray, timestamp_seconds: float) -> SceneReading:
         )
 
     if top_dark >= 0.85 and center_edges >= 0.065 and map_edges < 0.08:
+        # Extra guard: during real loading screens the bottom HUD (ability
+        # bar, items) is completely absent. Death/respawn overlays can
+        # otherwise match the loading profile because the screen dims, a
+        # death-recap graphic adds center edges, and the minimap area is
+        # sparse — but the ability bar is still there (grayed out with
+        # cooldown digits). Requiring hud_edges < 0.05 rules out death
+        # screens and avoids false match splits mid-game.
+        if hud_edges >= 0.05:
+            return SceneReading(
+                timestamp_seconds=timestamp_seconds,
+                scene="other",
+                confidence=0.65,
+            )
         return SceneReading(
             timestamp_seconds=timestamp_seconds,
             scene="loading",

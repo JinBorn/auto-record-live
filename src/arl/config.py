@@ -166,7 +166,15 @@ class VisionSettings(BaseModel):
     timer_crop_region: tuple[int, int, int, int] = (1770, 5, 150, 50)
     match_start_threshold_seconds: float = 120.0
     lobby_gap_threshold_seconds: float = 40.0
-    min_match_duration_seconds: float = 300.0  # 5 minutes minimum
+    min_match_duration_seconds: float = 360.0  # 6 minutes minimum
+    # Adaptive refinement: when a segment is missing a start boundary
+    # after the coarse pass, re-sample a narrow window at this finer
+    # interval (seconds) to catch loading screens that are shorter than
+    # the coarse sample interval.
+    match_start_refine_interval_seconds: float = 5.0
+    # How far back (seconds) before the segment start to search for a
+    # missed loading screen during refinement.
+    match_start_refine_lookback_seconds: float = 120.0
 
 
 class HighlightSettings(BaseModel):
@@ -606,6 +614,18 @@ def load_settings() -> Settings:
             lobby_gap_threshold_seconds=_env_float(
                 "ARL_VISION_LOBBY_GAP_THRESHOLD_SECONDS", 40.0
             ),
+            min_match_duration_seconds=max(
+                60.0,
+                _env_float("ARL_VISION_MIN_MATCH_DURATION_SECONDS", 360.0),
+            ),
+            match_start_refine_interval_seconds=max(
+                1.0,
+                _env_float("ARL_VISION_MATCH_START_REFINE_INTERVAL_SECONDS", 5.0),
+            ),
+            match_start_refine_lookback_seconds=max(
+                30.0,
+                _env_float("ARL_VISION_MATCH_START_REFINE_LOOKBACK_SECONDS", 120.0),
+            ),
         ),
         highlights=HighlightSettings(
             enabled=_env_bool("ARL_HIGHLIGHT_PLANNER_ENABLED", True),
@@ -643,6 +663,13 @@ def load_settings() -> Settings:
                 max(0.0, _env_float("ARL_HIGHLIGHT_MIN_RETAINED_FRACTION", 0.55)),
             ),
             max_windows=max(1, _env_int("ARL_HIGHLIGHT_MAX_WINDOWS", 8)),
+            condensed_visual_sample_interval_seconds=max(
+                1.0,
+                _env_float(
+                    "ARL_HIGHLIGHT_CONDENSED_VISUAL_SAMPLE_INTERVAL_SECONDS",
+                    10.0,
+                ),
+            ),
         ),
         recording=RecordingSettings(
             preferred_resolution=os.getenv("ARL_RECORDING_PREFERRED_RESOLUTION", "1080p"),

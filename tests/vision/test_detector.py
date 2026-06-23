@@ -12,6 +12,7 @@ import numpy as np
 
 from arl.config import VisionSettings
 from arl.vision.detector import VisionMatchDetector
+from arl.vision.models import SceneReading, TimerReading
 
 
 def test_vision_match_detector_integration():
@@ -47,6 +48,57 @@ def test_vision_match_detector_integration():
         print(f"Detected {len(segments)} segments")
 
 
+def test_find_real_loading_detects_valid_start():
+    """Loading frame with early-game timer after it → real start."""
+    scenes = [
+        SceneReading(100.0, "other", 0.7),
+        SceneReading(140.0, "loading", 0.9),
+        SceneReading(155.0, "in_game", 0.9),
+    ]
+    timers = [
+        TimerReading(155.0, "00:45", 0.9),  # Early game → valid
+    ]
+
+    result = VisionMatchDetector._find_real_loading(scenes, timers, 200.0)
+
+    assert result == 140.0, f"Expected 140.0, got {result}"
+
+
+def test_find_real_loading_rejects_mid_game():
+    """Loading frame followed by mid-game timer → death screen, not real."""
+    scenes = [
+        SceneReading(100.0, "in_game", 0.9),
+        SceneReading(120.0, "loading", 0.7),  # Death screen
+        SceneReading(140.0, "in_game", 0.9),
+    ]
+    timers = [
+        TimerReading(140.0, "11:30", 0.9),  # Mid-game → invalid
+    ]
+
+    result = VisionMatchDetector._find_real_loading(scenes, timers, 400.0)
+
+    assert result is None, f"Expected None, got {result}"
+
+
+def test_find_real_loading_skips_after_segment_start():
+    """Loading frame after the current segment start → not relevant."""
+    scenes = [
+        SceneReading(500.0, "loading", 0.9),
+        SceneReading(520.0, "in_game", 0.9),
+    ]
+    timers = [
+        TimerReading(520.0, "00:30", 0.9),
+    ]
+
+    # Segment already starts at 490 → the loading at 500 is after it.
+    result = VisionMatchDetector._find_real_loading(scenes, timers, 490.0)
+
+    assert result is None, f"Expected None, got {result}"
+
+
 if __name__ == "__main__":
     test_vision_match_detector_integration()
+    test_find_real_loading_detects_valid_start()
+    test_find_real_loading_rejects_mid_game()
+    test_find_real_loading_skips_after_segment_start()
     print("Vision detector integration test passed!")
