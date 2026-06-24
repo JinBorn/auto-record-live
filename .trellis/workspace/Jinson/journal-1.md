@@ -1894,3 +1894,93 @@ Fixed two critical export issues: (1) videos truncated to 3-4min highlights inst
 ### Next Steps
 
 - None - task complete
+
+---
+
+## 2026-06-17 智能剪辑 Condensed 模式测试成功
+
+### 完成内容
+
+1. **边界检测改进**
+   - 增加 segment 合并逻辑（≤10min gap）
+   - 提高 gap 容忍到 5 分钟
+   - 处理观战视角的场景分类器不稳定问题
+   - 手动校正 session-20260616095804-5a1897ed 边界
+
+2. **Condensed 模式端到端测试**
+   - 配置环境变量支持（ARL_HIGHLIGHT_MODE=condensed）
+   - 清空旧 state 和 plans 强制重新生成
+   - 启用 highlight plans 导出（ARL_EXPORT_USE_HIGHLIGHT_PLANS=1）
+
+### 测试结果
+
+**Session: session-20260616122238-2469b78a**
+
+| Match | 原始时长 | Condensed | 压缩比 | 窗口数 | 文件大小 |
+|-------|----------|-----------|--------|--------|----------|
+| Match 1 | 31.3min | 7.6min | 24.3% | 3 | 997MB→236MB |
+| Match 2 | 15.7min | 6.8min | 43.1% | 3 | 493MB→71MB |
+
+**验证项**
+- ✅ 内容密度分析正确（Match1: 0.207, Match2: 0.176）
+- ✅ 目标时长映射准确（与计划误差 < 1%）
+- ✅ 窗口优化生成合理区间
+- ✅ 视觉分析集成工作
+- ✅ 导出 pipeline 正常
+
+### 发现的问题
+
+1. **观战视角检测不准确**
+   - session-20260616095804-5a1897ed 自动检测失败
+   - 需要手动校正（378s-1455s）
+   - 已规划 Phase 8 改进：半自动工具、场景分类器增强、音频分析
+
+2. **ASR placeholder 字幕**
+   - session-20260616095804-5a1897ed 字幕生成失败
+   - 导致 highlight planner 跳过
+   - 需要重新录制或修复 ASR
+
+### 后续计划
+
+- Phase 8: 观战视角检测改进（已记录到 implement.md）
+- 生产环境配置优化
+- 更多真实场景测试
+
+### 提交
+
+- `cede5af` feat: add segment merging for spectator/casted recordings
+- `86083c7` feat: enable condensed mode via environment variable
+
+
+
+## Session 47: Fix incomplete condensed match exports
+
+**Date**: 2026-06-24
+**Task**: Fix incomplete condensed match exports
+**Branch**: `main`
+
+### Summary
+
+Reinforced HUD timer validation and exporter highlight-plan validation so condensed exports preserve complete match start/end; reran tests and affected exports.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2084dab` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
