@@ -167,6 +167,7 @@ class VisionSettings(BaseModel):
     match_start_threshold_seconds: float = 120.0
     lobby_gap_threshold_seconds: float = 40.0
     min_match_duration_seconds: float = 360.0  # 6 minutes minimum
+    min_complete_timer_seconds: float = 900.0  # 15 minutes minimum in-game timer
     # Adaptive refinement: when a segment is missing a start boundary
     # after the coarse pass, re-sample a narrow window at this finer
     # interval (seconds) to catch loading screens that are shorter than
@@ -617,6 +618,10 @@ def load_settings() -> Settings:
             min_match_duration_seconds=max(
                 60.0,
                 _env_float("ARL_VISION_MIN_MATCH_DURATION_SECONDS", 360.0),
+            ),
+            min_complete_timer_seconds=max(
+                0.0,
+                _env_float("ARL_VISION_MIN_COMPLETE_TIMER_SECONDS", 900.0),
             ),
             match_start_refine_interval_seconds=max(
                 1.0,

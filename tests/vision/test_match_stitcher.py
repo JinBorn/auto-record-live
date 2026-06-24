@@ -249,6 +249,32 @@ def test_timer_validation_downgrades_death_screen_false_start():
             assert seg.reason == "incomplete_no_start"
 
 
+def test_timer_validation_downgrades_complete_segment_that_ends_too_early():
+    """A scene span that cuts away before end-game is not a complete match."""
+    scene_readings = [
+        SceneReading(0.0, "loading", 0.9),
+        SceneReading(20.0, "in_game", 0.9),
+        SceneReading(720.0, "in_game", 0.9),
+        SceneReading(760.0, "other", 0.7),
+    ]
+    timer_readings = [
+        TimerReading(20.0, "00:32", 0.9),
+        TimerReading(720.0, "12:12", 0.9),
+    ]
+
+    segments = stitch_scene_readings(
+        scene_readings,
+        match_start_threshold_seconds=120.0,
+        min_match_duration_seconds=360.0,
+        min_complete_timer_seconds=900.0,
+        timer_readings=timer_readings,
+    )
+
+    assert len(segments) == 1
+    assert segments[0].is_complete is False
+    assert segments[0].reason == "incomplete_timer_too_early"
+
+
 if __name__ == "__main__":
     test_complete_match()
     test_incomplete_no_start()
@@ -260,4 +286,5 @@ if __name__ == "__main__":
     test_scene_stitching_skips_abrupt_loading_as_death_screen()
     test_timer_validation_upgrades_missed_loading_start()
     test_timer_validation_downgrades_death_screen_false_start()
+    test_timer_validation_downgrades_complete_segment_that_ends_too_early()
     print("All tests passed!")

@@ -60,6 +60,7 @@ def stitch_scene_readings(
     *,
     match_start_threshold_seconds: float = 120.0,
     min_match_duration_seconds: float = 360.0,
+    min_complete_timer_seconds: float = 900.0,
     timer_readings: list[TimerReading] | None = None,
 ) -> list[MatchSegment]:
     """Group coarse scene readings into match segments.
@@ -240,12 +241,47 @@ def stitch_scene_readings(
             timer_by_ts,
             match_start_threshold_seconds=match_start_threshold_seconds,
         )
+        segments = _validate_complete_segments_with_timer(
+            segments,
+            timer_by_ts,
+            min_complete_timer_seconds=min_complete_timer_seconds,
+        )
 
     # Merge segments separated by short gaps (handles intermittent
     # classifier failures during a match).  Must run *after* timer
     # validation so that correctly-detected game boundaries are not
     # merged away.
     return _merge_close_segments(segments, max_gap_seconds=600.0)
+
+
+def _validate_complete_segments_with_timer(
+    segments: list[MatchSegment],
+    timer_by_ts: dict[float, float],
+    *,
+    min_complete_timer_seconds: float,
+) -> list[MatchSegment]:
+    """Downgrade complete spans whose timer never reaches plausible end-game."""
+    if min_complete_timer_seconds <= 0.0:
+        return segments
+
+    sorted_timestamps = sorted(timer_by_ts)
+    for seg in segments:
+        if not seg.is_complete:
+            continue
+        timer_values = [
+            timer_by_ts[ts]
+            for ts in sorted_timestamps
+            if seg.start_seconds <= ts <= seg.end_seconds
+        ]
+        if not timer_values:
+            continue
+        if max(timer_values) >= min_complete_timer_seconds:
+            continue
+        seg.is_complete = False
+        seg.confidence = min(seg.confidence, 0.45)
+        seg.reason = "incomplete_timer_too_early"
+
+    return segments
 
 
 def _loading_to_in_game_gap_limit(readings: list[SceneReading]) -> float:

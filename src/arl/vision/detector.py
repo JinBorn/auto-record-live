@@ -60,6 +60,7 @@ class VisionMatchDetector:
             scene_readings,
             match_start_threshold_seconds=self.settings.match_start_threshold_seconds,
             min_match_duration_seconds=self.settings.min_match_duration_seconds,
+            min_complete_timer_seconds=self.settings.min_complete_timer_seconds,
             timer_readings=readings,
         )
         if not segments:

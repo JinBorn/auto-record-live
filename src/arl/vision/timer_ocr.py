@@ -48,18 +48,24 @@ def read_timer(
 
 
 def _read_timer_template(cropped: np.ndarray, timestamp_seconds: float) -> TimerReading:
-    """Template matching based OCR for LoL timer digits."""
+    """Template matching based OCR for LoL timer digits.
+
+    The configured crop also contains nearby HUD values on real recordings
+    (gold, FPS, latency). Restrict detection to the upper row and read the
+    rightmost four digits as ``MMSS`` so those lower-row diagnostics do not
+    pollute timer parsing.
+    """
     gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
-    _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+    _, binary = cv2.threshold(gray, 145, 255, cv2.THRESH_BINARY)
 
     white_pixels = cv2.countNonZero(binary)
     total_pixels = binary.shape[0] * binary.shape[1]
 
-    if white_pixels < total_pixels * 0.05:
+    if white_pixels < total_pixels * 0.01:
         return TimerReading(timestamp_seconds, None, 0.0)
 
     text = _simple_digit_ocr(binary)
-    if text and re.match(r"^\d{1,2}:\d{2}$", text):
+    if text and re.match(r"^\d{1,2}:\d{2}$", text) and _timer_text_is_valid(text):
         return TimerReading(timestamp_seconds, text, 0.85)
 
     return TimerReading(timestamp_seconds, None, 0.1)
@@ -72,31 +78,38 @@ def _simple_digit_ocr(binary: np.ndarray) -> str | None:
     if not contours:
         return None
 
+    crop_height = binary.shape[0]
     digit_boxes: list[tuple[int, int, int, int]] = []
     for contour in contours:
         x, y, w, h = cv2.boundingRect(contour)
-        if 5 <= w <= 20 and 10 <= h <= 40:
+        if y > crop_height * 0.55:
+            continue
+        if 3 <= w <= 18 and 8 <= h <= 28:
             digit_boxes.append((x, y, w, h))
 
     if len(digit_boxes) < 4:
         return None
 
+    digit_boxes = _merge_nearby_digit_boxes(digit_boxes)
+    if len(digit_boxes) < 4:
+        return None
+
     digit_boxes.sort(key=lambda box: box[0])
+    digit_boxes = digit_boxes[-4:]
 
     chars: list[str] = []
-    for i, (x, y, w, h) in enumerate(digit_boxes):
+    for x, y, w, h in digit_boxes:
         digit_img = binary[y : y + h, x : x + w]
         digit = _recognize_digit_by_features(digit_img)
-
         if digit is None:
-            if i > 0 and len(chars) > 0 and chars[-1] != ":":
-                chars.append(":")
             continue
 
         chars.append(digit)
 
-    result = "".join(chars)
-    result = re.sub(r":{2,}", ":", result)
+    if len(chars) != 4:
+        return None
+
+    result = f"{chars[0]}{chars[1]}:{chars[2]}{chars[3]}"
 
     if ":" in result:
         parts = result.split(":")
@@ -106,37 +119,92 @@ def _simple_digit_ocr(binary: np.ndarray) -> str | None:
     return None
 
 
+def _merge_nearby_digit_boxes(
+    boxes: list[tuple[int, int, int, int]],
+) -> list[tuple[int, int, int, int]]:
+    """Merge contour fragments that belong to the same timer digit."""
+    if not boxes:
+        return []
+
+    merged: list[tuple[int, int, int, int]] = []
+    for box in sorted(boxes, key=lambda item: item[0]):
+        x, y, w, h = box
+        if not merged:
+            merged.append(box)
+            continue
+
+        last_x, last_y, last_w, last_h = merged[-1]
+        last_right = last_x + last_w
+        overlaps_vertically = not (y + h < last_y or last_y + last_h < y)
+        if x <= last_right and overlaps_vertically:
+            new_x = min(last_x, x)
+            new_y = min(last_y, y)
+            new_right = max(last_right, x + w)
+            new_bottom = max(last_y + last_h, y + h)
+            merged[-1] = (new_x, new_y, new_right - new_x, new_bottom - new_y)
+            continue
+
+        merged.append(box)
+
+    return merged
+
+
 def _recognize_digit_by_features(digit_img: np.ndarray) -> str | None:
-    """Recognize single digit using simple features."""
+    """Recognize one HUD digit with coarse seven-segment features."""
     if digit_img.size == 0:
         return None
 
     h, w = digit_img.shape
-    if w < 5 or h < 10:
+    if w < 3 or h < 8:
         return None
 
-    white_ratio = cv2.countNonZero(digit_img) / (h * w)
-
-    if white_ratio < 0.2:
+    if w <= 5:
         return "1"
-    elif white_ratio > 0.7:
-        return "8"
-    elif white_ratio > 0.55:
-        return "0"
-    elif white_ratio > 0.45:
-        return "6"
-    else:
-        top_half = digit_img[: h // 2, :]
-        bottom_half = digit_img[h // 2 :, :]
-        top_ratio = cv2.countNonZero(top_half) / top_half.size
-        bottom_ratio = cv2.countNonZero(bottom_half) / bottom_half.size
 
-        if top_ratio > bottom_ratio * 1.3:
-            return "2"
-        elif bottom_ratio > top_ratio * 1.3:
-            return "5"
-        else:
-            return "3"
+    normalized = cv2.resize(digit_img, (14, 24), interpolation=cv2.INTER_NEAREST)
+    zones = {
+        "a": normalized[0:4, 3:11],
+        "b": normalized[3:11, 9:14],
+        "c": normalized[13:21, 9:14],
+        "d": normalized[20:24, 3:11],
+        "e": normalized[13:21, 0:5],
+        "f": normalized[3:11, 0:5],
+        "g": normalized[10:14, 3:11],
+    }
+    thresholds = {"b": 0.45, "e": 0.55}
+    active = set()
+    for segment, zone in zones.items():
+        threshold = thresholds.get(segment, 0.35)
+        if cv2.countNonZero(zone) / zone.size >= threshold:
+            active.add(segment)
+
+    patterns: dict[str, set[str]] = {
+        "0": {"a", "b", "c", "d", "e", "f"},
+        "2": {"a", "b", "d", "e", "g"},
+        "3": {"a", "b", "c", "d", "g"},
+        "4": {"b", "c", "f", "g"},
+        "5": {"a", "c", "d", "f", "g"},
+        "6": {"a", "c", "d", "e", "f", "g"},
+        "7": {"a", "b", "c"},
+        "8": {"a", "b", "c", "d", "e", "f", "g"},
+        "9": {"a", "b", "c", "d", "f", "g"},
+    }
+    digit, score = min(
+        (
+            (candidate, len(active ^ expected))
+            for candidate, expected in patterns.items()
+        ),
+        key=lambda item: item[1],
+    )
+    return digit if score <= 2 else None
+
+
+def _timer_text_is_valid(text: str) -> bool:
+    try:
+        minutes, seconds = text.split(":", 1)
+        return bool(minutes) and 0 <= int(seconds) <= 59
+    except ValueError:
+        return False
 
 
 def _read_timer_tesseract(cropped: np.ndarray, timestamp_seconds: float) -> TimerReading:

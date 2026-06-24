@@ -246,6 +246,13 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
 
         self.assertEqual(settings.vision.min_match_duration_seconds, 420.0)
 
+    def test_vision_min_complete_timer_env_loads(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_VISION_MIN_COMPLETE_TIMER_SECONDS"] = "780"
+            settings = load_settings()
+
+        self.assertEqual(settings.vision.min_complete_timer_seconds, 780.0)
+
     def test_exporter_backoff_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             os.environ["ARL_EXPORTER_BACKOFF_INITIAL_SECONDS"] = "1.5"

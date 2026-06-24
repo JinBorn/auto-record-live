@@ -737,6 +737,10 @@ class HighlightPlannerService:
             merge_gap_seconds=self.settings.highlights.condensed_merge_gap_seconds,
             min_window_duration_seconds=self.settings.highlights.condensed_min_window_duration_seconds,
             boring_gap_threshold_seconds=self.settings.highlights.condensed_boring_gap_threshold_seconds,
+            edge_context_seconds=self.settings.highlights.keep_edge_seconds,
+            max_continuous_window_seconds=(
+                float(self.settings.highlights.condensed_target_duration_range[1]) * 60.0
+            ),
         )
 
         if not windows:

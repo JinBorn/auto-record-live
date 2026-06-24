@@ -607,7 +607,64 @@ class ExporterService:
                 return None
             if window.ended_at_seconds > duration + tolerance_seconds:
                 return None
+        if self._plan_nearly_covers_duration(
+            plan,
+            duration,
+            tolerance_seconds=tolerance_seconds,
+        ):
+            log(
+                "exporter",
+                "ignored full-span highlight plan "
+                f"session_id={boundary.session_id} match_index={boundary.match_index}",
+            )
+            return None
+        if self._is_condensed_plan(plan) and not self._condensed_plan_covers_edges(
+            plan,
+            duration,
+            tolerance_seconds=tolerance_seconds,
+        ):
+            log(
+                "exporter",
+                "ignored incomplete condensed highlight plan "
+                f"session_id={boundary.session_id} match_index={boundary.match_index}",
+            )
+            return None
         return plan
+
+    @staticmethod
+    def _is_condensed_plan(plan: HighlightPlanAsset) -> bool:
+        return any(window.reason.startswith("condensed_") for window in plan.windows)
+
+    @staticmethod
+    def _plan_nearly_covers_duration(
+        plan: HighlightPlanAsset,
+        duration: float,
+        *,
+        tolerance_seconds: float,
+    ) -> bool:
+        if len(plan.windows) != 1:
+            return False
+        window = plan.windows[0]
+        return (
+            window.started_at_seconds <= tolerance_seconds
+            and window.ended_at_seconds >= duration - tolerance_seconds
+        )
+
+    @staticmethod
+    def _condensed_plan_covers_edges(
+        plan: HighlightPlanAsset,
+        duration: float,
+        *,
+        tolerance_seconds: float,
+    ) -> bool:
+        starts_at_beginning = any(
+            window.started_at_seconds <= tolerance_seconds for window in plan.windows
+        )
+        ends_at_boundary = any(
+            window.ended_at_seconds >= duration - tolerance_seconds
+            for window in plan.windows
+        )
+        return starts_at_beginning and ends_at_boundary
 
     def _planned_ffmpeg_command(
         self,

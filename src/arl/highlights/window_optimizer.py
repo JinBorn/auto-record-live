@@ -22,6 +22,8 @@ def optimize_windows(
     merge_gap_seconds: float = 8.0,
     min_window_duration_seconds: float = 3.0,
     boring_gap_threshold_seconds: float = 120.0,
+    edge_context_seconds: float = 0.0,
+    max_continuous_window_seconds: float | None = None,
 ) -> list[HighlightClipWindow]:
     """优化窗口生成condensed plan。
 
@@ -45,6 +47,7 @@ def optimize_windows(
 
     # Phase 1: 生成初始窗口
     drafts = _generate_initial_windows(classified_cues, context_padding_seconds)
+    drafts.extend(_generate_edge_context_windows(edge_context_seconds, match_duration_seconds))
     log("highlights", f"window_optimizer: Phase 1 generated {len(drafts)} initial windows")
 
     # Phase 3: 窗口优化
@@ -70,7 +73,17 @@ def optimize_windows(
         context_padding_seconds,
         match_duration_seconds,
     )
+    drafts = _ensure_edge_context_preserved(
+        drafts,
+        edge_context_seconds=edge_context_seconds,
+        match_duration=match_duration_seconds,
+    )
     drafts = _clamp_windows_to_match(drafts, match_duration_seconds)
+    drafts = _collapse_large_gaps(
+        drafts,
+        max_gap_seconds=boring_gap_threshold_seconds,
+        max_continuous_window_seconds=max_continuous_window_seconds,
+    )
     current_duration = sum(d.ended_at_seconds - d.started_at_seconds for d in drafts)
     log(
         "highlights",
@@ -79,6 +92,8 @@ def optimize_windows(
     )
 
     # Phase 5: 质量检查
+    if not drafts:
+        return []
     _validate_key_events_preserved(drafts, classified_cues)
     _validate_key_events_preserved(drafts, classified_cues)
     log("highlights", f"window_optimizer: Phase 5 quality check passed")
@@ -94,6 +109,104 @@ def optimize_windows(
     ]
 
     return windows
+
+
+def _generate_edge_context_windows(
+    edge_context_seconds: float,
+    match_duration: float,
+) -> list[WindowDraft]:
+    if edge_context_seconds <= 0.0 or match_duration <= 0.0:
+        return []
+
+    edge = min(edge_context_seconds, match_duration / 2.0)
+    if edge <= 0.0:
+        return []
+
+    return [
+        WindowDraft(
+            started_at_seconds=0.0,
+            ended_at_seconds=edge,
+            reason="condensed_match_context",
+            priority=1.0,
+        ),
+        WindowDraft(
+            started_at_seconds=max(0.0, match_duration - edge),
+            ended_at_seconds=match_duration,
+            reason="condensed_match_context",
+            priority=1.0,
+        ),
+    ]
+
+
+def _ensure_edge_context_preserved(
+    drafts: list[WindowDraft],
+    *,
+    edge_context_seconds: float,
+    match_duration: float,
+) -> list[WindowDraft]:
+    if edge_context_seconds <= 0.0 or match_duration <= 0.0:
+        return drafts
+
+    edge_windows = _generate_edge_context_windows(edge_context_seconds, match_duration)
+    if not edge_windows:
+        return drafts
+
+    needed: list[WindowDraft] = []
+    if not any(draft.started_at_seconds <= 0.001 for draft in drafts):
+        needed.append(edge_windows[0])
+    if not any(draft.ended_at_seconds >= match_duration - 0.001 for draft in drafts):
+        needed.append(edge_windows[-1])
+
+    if not needed:
+        return drafts
+
+    return _merge_windows(drafts + needed, merge_gap=0.0)
+
+
+def _collapse_large_gaps(
+    drafts: list[WindowDraft],
+    *,
+    max_gap_seconds: float,
+    max_continuous_window_seconds: float | None,
+) -> list[WindowDraft]:
+    """Prefer one continuous condensed span over abrupt source-time jumps."""
+    if len(drafts) <= 1 or max_continuous_window_seconds is None:
+        return drafts
+
+    ordered = sorted(drafts, key=lambda draft: draft.started_at_seconds)
+    largest_gap = max(
+        current.started_at_seconds - previous.ended_at_seconds
+        for previous, current in zip(ordered, ordered[1:])
+    )
+    if largest_gap <= max_gap_seconds:
+        return ordered
+
+    start = ordered[0].started_at_seconds
+    end = ordered[-1].ended_at_seconds
+    span = end - start
+    if span > max_continuous_window_seconds:
+        log(
+            "highlights",
+            "window_optimizer: skipped discontinuous plan "
+            f"largest_gap={largest_gap:.1f}s continuous_span={span:.1f}s "
+            f"max_continuous={max_continuous_window_seconds:.1f}s",
+        )
+        return []
+
+    highest = max(ordered, key=lambda draft: draft.priority)
+    log(
+        "highlights",
+        "window_optimizer: collapsed discontinuous windows into continuous span "
+        f"largest_gap={largest_gap:.1f}s span={span:.1f}s",
+    )
+    return [
+        WindowDraft(
+            started_at_seconds=start,
+            ended_at_seconds=end,
+            reason=highest.reason,
+            priority=highest.priority,
+        )
+    ]
 
 
 def _generate_initial_windows(

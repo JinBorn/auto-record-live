@@ -70,3 +70,63 @@ def test_optimizer_clamps_windows_to_match_duration() -> None:
     assert windows[0].started_at_seconds == 75.0
     assert windows[0].ended_at_seconds == 100.0
     assert windows[0].reason == "condensed_key_event"
+
+
+def test_optimizer_collapses_large_gaps_into_continuous_span() -> None:
+    cues = [
+        ClassifiedCue(10.0, 12.0, "first kill", "key_event", 1.0),
+        ClassifiedCue(350.0, 352.0, "dragon fight", "key_event", 1.0),
+    ]
+
+    windows = optimize_windows(
+        classified_cues=cues,
+        target_duration_seconds=120.0,
+        match_duration_seconds=600.0,
+        context_padding_seconds=5.0,
+        merge_gap_seconds=0.0,
+        boring_gap_threshold_seconds=120.0,
+        max_continuous_window_seconds=420.0,
+    )
+
+    assert len(windows) == 1
+    assert windows[0].started_at_seconds == 0.0
+    assert windows[0].ended_at_seconds == 362.0
+
+
+def test_optimizer_skips_discontinuous_plan_when_continuous_span_is_too_long() -> None:
+    cues = [
+        ClassifiedCue(10.0, 12.0, "first kill", "key_event", 1.0),
+        ClassifiedCue(700.0, 702.0, "baron fight", "key_event", 1.0),
+    ]
+
+    windows = optimize_windows(
+        classified_cues=cues,
+        target_duration_seconds=120.0,
+        match_duration_seconds=900.0,
+        context_padding_seconds=5.0,
+        merge_gap_seconds=0.0,
+        boring_gap_threshold_seconds=120.0,
+        max_continuous_window_seconds=600.0,
+    )
+
+    assert windows == []
+
+
+def test_optimizer_preserves_match_edge_context_for_condensed_plan() -> None:
+    cues = [
+        ClassifiedCue(350.0, 352.0, "dragon fight", "key_event", 1.0),
+    ]
+
+    windows = optimize_windows(
+        classified_cues=cues,
+        target_duration_seconds=120.0,
+        match_duration_seconds=600.0,
+        context_padding_seconds=5.0,
+        merge_gap_seconds=0.0,
+        boring_gap_threshold_seconds=120.0,
+        edge_context_seconds=30.0,
+        max_continuous_window_seconds=900.0,
+    )
+
+    assert windows[0].started_at_seconds == 0.0
+    assert windows[-1].ended_at_seconds == 600.0
