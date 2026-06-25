@@ -7,9 +7,9 @@
 ## Current Status
 
 <!-- @@@auto:current-status -->
-- **Active File**: `journal-1.md`
-- **Total Sessions**: 47
-- **Last Active**: 2026-06-24
+- **Active File**: `journal-2.md`
+- **Total Sessions**: 48
+- **Last Active**: 2026-06-25
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,8 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1986 | Active |
+| `journal-2.md` | ~40 | Active |
+| `journal-1.md` | ~1986 | Archived |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 48 | 2026-06-25 | Condensed highlight action context | `86e616c` | `main` |
 | 47 | 2026-06-24 | Fix incomplete condensed match exports | `2084dab` | `main` |
 | 46 | 2026-06-15 | Fix export quality loss with fixed bitrate mode | `1bf78a4`, `f0c347d` | `fix/highlight-condensing-budget` |
 | 45 | 2026-06-12 | Implement vision-based match detection system | `0aaa5c5`, `425d1eb` | `fix/highlight-condensing-budget` |
