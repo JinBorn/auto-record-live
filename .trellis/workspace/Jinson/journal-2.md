@@ -71,3 +71,36 @@ Implemented additive copywriter publishing packages with deterministic metadata,
 ### Next Steps
 
 - None - task complete
+
+
+## Session 50: ASS subtitle burn-in path
+
+**Date**: 2026-06-26
+**Task**: ASS subtitle burn-in path
+**Branch**: `main`
+
+### Summary
+
+Added opt-in ASS subtitle sidecar generation for export burn-in, with config envs, exporter wiring, regression tests, and backend export spec updates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `756e526` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
