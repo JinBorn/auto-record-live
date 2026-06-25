@@ -214,6 +214,8 @@ class HighlightSettings(BaseModel):
     condensed_min_window_duration_seconds: float = 3.0
     condensed_silent_gap_threshold_seconds: float = 60.0
     condensed_boring_gap_threshold_seconds: float = 120.0
+    condensed_action_resolution_tail_seconds: float = 40.0
+    condensed_action_resolution_gap_seconds: float = 8.0
 
     # 优先级权重
     condensed_priority_key_event: float = 1.0
@@ -231,6 +233,22 @@ class HighlightSettings(BaseModel):
     condensed_visual_weight_scene_change: float = 0.5
     condensed_visual_weight_minimap: float = 0.3
     condensed_visual_weight_edge_density: float = 0.2
+
+    # KDA-based event preservation for condensed exports.
+    condensed_kda_event_detection_enabled: bool = True
+    condensed_kda_crop_region: tuple[int, int, int, int] = (1665, 0, 85, 32)
+    condensed_kda_sample_interval_seconds: float = 10.0
+    condensed_kda_min_confidence: float = 0.4
+    condensed_kda_max_reading_gap_seconds: float = 120.0
+    condensed_kda_max_event_delta: int = 8
+    condensed_kda_kill_preroll_seconds: float = 30.0
+    condensed_kda_death_preroll_seconds: float = 60.0
+    condensed_kda_postroll_seconds: float = 5.0
+    condensed_kda_post_death_kill_suppression_seconds: float = 0.0
+    condensed_kda_death_wait_trim_seconds: float = 120.0
+    condensed_kda_death_silent_gap_trim_seconds: float = 10.0
+    condensed_kda_death_silent_trim_lookback_seconds: float = 30.0
+    condensed_kda_death_reaction_tail_seconds: float = 3.0
 
     # 用户自定义术语
     custom_tactical_keywords: list[str] = Field(default_factory=list)
@@ -340,6 +358,19 @@ def _env_csv(key: str) -> list[str]:
     if not raw:
         return []
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _env_int_tuple4(
+    key: str,
+    default: tuple[int, int, int, int],
+) -> tuple[int, int, int, int]:
+    raw = os.getenv(key, "").strip()
+    if not raw:
+        return default
+    parts = [item.strip() for item in raw.split(",")]
+    if len(parts) != 4:
+        raise ValueError(f"{key} must contain four comma-separated integers")
+    return (int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3]))
 
 
 def _pick_indexed(values: list[str], index: int, default: str = "") -> str:
@@ -673,6 +704,100 @@ def load_settings() -> Settings:
                 _env_float(
                     "ARL_HIGHLIGHT_CONDENSED_VISUAL_SAMPLE_INTERVAL_SECONDS",
                     10.0,
+                ),
+            ),
+            condensed_action_resolution_tail_seconds=max(
+                0.0,
+                _env_float(
+                    "ARL_HIGHLIGHT_CONDENSED_ACTION_RESOLUTION_TAIL_SECONDS",
+                    40.0,
+                ),
+            ),
+            condensed_action_resolution_gap_seconds=max(
+                0.0,
+                _env_float(
+                    "ARL_HIGHLIGHT_CONDENSED_ACTION_RESOLUTION_GAP_SECONDS",
+                    8.0,
+                ),
+            ),
+            condensed_kda_event_detection_enabled=_env_bool(
+                "ARL_HIGHLIGHT_CONDENSED_KDA_EVENT_DETECTION_ENABLED",
+                True,
+            ),
+            condensed_kda_crop_region=_env_int_tuple4(
+                "ARL_HIGHLIGHT_CONDENSED_KDA_CROP_REGION",
+                (1665, 0, 85, 32),
+            ),
+            condensed_kda_sample_interval_seconds=max(
+                1.0,
+                _env_float(
+                    "ARL_HIGHLIGHT_CONDENSED_KDA_SAMPLE_INTERVAL_SECONDS",
+                    10.0,
+                ),
+            ),
+            condensed_kda_min_confidence=min(
+                1.0,
+                max(
+                    0.0,
+                    _env_float("ARL_HIGHLIGHT_CONDENSED_KDA_MIN_CONFIDENCE", 0.4),
+                ),
+            ),
+            condensed_kda_max_reading_gap_seconds=max(
+                1.0,
+                _env_float(
+                    "ARL_HIGHLIGHT_CONDENSED_KDA_MAX_READING_GAP_SECONDS",
+                    120.0,
+                ),
+            ),
+            condensed_kda_max_event_delta=max(
+                1,
+                _env_int("ARL_HIGHLIGHT_CONDENSED_KDA_MAX_EVENT_DELTA", 8),
+            ),
+            condensed_kda_kill_preroll_seconds=max(
+                0.0,
+                _env_float("ARL_HIGHLIGHT_CONDENSED_KDA_KILL_PREROLL_SECONDS", 30.0),
+            ),
+            condensed_kda_death_preroll_seconds=max(
+                0.0,
+                _env_float("ARL_HIGHLIGHT_CONDENSED_KDA_DEATH_PREROLL_SECONDS", 60.0),
+            ),
+            condensed_kda_postroll_seconds=max(
+                0.0,
+                _env_float("ARL_HIGHLIGHT_CONDENSED_KDA_POSTROLL_SECONDS", 5.0),
+            ),
+            condensed_kda_post_death_kill_suppression_seconds=max(
+                0.0,
+                _env_float(
+                    "ARL_HIGHLIGHT_CONDENSED_KDA_POST_DEATH_KILL_SUPPRESSION_SECONDS",
+                    0.0,
+                ),
+            ),
+            condensed_kda_death_wait_trim_seconds=max(
+                0.0,
+                _env_float(
+                    "ARL_HIGHLIGHT_CONDENSED_KDA_DEATH_WAIT_TRIM_SECONDS",
+                    120.0,
+                ),
+            ),
+            condensed_kda_death_silent_gap_trim_seconds=max(
+                0.0,
+                _env_float(
+                    "ARL_HIGHLIGHT_CONDENSED_KDA_DEATH_SILENT_GAP_TRIM_SECONDS",
+                    10.0,
+                ),
+            ),
+            condensed_kda_death_silent_trim_lookback_seconds=max(
+                0.0,
+                _env_float(
+                    "ARL_HIGHLIGHT_CONDENSED_KDA_DEATH_SILENT_TRIM_LOOKBACK_SECONDS",
+                    30.0,
+                ),
+            ),
+            condensed_kda_death_reaction_tail_seconds=max(
+                0.0,
+                _env_float(
+                    "ARL_HIGHLIGHT_CONDENSED_KDA_DEATH_REACTION_TAIL_SECONDS",
+                    3.0,
                 ),
             ),
         ),

@@ -15,6 +15,15 @@ class TimerReading:
 
 
 @dataclass
+class KdaReading:
+    timestamp_seconds: float
+    kills: int | None
+    deaths: int | None
+    assists: int | None
+    confidence: float
+
+
+@dataclass
 class SceneReading:
     timestamp_seconds: float
     scene: FrameScene

@@ -6,11 +6,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from arl.config import Settings
-from arl.highlights.models import HighlightPlannerStateFile
+from arl.highlights.models import ClassifiedCue, HighlightPlannerStateFile
 from arl.shared.contracts import (
     HighlightClipWindow,
     HighlightPlanAsset,
     MatchBoundary,
+    RecordingAsset,
     SubtitleAsset,
 )
 from arl.shared.jsonl_store import append_model, load_models
@@ -582,6 +583,536 @@ class HighlightPlannerService:
             filtered.append(boundary)
         return filtered
 
+    def _find_recording_video_path(self, boundary: MatchBoundary) -> Path | None:
+        recording_assets_path = self.settings.storage.temp_dir / "recording-assets.jsonl"
+        if not recording_assets_path.exists():
+            return None
+
+        recordings = load_models(recording_assets_path, RecordingAsset)
+        for rec in recordings:
+            if rec.session_id != boundary.session_id:
+                continue
+            recording_path = Path(rec.path)
+            if recording_path.exists() and recording_path.suffix.lower() == ".mp4":
+                return recording_path
+        return None
+
+    def _detect_kda_event_cues(
+        self,
+        *,
+        video_path: Path | None,
+        boundary: MatchBoundary,
+        duration: float,
+    ) -> list[ClassifiedCue]:
+        if (
+            video_path is None
+            or not self.settings.highlights.condensed_kda_event_detection_enabled
+        ):
+            return []
+
+        from arl.vision.frame_sampler import sample_frame_window
+        from arl.vision.kda_ocr import read_kda
+
+        try:
+            samples = sample_frame_window(
+                video_path,
+                boundary.started_at_seconds,
+                boundary.ended_at_seconds,
+                interval_seconds=(
+                    self.settings.highlights.condensed_kda_sample_interval_seconds
+                ),
+            )
+        except RuntimeError as exc:
+            log(
+                "highlights",
+                "skip KDA event detection "
+                f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                f"reason=sample_failed detail={exc}",
+            )
+            return []
+
+        previous: tuple[float, int, int, int] | None = None
+        last_death_observed_at: float | None = None
+        events: list[ClassifiedCue] = []
+        for timestamp_seconds, frame in samples:
+            reading = read_kda(
+                frame,
+                timestamp_seconds,
+                crop_region=self.settings.highlights.condensed_kda_crop_region,
+            )
+            if (
+                reading.kills is None
+                or reading.deaths is None
+                or reading.assists is None
+                or reading.confidence
+                < self.settings.highlights.condensed_kda_min_confidence
+            ):
+                continue
+
+            current = (
+                reading.timestamp_seconds,
+                reading.kills,
+                reading.deaths,
+                reading.assists,
+            )
+            if previous is None:
+                previous = current
+                continue
+
+            previous_ts, previous_kills, previous_deaths, previous_assists = previous
+            current_ts, current_kills, current_deaths, current_assists = current
+            if current_ts <= previous_ts:
+                continue
+
+            kill_delta = current_kills - previous_kills
+            death_delta = current_deaths - previous_deaths
+            assist_delta = current_assists - previous_assists
+            if kill_delta < 0 or death_delta < 0 or assist_delta < 0:
+                continue
+
+            reading_gap = current_ts - previous_ts
+            if (
+                reading_gap
+                > self.settings.highlights.condensed_kda_max_reading_gap_seconds
+            ):
+                previous = current
+                continue
+
+            if (
+                kill_delta + death_delta
+                > self.settings.highlights.condensed_kda_max_event_delta
+            ):
+                previous = current
+                continue
+
+            if kill_delta > 0 or death_delta > 0:
+                current_relative_seconds = current_ts - boundary.started_at_seconds
+                previous_relative_seconds = previous_ts - boundary.started_at_seconds
+                suppression_seconds = (
+                    self.settings.highlights.condensed_kda_post_death_kill_suppression_seconds
+                )
+                if (
+                    death_delta == 0
+                    and kill_delta > 0
+                    and last_death_observed_at is not None
+                    and suppression_seconds > 0.0
+                    and current_relative_seconds - last_death_observed_at
+                    <= suppression_seconds
+                ):
+                    previous = current
+                    continue
+
+                preroll_seconds = (
+                    self.settings.highlights.condensed_kda_death_preroll_seconds
+                    if death_delta > 0
+                    else self.settings.highlights.condensed_kda_kill_preroll_seconds
+                )
+                event_start = max(
+                    0.0,
+                    previous_ts - boundary.started_at_seconds - preroll_seconds,
+                )
+                event_end = min(
+                    duration,
+                    current_ts
+                    - boundary.started_at_seconds
+                    + self.settings.highlights.condensed_kda_postroll_seconds,
+                )
+                if event_end <= event_start:
+                    event_end = min(duration, event_start + 1.0)
+                events.append(
+                    ClassifiedCue(
+                        started_at_seconds=event_start,
+                        ended_at_seconds=event_end,
+                        text=(
+                            "kda_change "
+                            f"kills={previous_kills}->{current_kills} "
+                            f"deaths={previous_deaths}->{current_deaths} "
+                            f"previous_at={previous_relative_seconds:.3f} "
+                            f"current_at={current_relative_seconds:.3f}"
+                        ),
+                        category="key_event",
+                        priority=self.settings.highlights.condensed_priority_key_event,
+                    )
+                )
+                if death_delta > 0:
+                    last_death_observed_at = current_relative_seconds
+
+            previous = current
+
+        return events
+
+    def _trim_silent_kda_death_waits(
+        self,
+        windows: list[HighlightClipWindow],
+        *,
+        kda_event_cues: list[ClassifiedCue],
+        speech_cues: list[_SrtCue],
+        classified_cues: list[ClassifiedCue],
+    ) -> list[HighlightClipWindow]:
+        threshold = self.settings.highlights.condensed_kda_death_silent_gap_trim_seconds
+        if not windows or not kda_event_cues or threshold <= 0.0:
+            return windows
+
+        death_cues = [
+            cue for cue in kda_event_cues if self._kda_cue_death_delta(cue) > 0
+        ]
+        if not death_cues:
+            return windows
+
+        min_piece_seconds = self.settings.highlights.condensed_min_window_duration_seconds
+        reaction_tail_seconds = (
+            self.settings.highlights.condensed_kda_death_reaction_tail_seconds
+        )
+        trimmed: list[HighlightClipWindow] = []
+        trimmed_gap_count = 0
+        for window in windows:
+            ranges = [(window.started_at_seconds, window.ended_at_seconds)]
+            if window.reason == "condensed_key_event":
+                for cue in death_cues:
+                    if not self._ranges_overlap(
+                        window.started_at_seconds,
+                        window.ended_at_seconds,
+                        cue.started_at_seconds,
+                        cue.ended_at_seconds,
+                    ):
+                        continue
+                    observed_at = self._kda_cue_time(cue, "current_at")
+                    if observed_at is None:
+                        continue
+                    if reaction_tail_seconds > 0.0:
+                        reaction_end = min(
+                            cue.ended_at_seconds,
+                            observed_at + reaction_tail_seconds,
+                        )
+                        if reaction_end > window.ended_at_seconds:
+                            ranges = [
+                                (
+                                    range_start,
+                                    reaction_end
+                                    if range_end == window.ended_at_seconds
+                                    else range_end,
+                                )
+                                for range_start, range_end in ranges
+                            ]
+                    search_start = max(
+                        cue.started_at_seconds,
+                        observed_at
+                        - self.settings.highlights.condensed_kda_death_silent_trim_lookback_seconds,
+                    )
+                    search_end = min(cue.ended_at_seconds, observed_at)
+                    for gap_start, gap_end in self._subtitle_silent_gaps(
+                        speech_cues,
+                        start_seconds=search_start,
+                        end_seconds=search_end,
+                        min_gap_seconds=threshold,
+                    ):
+                        next_ranges = []
+                        remove_start = min(gap_end, gap_start + reaction_tail_seconds)
+                        if gap_end - remove_start < threshold:
+                            continue
+                        for range_start, range_end in ranges:
+                            next_ranges.extend(
+                                self._subtract_range(
+                                    range_start,
+                                    range_end,
+                                    remove_start,
+                                    gap_end,
+                                    min_piece_seconds=min_piece_seconds,
+                                )
+                            )
+                        if len(next_ranges) != len(ranges):
+                            trimmed_gap_count += 1
+                        ranges = next_ranges
+
+            for range_start, range_end in ranges:
+                if range_end <= range_start:
+                    continue
+                trimmed.append(
+                    HighlightClipWindow(
+                        started_at_seconds=range_start,
+                        ended_at_seconds=range_end,
+                        reason=window.reason,
+                    )
+                )
+
+        trimmed = self._trim_post_death_low_value_waits(
+            trimmed,
+            kda_event_cues=kda_event_cues,
+            classified_cues=classified_cues,
+        )
+
+        if trimmed_gap_count:
+            log(
+                "highlights",
+                "trimmed silent KDA death gaps "
+                f"count={trimmed_gap_count} threshold={threshold:.1f}s",
+            )
+
+        return sorted(trimmed, key=lambda item: (item.started_at_seconds, item.ended_at_seconds))
+
+    def _extend_action_resolution_windows(
+        self,
+        windows: list[HighlightClipWindow],
+        *,
+        classified_cues: list[ClassifiedCue],
+    ) -> list[HighlightClipWindow]:
+        tail_seconds = self.settings.highlights.condensed_action_resolution_tail_seconds
+        gap_seconds = self.settings.highlights.condensed_action_resolution_gap_seconds
+        if not windows or tail_seconds <= 0.0:
+            return windows
+
+        resolution_cues = sorted(
+            (
+                cue
+                for cue in classified_cues
+                if cue.category in {"key_event", "tactical", "narration"}
+                and not cue.text.startswith("kda_change ")
+            ),
+            key=lambda cue: (cue.started_at_seconds, cue.ended_at_seconds),
+        )
+        if not resolution_cues:
+            return windows
+
+        ordered = sorted(windows, key=lambda item: (item.started_at_seconds, item.ended_at_seconds))
+        extended: list[HighlightClipWindow] = []
+        extended_count = 0
+        for index, window in enumerate(ordered):
+            new_end = window.ended_at_seconds
+            if window.reason in {"condensed_key_event", "condensed_tactical"}:
+                limit = window.ended_at_seconds + tail_seconds
+                if index + 1 < len(ordered):
+                    next_start = ordered[index + 1].started_at_seconds
+                    if next_start > window.ended_at_seconds:
+                        limit = min(limit, next_start)
+
+                cursor = window.ended_at_seconds
+                for cue in resolution_cues:
+                    if cue.ended_at_seconds <= cursor:
+                        continue
+                    if cue.started_at_seconds > limit:
+                        break
+                    if cue.started_at_seconds - cursor > gap_seconds:
+                        break
+
+                    new_end = max(new_end, min(cue.ended_at_seconds, limit))
+                    cursor = max(cursor, cue.ended_at_seconds)
+                    if new_end >= limit:
+                        break
+
+            if new_end - window.ended_at_seconds > 0.001:
+                extended_count += 1
+            extended.append(
+                HighlightClipWindow(
+                    started_at_seconds=window.started_at_seconds,
+                    ended_at_seconds=new_end,
+                    reason=window.reason,
+                )
+            )
+
+        if extended_count:
+            log(
+                "highlights",
+                "extended action resolution windows "
+                f"count={extended_count} tail={tail_seconds:.1f}s gap={gap_seconds:.1f}s",
+            )
+
+        return extended
+
+    def _trim_post_death_low_value_waits(
+        self,
+        windows: list[HighlightClipWindow],
+        *,
+        kda_event_cues: list[ClassifiedCue],
+        classified_cues: list[ClassifiedCue],
+    ) -> list[HighlightClipWindow]:
+        trim_seconds = self.settings.highlights.condensed_kda_death_wait_trim_seconds
+        if not windows or trim_seconds <= 0.0:
+            return windows
+
+        death_cues = [
+            cue for cue in kda_event_cues if self._kda_cue_death_delta(cue) > 0
+        ]
+        death_observed_times = [
+            observed_at
+            for observed_at in (
+                self._kda_cue_time(cue, "current_at") for cue in death_cues
+            )
+            if observed_at is not None
+        ]
+        if not death_observed_times:
+            return windows
+
+        trimmed: list[HighlightClipWindow] = []
+        dropped = 0
+        shifted = 0
+        for window in windows:
+            death_observed_at = max(
+                (
+                    observed_at
+                    for observed_at in death_observed_times
+                    if observed_at <= window.started_at_seconds
+                    and window.started_at_seconds - observed_at <= trim_seconds
+                ),
+                default=None,
+            )
+            if death_observed_at is None:
+                trimmed.append(window)
+                continue
+            if any(
+                self._ranges_overlap(
+                    window.started_at_seconds,
+                    window.ended_at_seconds,
+                    cue.started_at_seconds,
+                    cue.ended_at_seconds,
+                )
+                for cue in kda_event_cues
+            ):
+                trimmed.append(window)
+                continue
+
+            if window.reason == "condensed_context":
+                dropped += 1
+                continue
+
+            if window.reason != "condensed_key_event":
+                trimmed.append(window)
+                continue
+
+            first_important = self._first_subtitle_key_or_tactical_cue(
+                classified_cues,
+                start_seconds=window.started_at_seconds,
+                end_seconds=window.ended_at_seconds,
+            )
+            if first_important is None:
+                trimmed.append(window)
+                continue
+
+            new_start = max(
+                window.started_at_seconds,
+                first_important.started_at_seconds
+                - self.settings.highlights.condensed_context_padding_seconds,
+            )
+            if (
+                new_start - window.started_at_seconds
+                < self.settings.highlights.condensed_min_window_duration_seconds
+            ):
+                trimmed.append(window)
+                continue
+            if (
+                window.ended_at_seconds - new_start
+                < self.settings.highlights.condensed_min_window_duration_seconds
+            ):
+                dropped += 1
+                continue
+            shifted += 1
+            trimmed.append(
+                HighlightClipWindow(
+                    started_at_seconds=new_start,
+                    ended_at_seconds=window.ended_at_seconds,
+                    reason=window.reason,
+                )
+            )
+
+        if dropped or shifted:
+            log(
+                "highlights",
+                "trimmed post-death low-value waits "
+                f"dropped={dropped} shifted={shifted} window={trim_seconds:.1f}s",
+            )
+
+        return trimmed
+
+    @staticmethod
+    def _first_subtitle_key_or_tactical_cue(
+        classified_cues: list[ClassifiedCue],
+        *,
+        start_seconds: float,
+        end_seconds: float,
+    ) -> ClassifiedCue | None:
+        candidates = [
+            cue
+            for cue in classified_cues
+            if cue.category in {"key_event", "tactical"}
+            and not cue.text.startswith("kda_change ")
+            and min(end_seconds, cue.ended_at_seconds)
+            > max(start_seconds, cue.started_at_seconds)
+        ]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda cue: cue.started_at_seconds)
+
+    @staticmethod
+    def _subtitle_silent_gaps(
+        speech_cues: list[_SrtCue],
+        *,
+        start_seconds: float,
+        end_seconds: float,
+        min_gap_seconds: float,
+    ) -> list[tuple[float, float]]:
+        if end_seconds <= start_seconds:
+            return []
+
+        intervals = sorted(
+            (
+                max(start_seconds, cue.started_at_seconds),
+                min(end_seconds, cue.ended_at_seconds),
+            )
+            for cue in speech_cues
+            if min(end_seconds, cue.ended_at_seconds)
+            > max(start_seconds, cue.started_at_seconds)
+        )
+
+        gaps: list[tuple[float, float]] = []
+        cursor = start_seconds
+        for interval_start, interval_end in intervals:
+            if interval_start - cursor >= min_gap_seconds:
+                gaps.append((cursor, interval_start))
+            cursor = max(cursor, interval_end)
+        if end_seconds - cursor >= min_gap_seconds:
+            gaps.append((cursor, end_seconds))
+        return gaps
+
+    @staticmethod
+    def _subtract_range(
+        range_start: float,
+        range_end: float,
+        remove_start: float,
+        remove_end: float,
+        *,
+        min_piece_seconds: float,
+    ) -> list[tuple[float, float]]:
+        if remove_end <= range_start or remove_start >= range_end:
+            return [(range_start, range_end)]
+
+        pieces: list[tuple[float, float]] = []
+        left = (range_start, max(range_start, remove_start))
+        right = (min(range_end, remove_end), range_end)
+        for start, end in (left, right):
+            if end - start >= min_piece_seconds:
+                pieces.append((start, end))
+        return pieces
+
+    @staticmethod
+    def _kda_cue_death_delta(cue: ClassifiedCue) -> int:
+        match = re.search(r"deaths=(\d+)->(\d+)", cue.text)
+        if match is None:
+            return 0
+        return int(match.group(2)) - int(match.group(1))
+
+    @staticmethod
+    def _kda_cue_time(cue: ClassifiedCue, key: str) -> float | None:
+        match = re.search(rf"\b{re.escape(key)}=([0-9]+(?:\.[0-9]+)?)", cue.text)
+        return float(match.group(1)) if match is not None else None
+
+    @staticmethod
+    def _ranges_overlap(
+        first_start: float,
+        first_end: float,
+        second_start: float,
+        second_end: float,
+    ) -> bool:
+        return min(first_end, second_end) > max(first_start, second_start)
+
     def _load_state(self) -> HighlightPlannerStateFile:
         if not self.state_path.exists():
             return HighlightPlannerStateFile()
@@ -680,19 +1211,7 @@ class HighlightPlannerService:
             )
             return None
 
-        video_path = None
-        if self.settings.highlights.condensed_use_visual_analysis:
-            recording_assets_path = self.settings.storage.temp_dir / "recording-assets.jsonl"
-            if recording_assets_path.exists():
-                from arl.shared.contracts import RecordingAsset
-
-                recordings = load_models(recording_assets_path, RecordingAsset)
-                for rec in recordings:
-                    if rec.session_id == boundary.session_id:
-                        recording_path = Path(rec.path)
-                        if recording_path.exists() and recording_path.suffix == ".mp4":
-                            video_path = recording_path
-                            break
+        video_path = self._find_recording_video_path(boundary)
 
         # 1. 字幕分类
         all_tactical_keywords = _TACTICAL_KEYWORDS + tuple(
@@ -706,12 +1225,25 @@ class HighlightPlannerService:
             low_value_similarity_threshold=self.settings.highlights.condensed_low_value_similarity_threshold,
             low_value_repeat_window_seconds=self.settings.highlights.condensed_low_value_repeat_window_seconds,
         )
+        kda_event_cues = self._detect_kda_event_cues(
+            video_path=video_path,
+            boundary=boundary,
+            duration=duration,
+        )
+        if kda_event_cues:
+            classified_cues.extend(kda_event_cues)
+            log(
+                "highlights",
+                "detected KDA key events "
+                f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                f"count={len(kda_event_cues)}",
+            )
 
         # 2. 内容密度分析
         density_result = analyze_content_density(
             classified_cues=classified_cues,
             match_duration_seconds=duration,
-            video_path=video_path,
+            video_path=video_path if self.settings.highlights.condensed_use_visual_analysis else None,
             weight_highlight_events=self.settings.highlights.condensed_weight_highlight_events,
             weight_narration=self.settings.highlights.condensed_weight_narration,
             weight_visual=self.settings.highlights.condensed_weight_visual,
@@ -741,6 +1273,16 @@ class HighlightPlannerService:
             max_continuous_window_seconds=(
                 float(self.settings.highlights.condensed_target_duration_range[1]) * 60.0
             ),
+        )
+        windows = self._trim_silent_kda_death_waits(
+            windows,
+            kda_event_cues=kda_event_cues,
+            speech_cues=meaningful_cues,
+            classified_cues=classified_cues,
+        )
+        windows = self._extend_action_resolution_windows(
+            windows,
+            classified_cues=classified_cues,
         )
 
         if not windows:

@@ -310,6 +310,26 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             os.environ["ARL_HIGHLIGHT_MIN_RETAINED_FRACTION"] = "0.4"
             os.environ["ARL_HIGHLIGHT_MAX_WINDOWS"] = "5"
             os.environ["ARL_HIGHLIGHT_CONDENSED_VISUAL_SAMPLE_INTERVAL_SECONDS"] = "30"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_ACTION_RESOLUTION_TAIL_SECONDS"] = "31"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_ACTION_RESOLUTION_GAP_SECONDS"] = "9"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_KDA_EVENT_DETECTION_ENABLED"] = "0"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_KDA_CROP_REGION"] = "10,20,30,40"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_KDA_SAMPLE_INTERVAL_SECONDS"] = "3"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_KDA_MIN_CONFIDENCE"] = "0.7"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_KDA_MAX_READING_GAP_SECONDS"] = "12"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_KDA_MAX_EVENT_DELTA"] = "4"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_KDA_KILL_PREROLL_SECONDS"] = "20"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_KDA_DEATH_PREROLL_SECONDS"] = "50"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_KDA_POSTROLL_SECONDS"] = "6"
+            os.environ[
+                "ARL_HIGHLIGHT_CONDENSED_KDA_POST_DEATH_KILL_SUPPRESSION_SECONDS"
+            ] = "75"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_KDA_DEATH_WAIT_TRIM_SECONDS"] = "95"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_KDA_DEATH_SILENT_GAP_TRIM_SECONDS"] = "11"
+            os.environ[
+                "ARL_HIGHLIGHT_CONDENSED_KDA_DEATH_SILENT_TRIM_LOOKBACK_SECONDS"
+            ] = "25"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_KDA_DEATH_REACTION_TAIL_SECONDS"] = "4"
             settings = load_settings()
 
         self.assertFalse(settings.highlights.enabled)
@@ -323,6 +343,37 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(settings.highlights.min_retained_fraction, 0.4)
         self.assertEqual(settings.highlights.max_windows, 5)
         self.assertEqual(settings.highlights.condensed_visual_sample_interval_seconds, 30.0)
+        self.assertEqual(settings.highlights.condensed_action_resolution_tail_seconds, 31.0)
+        self.assertEqual(settings.highlights.condensed_action_resolution_gap_seconds, 9.0)
+        self.assertFalse(settings.highlights.condensed_kda_event_detection_enabled)
+        self.assertEqual(settings.highlights.condensed_kda_crop_region, (10, 20, 30, 40))
+        self.assertEqual(settings.highlights.condensed_kda_sample_interval_seconds, 3.0)
+        self.assertEqual(settings.highlights.condensed_kda_min_confidence, 0.7)
+        self.assertEqual(settings.highlights.condensed_kda_max_reading_gap_seconds, 12.0)
+        self.assertEqual(settings.highlights.condensed_kda_max_event_delta, 4)
+        self.assertEqual(settings.highlights.condensed_kda_kill_preroll_seconds, 20.0)
+        self.assertEqual(settings.highlights.condensed_kda_death_preroll_seconds, 50.0)
+        self.assertEqual(settings.highlights.condensed_kda_postroll_seconds, 6.0)
+        self.assertEqual(
+            settings.highlights.condensed_kda_post_death_kill_suppression_seconds,
+            75.0,
+        )
+        self.assertEqual(
+            settings.highlights.condensed_kda_death_wait_trim_seconds,
+            95.0,
+        )
+        self.assertEqual(
+            settings.highlights.condensed_kda_death_silent_gap_trim_seconds,
+            11.0,
+        )
+        self.assertEqual(
+            settings.highlights.condensed_kda_death_silent_trim_lookback_seconds,
+            25.0,
+        )
+        self.assertEqual(
+            settings.highlights.condensed_kda_death_reaction_tail_seconds,
+            4.0,
+        )
 
     def test_maintenance_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):

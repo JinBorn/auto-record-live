@@ -47,7 +47,6 @@ def optimize_windows(
 
     # Phase 1: 生成初始窗口
     drafts = _generate_initial_windows(classified_cues, context_padding_seconds)
-    drafts.extend(_generate_edge_context_windows(edge_context_seconds, match_duration_seconds))
     log("highlights", f"window_optimizer: Phase 1 generated {len(drafts)} initial windows")
 
     # Phase 3: 窗口优化
@@ -73,16 +72,34 @@ def optimize_windows(
         context_padding_seconds,
         match_duration_seconds,
     )
+    drafts = _clamp_windows_to_match(drafts, match_duration_seconds)
+    drafts = _collapse_large_gaps(
+        drafts,
+        max_gap_seconds=boring_gap_threshold_seconds,
+        max_continuous_window_seconds=max_continuous_window_seconds,
+        match_duration_seconds=match_duration_seconds,
+        target_duration_seconds=target_duration_seconds,
+    )
+    drafts, relaxed_key_event_preservation = _trim_full_span_content_window(
+        drafts,
+        classified_cues=classified_cues,
+        target_duration_seconds=target_duration_seconds,
+        match_duration_seconds=match_duration_seconds,
+        edge_context_seconds=edge_context_seconds,
+    )
+    if not drafts:
+        return []
     drafts = _ensure_edge_context_preserved(
         drafts,
         edge_context_seconds=edge_context_seconds,
         match_duration=match_duration_seconds,
     )
     drafts = _clamp_windows_to_match(drafts, match_duration_seconds)
-    drafts = _collapse_large_gaps(
+    drafts = _bridge_large_gaps(
         drafts,
         max_gap_seconds=boring_gap_threshold_seconds,
-        max_continuous_window_seconds=max_continuous_window_seconds,
+        bridge_window_seconds=edge_context_seconds,
+        match_duration=match_duration_seconds,
     )
     current_duration = sum(d.ended_at_seconds - d.started_at_seconds for d in drafts)
     log(
@@ -94,8 +111,8 @@ def optimize_windows(
     # Phase 5: 质量检查
     if not drafts:
         return []
-    _validate_key_events_preserved(drafts, classified_cues)
-    _validate_key_events_preserved(drafts, classified_cues)
+    if not relaxed_key_event_preservation:
+        _validate_key_events_preserved(drafts, classified_cues)
     log("highlights", f"window_optimizer: Phase 5 quality check passed")
 
     # 转换为HighlightClipWindow
@@ -109,6 +126,119 @@ def optimize_windows(
     ]
 
     return windows
+
+
+def _trim_full_span_content_window(
+    drafts: list[WindowDraft],
+    *,
+    classified_cues: list[ClassifiedCue],
+    target_duration_seconds: float,
+    match_duration_seconds: float,
+    edge_context_seconds: float,
+) -> tuple[list[WindowDraft], bool]:
+    if len(drafts) != 1 or match_duration_seconds <= 0.0:
+        return drafts, False
+
+    draft = drafts[0]
+    if not _draft_nearly_covers_match(draft, match_duration_seconds):
+        return drafts, False
+
+    edge_budget = min(max(edge_context_seconds, 0.0) * 2.0, match_duration_seconds)
+    content_target = min(
+        target_duration_seconds,
+        max(0.0, match_duration_seconds - edge_budget),
+    )
+    if content_target <= 0.0 or content_target >= match_duration_seconds - 1.0:
+        return drafts, False
+
+    cue_candidates = [
+        cue for cue in classified_cues if cue.category != "low_value"
+    ]
+    if not cue_candidates:
+        return drafts, False
+
+    selected = _best_continuous_content_window(
+        cue_candidates,
+        window_duration=content_target,
+        match_duration=match_duration_seconds,
+    )
+    if selected is None:
+        return drafts, False
+
+    log(
+        "highlights",
+        "window_optimizer: trimmed full-span condensed content "
+        f"from {match_duration_seconds:.1f}s to {content_target:.1f}s",
+    )
+    return [selected], True
+
+
+def _draft_nearly_covers_match(draft: WindowDraft, match_duration: float) -> bool:
+    return draft.started_at_seconds <= 1.0 and draft.ended_at_seconds >= match_duration - 1.0
+
+
+def _best_continuous_content_window(
+    cues: list[ClassifiedCue],
+    *,
+    window_duration: float,
+    match_duration: float,
+) -> WindowDraft | None:
+    if window_duration <= 0.0 or match_duration <= 0.0:
+        return None
+
+    window_duration = min(window_duration, match_duration)
+    latest_start = max(0.0, match_duration - window_duration)
+    best_start = 0.0
+    best_score = -1.0
+    for cue in cues:
+        center = (cue.started_at_seconds + cue.ended_at_seconds) / 2.0
+        start = min(max(0.0, center - window_duration / 2.0), latest_start)
+        end = start + window_duration
+        score = _score_window(cues, start, end)
+        # Later windows are usually more decisive when density ties.
+        score += start * 0.000001
+        if score > best_score:
+            best_score = score
+            best_start = start
+
+    if best_score <= 0.0:
+        return None
+
+    best_end = min(match_duration, best_start + window_duration)
+    covered = [
+        cue for cue in cues if _cue_overlaps_window(cue, best_start, best_end)
+    ]
+    if not covered:
+        return None
+
+    highest = max(covered, key=lambda cue: cue.priority)
+    return WindowDraft(
+        started_at_seconds=best_start,
+        ended_at_seconds=best_end,
+        reason=_reason_for_category(highest.category),
+        priority=highest.priority,
+    )
+
+
+def _score_window(cues: list[ClassifiedCue], start: float, end: float) -> float:
+    score = 0.0
+    for cue in cues:
+        if _cue_overlaps_window(cue, start, end):
+            score += cue.priority
+    return score
+
+
+def _cue_overlaps_window(cue: ClassifiedCue, start: float, end: float) -> bool:
+    return min(end, cue.ended_at_seconds) > max(start, cue.started_at_seconds)
+
+
+def _reason_for_category(category: str) -> str:
+    reason_map = {
+        "key_event": "condensed_key_event",
+        "tactical": "condensed_tactical",
+        "narration": "condensed_context",
+    }
+    return reason_map.get(category, "condensed_context")
 
 
 def _generate_edge_context_windows(
@@ -163,11 +293,72 @@ def _ensure_edge_context_preserved(
     return _merge_windows(drafts + needed, merge_gap=0.0)
 
 
+def _bridge_large_gaps(
+    drafts: list[WindowDraft],
+    *,
+    max_gap_seconds: float,
+    bridge_window_seconds: float,
+    match_duration: float,
+) -> list[WindowDraft]:
+    """Insert short continuity windows so condensed edits avoid huge time jumps."""
+    if (
+        len(drafts) <= 1
+        or max_gap_seconds <= 0.0
+        or bridge_window_seconds <= 0.0
+        or match_duration <= 0.0
+    ):
+        return drafts
+
+    bridge_duration = min(
+        max(bridge_window_seconds, 5.0),
+        max_gap_seconds / 2.0,
+    )
+    ordered = sorted(drafts, key=lambda draft: draft.started_at_seconds)
+    bridged: list[WindowDraft] = []
+    inserted = 0
+
+    for current in ordered:
+        if not bridged:
+            bridged.append(current)
+            continue
+
+        previous = bridged[-1]
+        cursor = previous.ended_at_seconds
+        while current.started_at_seconds - cursor > max_gap_seconds:
+            bridge_end = min(current.started_at_seconds, cursor + max_gap_seconds)
+            bridge_start = max(cursor, bridge_end - bridge_duration)
+            if bridge_end <= bridge_start:
+                break
+            bridged.append(
+                WindowDraft(
+                    started_at_seconds=max(0.0, bridge_start),
+                    ended_at_seconds=min(match_duration, bridge_end),
+                    reason="condensed_continuity",
+                    priority=0.2,
+                )
+            )
+            inserted += 1
+            cursor = bridge_end
+
+        bridged.append(current)
+
+    if inserted:
+        log(
+            "highlights",
+            "window_optimizer: inserted continuity bridge windows "
+            f"count={inserted} max_gap={max_gap_seconds:.1f}s",
+        )
+
+    return _merge_windows(bridged, merge_gap=0.0)
+
+
 def _collapse_large_gaps(
     drafts: list[WindowDraft],
     *,
     max_gap_seconds: float,
     max_continuous_window_seconds: float | None,
+    match_duration_seconds: float,
+    target_duration_seconds: float,
 ) -> list[WindowDraft]:
     """Prefer one continuous condensed span over abrupt source-time jumps."""
     if len(drafts) <= 1 or max_continuous_window_seconds is None:
@@ -184,14 +375,41 @@ def _collapse_large_gaps(
     start = ordered[0].started_at_seconds
     end = ordered[-1].ended_at_seconds
     span = end - start
+    key_event_count = sum(1 for draft in ordered if draft.reason == "condensed_key_event")
+    if (
+        match_duration_seconds > 0.0
+        and start <= 1.0
+        and end >= match_duration_seconds - 1.0
+        and key_event_count > 0
+    ):
+        log(
+            "highlights",
+            "window_optimizer: preserving near-full-span key-event windows "
+            f"for bridge pass largest_gap={largest_gap:.1f}s",
+        )
+        return ordered
+
+    if (
+        key_event_count >= 3
+        and target_duration_seconds > 0.0
+        and span > target_duration_seconds * 1.5
+    ):
+        log(
+            "highlights",
+            "window_optimizer: preserving dispersed key-event windows "
+            f"for bridge pass key_events={key_event_count} span={span:.1f}s "
+            f"target={target_duration_seconds:.1f}s",
+        )
+        return ordered
+
     if span > max_continuous_window_seconds:
         log(
             "highlights",
-            "window_optimizer: skipped discontinuous plan "
+            "window_optimizer: preserving discontinuous windows for bridge pass "
             f"largest_gap={largest_gap:.1f}s continuous_span={span:.1f}s "
             f"max_continuous={max_continuous_window_seconds:.1f}s",
         )
-        return []
+        return ordered
 
     highest = max(ordered, key=lambda draft: draft.priority)
     log(
@@ -223,18 +441,11 @@ def _generate_initial_windows(
         start = max(0.0, cue.started_at_seconds - context_padding)
         end = cue.ended_at_seconds + context_padding
 
-        reason_map = {
-            "key_event": "condensed_key_event",
-            "tactical": "condensed_tactical",
-            "narration": "condensed_context",
-        }
-        reason = reason_map.get(cue.category, "condensed_context")
-
         drafts.append(
             WindowDraft(
                 started_at_seconds=start,
                 ended_at_seconds=end,
-                reason=reason,
+                reason=_reason_for_category(cue.category),
                 priority=cue.priority,
             )
         )
