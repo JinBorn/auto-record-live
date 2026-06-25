@@ -741,6 +741,24 @@ class CopyAsset(BaseModel):
     subtitle_path: str
     export_path: str | None = None
     created_at: datetime
+
+class PublishingPackage(BaseModel):
+    session_id: str
+    match_index: int
+    path: str | None = None
+    source_subtitle_path: str
+    source_export_path: str | None = None
+    source_recording_path: str | None = None
+    transcript_excerpt: list[str]
+    evidence: list[str]
+    title_candidates: list[str]
+    recommended_title: str
+    summary: str
+    cover_lines: list[str]
+    tags: list[str]
+    cover_path: str | None = None
+    status: str
+    created_at: datetime
 ```
 
 - Current file-backed manifests:
@@ -758,6 +776,7 @@ class CopyAsset(BaseModel):
   - Export assets: `data/tmp/export-assets.jsonl`
   - Exporter audit events: `data/tmp/exporter-events.jsonl`
   - Copy assets: `data/tmp/copy-assets.jsonl`
+  - Publishing packages: `data/tmp/publishing-packages.jsonl`
   - Stage idempotency states: `data/tmp/recorder-state.json`, `data/tmp/recovery-state.json`, `data/tmp/segmenter-state.json`, `data/tmp/subtitles-state.json`, `data/tmp/highlight-planner-state.json`, `data/tmp/exporter-state.json`, `data/tmp/copywriter-state.json`, `data/tmp/stage-signal-ingest-state.json`
 - Environment keys for live-room monitoring:
   - `ARL_PLATFORMS` (comma-separated registered platform keys, default single `douyin`)
@@ -927,10 +946,10 @@ class CopyAsset(BaseModel):
   - high-confidence boundaries derived from valid `in_game` hints continue through normal ffmpeg export and failure handling.
 - CLI `postprocess-reset` contract:
   - command requires `--session-id` or `--session-ids`; it is session-scoped and must not wipe global postprocess state.
-  - command removes target-session rows from `match-stage-hints.jsonl`, `match-boundaries.jsonl`, `subtitle-assets.jsonl`, `highlight-plans.jsonl`, `export-assets.jsonl`, and `copy-assets.jsonl`; stage hints do not currently carry source metadata, so reset cannot preserve manual hints.
+  - command removes target-session rows from `match-stage-hints.jsonl`, `match-boundaries.jsonl`, `subtitle-assets.jsonl`, `highlight-plans.jsonl`, `export-assets.jsonl`, `copy-assets.jsonl`, and `publishing-packages.jsonl`; stage hints do not currently carry source metadata, so reset cannot preserve manual hints.
   - command removes only `source="subtitles_srt"` rows from `match-stage-signals.jsonl` so manual signal inputs remain available.
   - command removes target-session processed keys from `segmenter-state.json`, `subtitles-state.json`, `highlight-planner-state.json`, `exporter-state.json`, `copywriter-state.json`, and subtitle-signal ingest state.
-  - by default, command deletes generated subtitle/export/copy files referenced by removed manifest rows only when the resolved path is under `storage.processed_dir` or `storage.export_dir`; paths outside those generated roots are reported as skipped. It also removes orphan generated files for the target session under `storage.processed_dir/<session_id>/` and export files named `<session_id>_match*` under `storage.export_dir`.
+  - by default, command deletes generated subtitle/export/copy/publishing files referenced by removed manifest rows only when the resolved path is under `storage.processed_dir` or `storage.export_dir`; `PublishingPackage.path` and `PublishingPackage.cover_path` are both generated artifact paths. Paths outside those generated roots are reported as skipped. It also removes orphan generated files for the target session under `storage.processed_dir/<session_id>/` and export files named `<session_id>_match*` under `storage.export_dir`.
   - `--keep-files` resets manifests/state without deleting generated files.
   - command must not delete raw recordings under `data/raw/`, remove `recording-assets.jsonl`, or mutate recorder/orchestrator state.
 - CLI `repair-recording-assets` contract:
@@ -991,10 +1010,16 @@ class CopyAsset(BaseModel):
 - Exporter must ignore stale or invalid highlight plans whose recorded source boundary differs from the current `MatchBoundary`, whose windows are empty, reversed, negative, or outside the boundary duration. Ignored plans fall back to the no-plan export path.
 - When highlight plans are disabled, missing, stale, or invalid, exporter command construction must use the complete boundary export path.
 - Copywriter generation contract:
-  - `CopywriterService` reads typed `SubtitleAsset` rows and optional matching `ExportAsset` rows keyed by `(session_id, match_index)`.
+  - `CopywriterService` reads typed `SubtitleAsset` rows and optional matching `ExportAsset`, `RecordingAsset`, `MatchBoundary`, and `HighlightPlanAsset` rows keyed by `(session_id, match_index)` or `session_id`.
   - for each subtitle asset with an existing SRT file, it writes `data/processed/<session_id>/match-<idx>-copy.json` and appends one `CopyAsset` row to `data/tmp/copy-assets.jsonl`.
   - copy JSON must include `transcript_excerpt`, `title_candidates`, `recommended_title`, `description`, `tags`, source subtitle/export paths, `status`, and `created_at`.
-  - `copywriter-state.json` owns idempotency via the same `<session_id>:<match_index>` key shape used by subtitle/export stages; repeated runs must not append duplicate `CopyAsset` rows for already processed matches.
+  - copywriter also writes `data/processed/<session_id>/match-<idx>-publishing.json` and appends one `PublishingPackage` row to `data/tmp/publishing-packages.jsonl`; this artifact is additive and must not change the `CopyAsset` field contract.
+  - publishing package JSON must include `summary`, `cover_lines`, `evidence`, title candidates, recommended title, tags, transcript excerpt, source subtitle/export/recording paths, optional `cover_path`, `status`, and `created_at`.
+  - when a valid highlight plan matches the current boundary snapshot, title/cover/evidence generation should prefer subtitle cues overlapping the plan windows; stale or boundary-mismatched highlight plans are ignored, and the full subtitle transcript is used as fallback.
+  - optional cover rendering may use ffmpeg to extract a source frame and Pillow to render a `1920x1080` image under `data/processed/<session_id>/match-<idx>-cover.jpg`; missing recording files, missing ffmpeg, missing Pillow, or rendering errors must skip cover output while still writing publishing metadata.
+  - placeholder or empty subtitles produce `status="placeholder_input"` with deterministic fallback metadata instead of crashing or blocking copy generation.
+  - `copywriter-state.json` owns idempotency via the same `<session_id>:<match_index>` key shape used by subtitle/export stages; repeated runs must not append duplicate `CopyAsset` or `PublishingPackage` rows for already processed matches.
+  - a processed state key is only a skip when both the copy JSON and publishing JSON still exist. If either generated JSON is missing while manifest/state rows remain, copywriter must rebuild the missing file without appending a duplicate manifest row.
   - missing subtitle files are skipped without marking the key processed, so later reruns can generate copy after the SRT arrives.
   - the current provider is deterministic local template generation. Future LLM-backed copy must keep the same `CopyAsset` manifest contract and make fallback status explicit rather than blocking downstream status checks.
 - ffmpeg failure audit rows must include the canonical `decision` / `failure_category` / `is_retryable` / `reason_code` / `reason_detail` tuple and, when stderr is available, also `stderr_excerpt` (first 5 + last 15 lines, each <=240 chars, total <=4 KB) and `stderr_log_path` (relative path of the full stderr dump at `data/tmp/recorder-stderr/<job_id>-<attempt>.log` for recorder rows, `data/tmp/exporter-stderr/<session_id>_match<idx>-<attempt>.log` for exporter rows).
@@ -1127,9 +1152,13 @@ class CopyAsset(BaseModel):
 | faster-whisper returns accepted transcription segments | Emit real SRT cues and one `subtitle_transcribe_succeeded` row with language/probability fields |
 | Export input references a missing subtitle file | Fail the export step deterministically instead of silently skipping subtitle burn-in |
 | Exporter ffmpeg command burns in a subtitle file from a Windows absolute path | The `-vf` value uses forward slashes, escapes the drive colon (`D\:/...`), and wraps the filename in single quotes as `subtitles='...'` |
-| `arl copywriter` sees an existing subtitle asset and optional export asset | Write one per-match copy JSON under `data/processed/<session>/`, append one `CopyAsset`, and mark the match key processed |
+| `arl copywriter` sees an existing subtitle asset and optional export asset | Write one per-match copy JSON under `data/processed/<session>/`, append one `CopyAsset`, write one publishing package JSON, append one `PublishingPackage`, and mark the match key processed |
+| `arl copywriter` sees a valid highlight plan for the current boundary | Prefer overlapping subtitle cues for `recommended_title`, `summary`, `cover_lines`, and `evidence` |
+| `arl copywriter` sees a stale highlight plan whose source boundary no longer matches the current boundary | Ignore the plan and generate metadata from the full subtitle transcript |
+| `arl copywriter` sees a usable recording but ffmpeg/Pillow/frame extraction is unavailable | Leave `cover_path=None`, still write the publishing JSON, and still append the `PublishingPackage` row |
 | `arl copywriter` sees a subtitle asset whose path does not exist | Log skip, do not append `CopyAsset`, and do not mark the match key processed |
-| `arl copywriter` runs repeatedly on unchanged manifests/state | Do not duplicate copy JSON manifest rows |
+| `arl copywriter` runs repeatedly on unchanged manifests/state | Do not duplicate copy or publishing manifest rows |
+| `arl copywriter` has processed state and manifest rows but the copy or publishing JSON file is missing | Rebuild the missing generated file without appending duplicate manifest rows |
 | `arl highlight-planner` sees a high-confidence boundary plus subtitle cues with long silent gaps | Append one conservative `HighlightPlanAsset` with padded, merged keep windows |
 | `arl highlight-planner` sees weak data, missing subtitles, a low-confidence fallback boundary, or no meaningful reduction | Write no plan; missing subtitle paths must not mark the key processed |
 | Exporter sees a valid highlight plan while `ARL_EXPORT_USE_HIGHLIGHT_PLANS=0` | Ignore the plan and export the full `MatchBoundary` interval |
@@ -1138,6 +1167,7 @@ class CopyAsset(BaseModel):
 | Exporter sees real SRT and default `auto/copy` codec with burn-in disabled | Stream-copy video/audio and mux SRT as `mov_text` soft subtitles |
 | Exporter sees `boundary.is_complete=false` | Skip subtitles/highlights/export for that boundary and do not report missing outputs for it in status |
 | `arl postprocess-reset --session-id <id>` runs after bad generated boundaries/subtitles/exports | Remove only that session's generated postprocess rows/state and generated files; keep raw recording assets intact for a later rerun |
+| `arl postprocess-reset --session-id <id>` sees publishing package rows for that session | Remove target-session `PublishingPackage` rows and delete both package JSON and cover files when they are under generated roots |
 | `arl postprocess-reset --session-id <id>` sees orphan generated files not present in manifests | Remove target-session files under `storage.processed_dir/<session_id>/` and export files named `<session_id>_match*` under `storage.export_dir` |
 | `arl postprocess-reset` sees a removed artifact path outside `storage.processed_dir` / `storage.export_dir` | Remove the manifest row but skip file deletion and report the skipped path reason |
 | A stage receives an unknown asset format or status | Reject or audit explicitly; do not guess |
@@ -1273,11 +1303,15 @@ class CopyAsset(BaseModel):
 - Unit test: exporter ffmpeg failure records `deferred_match_keys` without appending placeholder `ExportAsset` rows.
 - Unit test: exporter treats zero-exit MP4 outputs with no video stream as failed and defers the match instead of emitting `ffmpeg_export_succeeded`.
 - Unit test: copywriter emits deterministic title/copy JSON plus one `CopyAsset` from an existing subtitle asset and optional export asset.
+- Unit test: copywriter emits one `PublishingPackage` with summary, cover lines, evidence, and source paths while preserving the existing `CopyAsset` contract.
+- Unit test: copywriter prefers highlight-window subtitle cues for publishing metadata when the highlight plan matches the current boundary.
+- Unit test: copywriter skips optional cover rendering when recording/ffmpeg/Pillow is unavailable and still writes publishing metadata.
 - Unit test: copywriter remains idempotent across repeated runs.
 - Unit test: copywriter skips missing subtitle paths without marking the match processed.
 - Unit test: postprocess invokes `highlight-planner` after `subtitles` and before `exporter`, then invokes `copywriter` after `exporter`.
 - Unit test: postprocess accepts `--session-id/--session-ids` and passes the session scope to filter-aware stages.
 - Unit test: `postprocess-reset` removes only the target session's generated rows/state/files while preserving other sessions and raw recording assets.
+- Unit test: `postprocess-reset` removes target-session `publishing-packages.jsonl` rows and deletes package JSON plus cover assets under generated roots.
 - Unit test: `postprocess-reset` removes orphan generated files for the target session even when manifest rows are already missing.
 - Unit test: `postprocess-reset` skips deleting manifest artifact paths outside generated roots.
 - Unit test: status reports unregistered raw MP4 files as degraded diagnostics without mutating state.

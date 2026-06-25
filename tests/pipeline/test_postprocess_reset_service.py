@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from arl.config import Settings, StorageSettings
-from arl.copywriter.models import CopywriterStateFile
+from arl.copywriter.models import CopywriterStateFile, PublishingPackage
 from arl.exporter.models import ExporterStateFile
 from arl.highlights.models import HighlightPlannerStateFile
 from arl.postprocess.reset import PostProcessResetService
@@ -55,22 +55,50 @@ class PostProcessResetServiceTest(unittest.TestCase):
         target_subtitle = self.settings.storage.processed_dir / target / "match-01.srt"
         target_export = self.settings.storage.export_dir / "bilibili" / f"{target}_match01.mp4"
         target_copy = self.settings.storage.processed_dir / target / "match-01-copy.json"
+        target_publishing = (
+            self.settings.storage.processed_dir / target / "match-01-publishing.json"
+        )
+        target_cover = self.settings.storage.processed_dir / target / "match-01-cover.jpg"
         other_subtitle = self.settings.storage.processed_dir / other / "match-01.srt"
         other_export = self.settings.storage.export_dir / "bilibili" / f"{other}_match01.mp4"
         other_copy = self.settings.storage.processed_dir / other / "match-01-copy.json"
+        other_publishing = (
+            self.settings.storage.processed_dir / other / "match-01-publishing.json"
+        )
+        other_cover = self.settings.storage.processed_dir / other / "match-01-cover.jpg"
         for path in [
             target_subtitle,
             target_export,
             target_copy,
+            target_publishing,
+            target_cover,
             other_subtitle,
             other_export,
             other_copy,
+            other_publishing,
+            other_cover,
         ]:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("artifact\n", encoding="utf-8")
 
-        self._append_postprocess_rows(target, target_subtitle, target_export, target_copy, now)
-        self._append_postprocess_rows(other, other_subtitle, other_export, other_copy, now)
+        self._append_postprocess_rows(
+            target,
+            target_subtitle,
+            target_export,
+            target_copy,
+            target_publishing,
+            target_cover,
+            now,
+        )
+        self._append_postprocess_rows(
+            other,
+            other_subtitle,
+            other_export,
+            other_copy,
+            other_publishing,
+            other_cover,
+            now,
+        )
         append_model(
             self.temp_root / "match-stage-signals.jsonl",
             MatchStageSignal(
@@ -130,14 +158,18 @@ class PostProcessResetServiceTest(unittest.TestCase):
         result = PostProcessResetService(self.settings).run(session_ids={target})
 
         self.assertEqual(result.session_ids, [target])
-        self.assertEqual(len(result.deleted_files), 3)
+        self.assertEqual(len(result.deleted_files), 5)
         self.assertEqual(result.skipped_files, [])
         self.assertFalse(target_subtitle.exists())
         self.assertFalse(target_export.exists())
         self.assertFalse(target_copy.exists())
+        self.assertFalse(target_publishing.exists())
+        self.assertFalse(target_cover.exists())
         self.assertTrue(other_subtitle.exists())
         self.assertTrue(other_export.exists())
         self.assertTrue(other_copy.exists())
+        self.assertTrue(other_publishing.exists())
+        self.assertTrue(other_cover.exists())
 
         self.assertEqual(self._session_ids("match-stage-hints.jsonl", MatchStageHint), [other])
         self.assertEqual(self._session_ids("match-boundaries.jsonl", MatchBoundary), [other])
@@ -145,6 +177,10 @@ class PostProcessResetServiceTest(unittest.TestCase):
         self.assertEqual(self._session_ids("highlight-plans.jsonl", HighlightPlanAsset), [other])
         self.assertEqual(self._session_ids("export-assets.jsonl", ExportAsset), [other])
         self.assertEqual(self._session_ids("copy-assets.jsonl", CopyAsset), [other])
+        self.assertEqual(
+            self._session_ids("publishing-packages.jsonl", PublishingPackage),
+            [other],
+        )
 
         signals = load_models(self.temp_root / "match-stage-signals.jsonl", MatchStageSignal)
         self.assertEqual(
@@ -233,6 +269,8 @@ class PostProcessResetServiceTest(unittest.TestCase):
         subtitle_path: Path,
         export_path: Path,
         copy_path: Path,
+        publishing_path: Path,
+        cover_path: Path,
         created_at: datetime,
     ) -> None:
         append_model(
@@ -309,6 +347,27 @@ class PostProcessResetServiceTest(unittest.TestCase):
                 tags=["tag"],
                 subtitle_path=str(subtitle_path),
                 export_path=str(export_path),
+                created_at=created_at,
+            ),
+        )
+        append_model(
+            self.temp_root / "publishing-packages.jsonl",
+            PublishingPackage(
+                session_id=session_id,
+                match_index=1,
+                path=str(publishing_path),
+                source_subtitle_path=str(subtitle_path),
+                source_export_path=str(export_path),
+                source_recording_path=None,
+                transcript_excerpt=["subtitle cue"],
+                evidence=["00:01 subtitle cue"],
+                title_candidates=["title"],
+                recommended_title="title",
+                summary="summary",
+                cover_lines=["cover", "line"],
+                tags=["tag"],
+                cover_path=str(cover_path),
+                status="ready",
                 created_at=created_at,
             ),
         )

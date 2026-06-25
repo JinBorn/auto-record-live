@@ -7,7 +7,7 @@ from typing import Callable, TypeVar
 from pydantic import BaseModel, Field, ValidationError
 
 from arl.config import Settings
-from arl.copywriter.models import CopywriterStateFile
+from arl.copywriter.models import CopywriterStateFile, PublishingPackage
 from arl.exporter.models import ExporterStateFile
 from arl.highlights.models import HighlightPlannerStateFile
 from arl.segmenter.models import (
@@ -137,6 +137,14 @@ class PostProcessResetService:
             result=result,
             delete_files=delete_files,
         )
+        self._rewrite_artifact_manifest_paths(
+            self.temp_dir / "publishing-packages.jsonl",
+            PublishingPackage,
+            lambda item: item.session_id in session_ids,
+            lambda item: [item.path, item.cover_path],
+            result=result,
+            delete_files=delete_files,
+        )
 
     def _rewrite_states(
         self,
@@ -212,12 +220,33 @@ class PostProcessResetService:
         result: PostProcessResetResult,
         delete_files: bool,
     ) -> None:
+        self._rewrite_artifact_manifest_paths(
+            path,
+            model_type,
+            should_remove,
+            lambda item: [artifact_path(item)],
+            result=result,
+            delete_files=delete_files,
+        )
+
+    def _rewrite_artifact_manifest_paths(
+        self,
+        path: Path,
+        model_type: type[TModel],
+        should_remove: Callable[[TModel], bool],
+        artifact_paths: Callable[[TModel], list[str | None]],
+        *,
+        result: PostProcessResetResult,
+        delete_files: bool,
+    ) -> None:
         removed_paths: list[str] = []
 
         def remove_and_collect(item: TModel) -> bool:
             remove = should_remove(item)
             if remove:
-                removed_paths.append(artifact_path(item))
+                removed_paths.extend(
+                    raw_path for raw_path in artifact_paths(item) if raw_path
+                )
             return remove
 
         self._rewrite_jsonl(
