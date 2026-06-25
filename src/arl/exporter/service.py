@@ -23,6 +23,7 @@ from arl.shared.failure_contracts import FailureDecision, classify_failure_reaso
 from arl.shared.ffmpeg_runner import rotate_stderr_logs, run_ffmpeg_attempt
 from arl.shared.jsonl_store import append_model, load_models
 from arl.shared.logging import log
+from arl.subtitles.ass import AssSubtitleStyle, write_ass_from_srt
 
 
 class ExporterService:
@@ -47,6 +48,7 @@ class ExporterService:
         log("exporter", f"ffmpeg_enabled={self.settings.export.enable_ffmpeg}")
         log("exporter", f"ffmpeg_video_codec={self.settings.export.ffmpeg_video_codec}")
         log("exporter", f"burn_subtitles={int(self.settings.export.burn_subtitles)}")
+        log("exporter", f"use_ass_subtitles={int(self.settings.export.use_ass_subtitles)}")
         log(
             "exporter",
             f"use_highlight_plans={int(self.settings.export.use_highlight_plans)}",
@@ -372,10 +374,18 @@ class ExporterService:
         subtitle_path = Path(subtitle.path).resolve()
         subtitle_is_placeholder = self._subtitle_is_placeholder(subtitle_path)
         burn_subtitles = self._should_burn_subtitles(subtitle_is_placeholder)
+        subtitle_filter_path = subtitle_path
+        if burn_subtitles:
+            subtitle_filter_path = self._subtitle_render_path(
+                subtitle_path,
+                boundary=boundary,
+            )
+            if subtitle_filter_path is None:
+                return None, False
         if highlight_plan is not None:
             command = self._planned_ffmpeg_command(
                 boundary=boundary,
-                subtitle_path=subtitle_path,
+                subtitle_path=subtitle_filter_path,
                 burn_subtitles=burn_subtitles,
                 recording_path=recording_asset.path,
                 output_path=output_path,
@@ -454,7 +464,7 @@ class ExporterService:
                 recording_asset.path,
             ]
             if burn_subtitles:
-                command.extend(["-vf", self._subtitle_filter_arg(subtitle_path)])
+                command.extend(["-vf", self._subtitle_filter_arg(subtitle_filter_path)])
             command.extend(self._video_encode_args())
             command.extend(self._video_quality_args())
             command.extend(
@@ -899,6 +909,43 @@ class ExporterService:
 
     def _should_burn_subtitles(self, subtitle_is_placeholder: bool) -> bool:
         return self.settings.export.burn_subtitles and not subtitle_is_placeholder
+
+    def _subtitle_render_path(
+        self,
+        subtitle_path: Path,
+        *,
+        boundary: MatchBoundary,
+    ) -> Path | None:
+        if not self.settings.export.use_ass_subtitles:
+            return subtitle_path
+
+        ass_path = subtitle_path.with_suffix(".ass")
+        try:
+            write_ass_from_srt(
+                subtitle_path,
+                ass_path,
+                AssSubtitleStyle(
+                    font_name=self.settings.export.ass_font_name,
+                    font_size=self.settings.export.ass_font_size,
+                    margin_v=self.settings.export.ass_margin_v,
+                    outline=self.settings.export.ass_outline,
+                ),
+            )
+        except (OSError, ValueError) as exc:
+            log(
+                "exporter",
+                "ass subtitle sidecar skipped "
+                f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                f"reason={exc}",
+            )
+            return None
+
+        log(
+            "exporter",
+            "ass subtitle sidecar written "
+            f"session_id={boundary.session_id} match_index={boundary.match_index}",
+        )
+        return ass_path
 
     def _video_codec_args(self) -> list[str]:
         codec = self.settings.export.ffmpeg_video_codec

@@ -288,6 +288,32 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
 
         self.assertTrue(settings.export.burn_subtitles)
 
+    def test_export_ass_subtitle_envs_load(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_EXPORT_USE_ASS_SUBTITLES"] = "1"
+            os.environ["ARL_EXPORT_ASS_FONT_NAME"] = "Microsoft YaHei"
+            os.environ["ARL_EXPORT_ASS_FONT_SIZE"] = "42"
+            os.environ["ARL_EXPORT_ASS_MARGIN_V"] = "18"
+            os.environ["ARL_EXPORT_ASS_OUTLINE"] = "3"
+            settings = load_settings()
+
+        self.assertTrue(settings.export.use_ass_subtitles)
+        self.assertEqual(settings.export.ass_font_name, "Microsoft YaHei")
+        self.assertEqual(settings.export.ass_font_size, 42)
+        self.assertEqual(settings.export.ass_margin_v, 18)
+        self.assertEqual(settings.export.ass_outline, 3)
+
+    def test_export_ass_subtitle_numeric_envs_clamp(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_EXPORT_ASS_FONT_SIZE"] = "0"
+            os.environ["ARL_EXPORT_ASS_MARGIN_V"] = "-1"
+            os.environ["ARL_EXPORT_ASS_OUTLINE"] = "-2"
+            settings = load_settings()
+
+        self.assertEqual(settings.export.ass_font_size, 1)
+        self.assertEqual(settings.export.ass_margin_v, 0)
+        self.assertEqual(settings.export.ass_outline, 0)
+
     def test_export_optional_processing_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             os.environ["ARL_EXPORT_USE_HIGHLIGHT_PLANS"] = "1"

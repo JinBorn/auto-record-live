@@ -3165,6 +3165,51 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertIn("-c:a", command)
         self.assertEqual(command[command.index("-c:a") + 1], "copy")
 
+    def test_export_can_burn_ass_subtitles_when_enabled(self) -> None:
+        self._seed_export_inputs()
+        settings = self.settings.model_copy(deep=True)
+        settings.export.burn_subtitles = True
+        settings.export.use_ass_subtitles = True
+        settings.export.ass_font_name = "Microsoft YaHei"
+        settings.export.ass_font_size = 42
+        settings.export.ass_margin_v = 18
+        settings.export.ass_outline = 3
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        ass_path = (self.processed_root / "session-e" / "match-01.ass").resolve()
+        expected_filter_path = ass_path.as_posix().replace(":", "\\:")
+        self.assertIn("-vf", command)
+        self.assertEqual(
+            command[command.index("-vf") + 1],
+            f"subtitles='{expected_filter_path}'",
+        )
+
+        ass_text = ass_path.read_text(encoding="utf-8")
+        self.assertIn("[V4+ Styles]", ass_text)
+        self.assertIn(
+            "Style: Default,Microsoft YaHei,42,"
+            "&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,"
+            "0,0,0,0,100,100,0,0,1,3,0,2,20,20,18,1",
+            ass_text,
+        )
+        self.assertIn(
+            "Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,hello",
+            ass_text,
+        )
+
     def test_export_can_disable_subtitle_burn_in(self) -> None:
         self._seed_export_inputs()
         settings = self.settings.model_copy(deep=True)
@@ -3621,6 +3666,29 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertEqual(command[command.index("-c") + 1], "copy")
         self.assertIn("-movflags", command)
         self.assertEqual(command[command.index("-movflags") + 1], "+faststart")
+
+    def test_placeholder_subtitle_does_not_generate_ass_when_burn_enabled(self) -> None:
+        self._seed_export_inputs(placeholder_subtitle=True)
+        settings = self.settings.model_copy(deep=True)
+        settings.export.burn_subtitles = True
+        settings.export.use_ass_subtitles = True
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        self.assertNotIn("-vf", command)
+        self.assertFalse((self.processed_root / "session-e" / "match-01.ass").exists())
 
     def test_h265_placeholder_subtitle_transcodes_instead_of_stream_copy(self) -> None:
         self._seed_export_inputs(placeholder_subtitle=True)

@@ -17,7 +17,57 @@ from arl.config import Settings, StorageSettings, SubtitleSettings
 from arl.segmenter.models import MatchStageSignal
 from arl.shared.contracts import MatchBoundary, RecordingAsset, SourceType
 from arl.shared.jsonl_store import append_model, load_models
+from arl.subtitles.ass import AssSubtitleStyle, convert_srt_to_ass
 from arl.subtitles.service import SubtitleService, TranscribeOutcome
+
+
+class AssSubtitleConversionTest(unittest.TestCase):
+    def test_convert_srt_to_ass_emits_reference_style_sections(self) -> None:
+        ass_text = convert_srt_to_ass(
+            "1\n00:00:00,000 --> 00:00:01,000\nhello\n",
+            AssSubtitleStyle(
+                font_name="Microsoft YaHei",
+                font_size=40,
+                margin_v=18,
+                outline=3,
+            ),
+        )
+
+        self.assertIn("[Script Info]", ass_text)
+        self.assertIn("PlayResX: 1280", ass_text)
+        self.assertIn("PlayResY: 720", ass_text)
+        self.assertIn("[V4+ Styles]", ass_text)
+        self.assertIn("[Events]", ass_text)
+        self.assertIn(
+            "Style: Default,Microsoft YaHei,40,"
+            "&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,"
+            "0,0,0,0,100,100,0,0,1,3,0,2,20,20,18,1",
+            ass_text,
+        )
+
+    def test_convert_srt_to_ass_preserves_timing_and_text(self) -> None:
+        ass_text = convert_srt_to_ass(
+            "1\n"
+            "00:00:01,250 --> 00:00:03.500\n"
+            "<i>清线快</i> 伤害高\n"
+            "第二行 {AP}\n\n"
+            "2\n"
+            "01:02:03,004 --> 01:02:04,006\n"
+            "结尾\n"
+        )
+
+        dialogue_lines = [
+            line for line in ass_text.splitlines() if line.startswith("Dialogue:")
+        ]
+        self.assertEqual(
+            dialogue_lines[0],
+            "Dialogue: 0,0:00:01.25,0:00:03.50,"
+            "Default,,0,0,0,,清线快 伤害高\\N第二行 \\{AP\\}",
+        )
+        self.assertEqual(
+            dialogue_lines[1],
+            "Dialogue: 0,1:02:03.00,1:02:04.01,Default,,0,0,0,,结尾",
+        )
 
 
 class _Segment:

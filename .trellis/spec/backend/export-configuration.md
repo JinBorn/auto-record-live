@@ -163,6 +163,86 @@ ARL_EXPORT_USE_HIGHLIGHT_PLANS=1
 - Quick replay summaries
 - Bandwidth-constrained sharing
 
+## Scenario: ASS Subtitle Burn-In Sidecar
+
+### 1. Scope / Trigger
+- Trigger: Exporter subtitle burn-in can use a generated ASS render sidecar while keeping SRT as the canonical subtitle asset format.
+- Trigger: This path spans `ExportSettings`, SRT subtitle files under `storage.processed_dir`, and FFmpeg `subtitles=` filter command construction.
+
+### 2. Signatures
+- Config:
+  ```python
+  class ExportSettings(BaseModel):
+      burn_subtitles: bool = False
+      use_ass_subtitles: bool = False
+      ass_font_name: str = "SimHei"
+      ass_font_size: int = 36
+      ass_margin_v: int = 20
+      ass_outline: int = 2
+  ```
+- Environment:
+  ```bash
+  ARL_EXPORT_BURN_SUBTITLES=1
+  ARL_EXPORT_USE_ASS_SUBTITLES=1
+  ARL_EXPORT_ASS_FONT_NAME=SimHei
+  ARL_EXPORT_ASS_FONT_SIZE=36
+  ARL_EXPORT_ASS_MARGIN_V=20
+  ARL_EXPORT_ASS_OUTLINE=2
+  ```
+- Helper module:
+  ```python
+  write_ass_from_srt(srt_path: Path, ass_path: Path, style: AssSubtitleStyle) -> Path
+  ```
+
+### 3. Contracts
+- `SubtitleAsset(format="srt")` remains the durable ASR interchange contract. Do not append a second `SubtitleAsset` row for the derived `.ass` file.
+- ASS sidecars are generated only when `burn_subtitles=True`, `use_ass_subtitles=True`, and the SRT is not the deterministic placeholder subtitle.
+- The generated sidecar lives next to the source SRT as `match-NN.ass` under `storage.processed_dir/<session_id>/`.
+- Default behavior remains unchanged:
+  - burn disabled: stream-copy video/audio and mux real SRT as `mov_text`
+  - burn enabled with ASS disabled: use the existing SRT path in `subtitles=`
+  - placeholder SRT: do not burn subtitles and do not generate ASS
+- ASS sidecars must use the same `_subtitle_filter_arg()` escaping path as SRT subtitles so Windows drive letters and forward slashes stay valid for FFmpeg.
+- ASS style defaults are bottom-centered white text with black outline at `PlayResX=1280`, `PlayResY=720`, font size `36`, margin V `20`, and outline `2`.
+
+### 4. Validation & Error Matrix
+| Condition | Behavior |
+|-----------|----------|
+| `ARL_EXPORT_USE_ASS_SUBTITLES=0` | Preserve existing SRT burn-in or soft-subtitle behavior |
+| Burn disabled and ASS enabled | Do not generate `.ass`; use stream-copy + `mov_text` for real SRT |
+| Placeholder SRT and ASS enabled | Do not generate `.ass`; do not add `subtitles=` |
+| Real SRT contains valid cues | Write/overwrite `match-NN.ass` and pass it to `subtitles=` |
+| SRT is missing before export | Existing exporter missing-subtitle skip/defer behavior applies |
+| SRT has no valid cues during ASS conversion | Defer the export instead of writing a broken FFmpeg command |
+| Numeric ASS env values are below minimum | Clamp `font_size >= 1`, `margin_v >= 0`, and `outline >= 0` |
+
+### 5. Good/Base/Bad Cases
+- Good: `burn_subtitles=1` and `use_ass_subtitles=1` converts a real SRT to `match-01.ass`, then the FFmpeg command contains `-vf subtitles='.../match-01.ass'`.
+- Base: `burn_subtitles=1` and `use_ass_subtitles=0` keeps the existing SRT `subtitles='.../match-01.srt'` command.
+- Bad: Exporter appends `.ass` rows to `subtitle-assets.jsonl`, burns placeholder subtitles, or uses a separate unescaped subtitle filter path.
+
+### 6. Tests Required
+- Unit: ASS helper emits `[Script Info]`, `[V4+ Styles]`, `[Events]`, expected style fields, and `Dialogue:` rows.
+- Unit: ASS helper preserves SRT cue timing, text, multiline breaks, Chinese text, and common formatting-tag cleanup.
+- Config: `tests/test_config.py` asserts ASS env values load and numeric values clamp.
+- Exporter: command tests assert `.ass` is used only when burn-in and ASS are both enabled.
+- Exporter: regression tests assert SRT burn-in, soft-subtitle stream-copy, and placeholder no-burn behavior remain unchanged.
+
+### 7. Wrong vs Correct
+#### Wrong
+```python
+append_model(subtitle_assets_path, SubtitleAsset(path=str(ass_path), format="ass"))
+command.extend(["-vf", f"subtitles='{ass_path}'"])
+```
+
+#### Correct
+```python
+subtitle_filter_path = subtitle_path
+if burn_subtitles and settings.export.use_ass_subtitles:
+    subtitle_filter_path = write_ass_from_srt(subtitle_path, subtitle_path.with_suffix(".ass"), style)
+command.extend(["-vf", self._subtitle_filter_arg(subtitle_filter_path)])
+```
+
 ## Scenario: Condensed Requires Continuity Signals
 
 ### 1. Scope / Trigger
@@ -594,6 +674,12 @@ def _video_quality_args(self) -> list[str]:
 | `ARL_EXPORT_FFMPEG_CRF` | int | 18 | CRF value when bitrate not set |
 | `ARL_EXPORT_FFMPEG_PRESET` | string | "slow" | CPU preset or NVENC p1-p7 |
 | `ARL_EXPORT_USE_HARDWARE_ENCODING` | bool | False | Use NVENC if available |
+| `ARL_EXPORT_BURN_SUBTITLES` | bool | False | Burn subtitles into video instead of muxing soft subtitles |
+| `ARL_EXPORT_USE_ASS_SUBTITLES` | bool | False | Convert real SRT subtitles to ASS sidecars for burn-in |
+| `ARL_EXPORT_ASS_FONT_NAME` | string | "SimHei" | ASS style font name for burned subtitles |
+| `ARL_EXPORT_ASS_FONT_SIZE` | int | 36 | ASS style font size, clamped to at least 1 |
+| `ARL_EXPORT_ASS_MARGIN_V` | int | 20 | ASS vertical bottom margin, clamped to at least 0 |
+| `ARL_EXPORT_ASS_OUTLINE` | int | 2 | ASS text outline width, clamped to at least 0 |
 | `ARL_EXPORT_USE_HIGHLIGHT_PLANS` | bool | False | Apply highlight condensing |
 | `ARL_HIGHLIGHT_PLANNER_ENABLED` | bool | False | Run highlight detection stage |
 | `ARL_HIGHLIGHT_CONDENSED_ACTION_RESOLUTION_TAIL_SECONDS` | float | 40.0 | Maximum short narration tail retained after key/tactical action windows |
@@ -621,4 +707,4 @@ def _video_quality_args(self) -> list[str]:
 
 ---
 
-**Last Updated**: 2026-06-25 (Task: refine-condensed-kda-death-trimming)
+**Last Updated**: 2026-06-26 (Task: ass-subtitle-styling)

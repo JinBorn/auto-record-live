@@ -267,6 +267,11 @@ class ExportSettings(BaseModel):
     enable_ffmpeg: bool = False
     ffmpeg_video_codec: str = "auto"
     burn_subtitles: bool = False
+    use_ass_subtitles: bool = False
+    ass_font_name: str = "SimHei"
+    ass_font_size: int = 36
+    ass_margin_v: int = 20
+    ass_outline: int = 2
     ffmpeg_preset: str = "slow"
     ffmpeg_crf: int = 18
     ffmpeg_bitrate: str | None = None
@@ -301,6 +306,10 @@ class ExportSettings(BaseModel):
                 "ffmpeg_video_codec must be one of auto, copy, h264, h265, or hevc"
             )
         self.ffmpeg_video_codec = aliases[raw]
+        self.ass_font_name = self.ass_font_name.strip() or "SimHei"
+        self.ass_font_size = max(1, self.ass_font_size)
+        self.ass_margin_v = max(0, self.ass_margin_v)
+        self.ass_outline = max(0, self.ass_outline)
         return self
 
 
@@ -860,6 +869,11 @@ def load_settings() -> Settings:
             enable_ffmpeg=os.getenv("ARL_EXPORT_ENABLE_FFMPEG", "0") == "1",
             ffmpeg_video_codec=os.getenv("ARL_EXPORT_FFMPEG_VIDEO_CODEC", "auto"),
             burn_subtitles=_env_bool("ARL_EXPORT_BURN_SUBTITLES", False),
+            use_ass_subtitles=_env_bool("ARL_EXPORT_USE_ASS_SUBTITLES", False),
+            ass_font_name=os.getenv("ARL_EXPORT_ASS_FONT_NAME", "SimHei"),
+            ass_font_size=max(1, _env_int("ARL_EXPORT_ASS_FONT_SIZE", 36)),
+            ass_margin_v=max(0, _env_int("ARL_EXPORT_ASS_MARGIN_V", 20)),
+            ass_outline=max(0, _env_int("ARL_EXPORT_ASS_OUTLINE", 2)),
             ffmpeg_preset=os.getenv("ARL_EXPORT_FFMPEG_PRESET", "slow"),
             ffmpeg_crf=int(os.getenv("ARL_EXPORT_FFMPEG_CRF", "18")),
             ffmpeg_bitrate=os.getenv("ARL_EXPORT_FFMPEG_BITRATE") or None,
