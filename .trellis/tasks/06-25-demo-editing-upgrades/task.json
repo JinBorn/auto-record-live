@@ -1,0 +1,28 @@
+{
+  "id": "demo-editing-upgrades",
+  "name": "demo-editing-upgrades",
+  "title": "Demo editing upgrades",
+  "description": "",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "Jinson",
+  "assignee": "Jinson",
+  "createdAt": "2026-06-25",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "06-25-publishing-metadata-cover"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

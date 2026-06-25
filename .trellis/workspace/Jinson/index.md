@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 48
-- **Last Active**: 2026-06-25
+- **Total Sessions**: 49
+- **Last Active**: 2026-06-26
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~40 | Active |
+| `journal-2.md` | ~73 | Active |
 | `journal-1.md` | ~1986 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 49 | 2026-06-26 | Publishing metadata and cover assets | `c29ad3d` | `main` |
 | 48 | 2026-06-25 | Condensed highlight action context | `86e616c` | `main` |
 | 47 | 2026-06-24 | Fix incomplete condensed match exports | `2084dab` | `main` |
 | 46 | 2026-06-15 | Fix export quality loss with fixed bitrate mode | `1bf78a4`, `f0c347d` | `fix/highlight-condensing-budget` |

@@ -38,3 +38,36 @@ Refined condensed highlight exports to preserve KDA kill/death changes, death re
 ### Next Steps
 
 - None - task complete
+
+
+## Session 49: Publishing metadata and cover assets
+
+**Date**: 2026-06-26
+**Task**: Publishing metadata and cover assets
+**Branch**: `main`
+
+### Summary
+
+Implemented additive copywriter publishing packages with deterministic metadata, optional cover rendering, reset cleanup, contract docs, and pipeline tests.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c29ad3d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
