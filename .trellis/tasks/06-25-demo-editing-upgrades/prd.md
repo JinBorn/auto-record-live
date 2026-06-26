@@ -83,17 +83,17 @@ long-form videos instead of raw match cuts.
 
 ## Acceptance Criteria
 
-- [ ] Existing full/highlight/condensed exports remain unchanged unless a new
+- [x] Existing full/highlight/condensed exports remain unchanged unless a new
       editing-package feature flag is enabled.
-- [ ] A new planning artifact can represent teaser, main, zoom, subtitle, music,
+- [x] A new planning artifact can represent teaser, main, zoom, subtitle, music,
       and sound-effect instructions without overloading `HighlightPlanAsset`.
-- [ ] Teaser-before-main exports preserve a complete main segment boundary and
+- [x] Teaser-before-main exports preserve a complete main segment boundary and
       never mark a teaser segment as the canonical match start.
-- [ ] Cover/copy output includes title, summary, cover text lines, tags, and
+- [x] Cover/copy output includes title, summary, cover text lines, tags, and
       evidence fields derived from transcript/title/highlight data.
-- [ ] ASS subtitle export can reproduce the reference bottom-centered style in
+- [x] ASS subtitle export can reproduce the reference bottom-centered style in
       tests and is wired into ffmpeg rendering.
-- [ ] Audio features require local asset paths and fail closed when assets are
+- [x] Audio features require local asset paths and fail closed when assets are
       missing.
-- [ ] Tests cover plan generation, ffmpeg command construction, and opt-in
+- [x] Tests cover plan generation, ffmpeg command construction, and opt-in
       backward compatibility.
