@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/export-configuration.md", "reason": "Edit-plan, exporter, ffmpeg, env, and validation contracts for teaser/main/audio/zoom behavior that this task extends with insert segments."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Requires typed durable contracts, config-owned env parsing, idempotent stage behavior, and focused tests for new branches."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Defines resilient local file handling and recoverable skip behavior for malformed or missing local inputs."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Defines compact component-scoped key=value logs for recoverable anomalies and stage lifecycle events."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "This change crosses config, planner contracts, JSONL edit plans, and exporter rendering, so data-flow boundaries must stay explicit."}

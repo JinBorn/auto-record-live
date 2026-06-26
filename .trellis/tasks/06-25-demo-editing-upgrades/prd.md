@@ -11,9 +11,9 @@ development plan for the local postprocess pipeline.
 The current pipeline can record, segment, subtitle, create highlight plans, export
 videos, and generate basic publishing copy. The references show a more polished
 Bilibili-style package: a high-retention title/cover, a teaser before the main
-video, readable subtitles, playful audio, occasional zoom emphasis, and meme-like
-insert clips. Adding these as explicit postprocess features should make exports
-closer to upload-ready long-form videos instead of raw match cuts.
+video, readable subtitles, playful audio, and occasional zoom emphasis. Adding
+these as explicit postprocess features should make exports closer to upload-ready
+long-form videos instead of raw match cuts.
 
 ## Evidence From References
 
@@ -28,7 +28,8 @@ closer to upload-ready long-form videos instead of raw match cuts.
   resolution, white text, thin black outline, bottom margin 20.
 - `demo2` starts with a teaser section of roughly two minutes, then returns to
   earlier/main match context around 2:17. Its teaser includes gameplay moments,
-  champion-select/loading context, and an external classic-film insert.
+  champion-select/loading context, and an external classic-film insert, but that
+  insert pattern is deferred from the current implementation scope.
 - `demo1` is more linear: dense top-lane gameplay, subtitles, facecam retained,
   and a cover/title built around the streamer's joke.
 - Basic volume probes show full-mix mean volume around -21 to -24 dB for quieter
@@ -48,7 +49,7 @@ closer to upload-ready long-form videos instead of raw match cuts.
   must therefore be represented explicitly instead of weakening match-boundary
   rules.
 - No current module generates cover images, mixes background music, adds sound
-  effects, applies punch-in zooms, or inserts user-provided reference clips.
+  effects, or applies punch-in zooms.
 
 ## Requirements
 
@@ -67,11 +68,12 @@ closer to upload-ready long-form videos instead of raw match cuts.
   driven by keyword/manual event rules rather than unreliable emotion detection.
 - Support punch-in zoom transforms on selected highlight windows, with safe
   defaults that preserve readable HUD context.
-- Support external reference inserts only from user-provided local clips with
-  explicit timing/configuration.
 
 ## Out Of Scope
 
+- External reference inserts / "引经据典" clips are removed from the current
+  implementation scope because the feature is comparatively costly and not
+  required for the next iteration.
 - Automatically downloading movie/TV/game clips from the internet.
 - Automatically deciding that a copyrighted classic-film quote is appropriate.
 - Perfect semantic music selection without a curated local music library.
@@ -83,9 +85,8 @@ closer to upload-ready long-form videos instead of raw match cuts.
 
 - [ ] Existing full/highlight/condensed exports remain unchanged unless a new
       editing-package feature flag is enabled.
-- [ ] A new planning artifact can represent teaser, main, insert, zoom, subtitle,
-      music, and sound-effect instructions without overloading
-      `HighlightPlanAsset`.
+- [ ] A new planning artifact can represent teaser, main, zoom, subtitle, music,
+      and sound-effect instructions without overloading `HighlightPlanAsset`.
 - [ ] Teaser-before-main exports preserve a complete main segment boundary and
       never mark a teaser segment as the canonical match start.
 - [ ] Cover/copy output includes title, summary, cover text lines, tags, and
@@ -94,7 +95,5 @@ closer to upload-ready long-form videos instead of raw match cuts.
       tests and is wired into ffmpeg rendering.
 - [ ] Audio features require local asset paths and fail closed when assets are
       missing.
-- [ ] External inserts require explicit local source clips and are skipped when
-      no asset is configured.
 - [ ] Tests cover plan generation, ffmpeg command construction, and opt-in
       backward compatibility.

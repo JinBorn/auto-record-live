@@ -4,8 +4,8 @@
 
 Add an explicit upload-editing layer on top of the existing postprocess pipeline.
 The layer should package a validated match export into a richer timeline:
-teaser clips first, main content second, optional inserts, styled subtitles,
-background music, sound effects, and punch-in transforms.
+teaser clips first, main content second, styled subtitles, background music,
+sound effects, and punch-in transforms.
 
 This must not relax existing match-boundary or condensed-plan safeguards. The
 existing `HighlightPlanAsset` should continue to describe retained source
@@ -58,7 +58,7 @@ class PublishingPackageAsset(BaseModel):
 ### EditPlanAsset
 
 Stores presentation timeline instructions. Times are relative to the original
-match boundary unless a timeline item references an external clip.
+match boundary.
 
 ```python
 class EditPlanAsset(BaseModel):
@@ -75,8 +75,7 @@ class EditPlanAsset(BaseModel):
 
 ```python
 class TimelineSegment(BaseModel):
-    role: Literal["teaser", "main", "insert"]
-    source_path: str | None = None
+    role: Literal["teaser", "main"]
     source_start_seconds: float
     source_end_seconds: float
     transform: VideoTransform | None = None
@@ -161,12 +160,6 @@ Represent zooms as transforms on selected timeline segments. Start with safe
 fixed anchors and modest scale (for example 1.15-1.35) so core HUD remains
 visible. Later work can add target tracking from OCR/KDA/minimap context.
 
-### 7. External Inserts
-
-Only support user-provided local clips. The planner may select from a local
-manifest using keywords, but it must not download or infer copyrighted material.
-If no configured insert asset exists, rendering skips inserts.
-
 ## Compatibility
 
 - Existing JSONL stores remain valid.
@@ -175,6 +168,8 @@ If no configured insert asset exists, rendering skips inserts.
 - Existing exporter command path stays the default.
 - Any edit-plan render must validate source files and fail closed without
   deleting or replacing existing exports.
+- External reference inserts / "引经据典" clips are deferred and should not be
+  added to the current implementation scope.
 
 ## Validation Strategy
 

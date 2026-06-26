@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/export-configuration.md", "reason": "Check implementation against edit-plan validation, exporter fallback, ffmpeg command, and environment variable contracts."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify typed contracts, config ownership, no silent schema drift, explicit UTF-8 file handling where applicable, and focused test coverage."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Verify malformed/missing manifest and missing local clip paths are recoverable skips rather than pipeline crashes."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Verify skip and lifecycle logs remain compact, component-scoped, and machine-greppable."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify config-to-planner-to-exporter data flow survives round-trip and layer boundaries validate the right fields."}

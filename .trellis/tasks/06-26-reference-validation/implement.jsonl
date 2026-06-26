@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/export-configuration.md", "reason": "Primary contract for ASS subtitles, edit plans, audio mixing, punch-in transforms, exporter fallback, and ffmpeg command behavior."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Validation work must preserve typed JSONL contracts, idempotent stage behavior, and focused tests around external binary seams."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Smoke/validation fixtures must skip or defer cleanly when local files or media tools are unavailable."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Any new validation-facing logs should remain compact, component-scoped, and machine-greppable."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "This task validates data flow across subtitle, highlight, edit-plan, exporter, and copywriter boundaries."}

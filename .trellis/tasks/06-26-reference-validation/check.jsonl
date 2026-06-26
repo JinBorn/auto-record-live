@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/export-configuration.md", "reason": "Check final validation against documented edit-plan, subtitle, audio, zoom, and exporter fallback contracts."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Check that new tests assert behavior, avoid large committed fixtures, and keep durable file handling explicit."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Check optional smoke tests and fixture setup handle missing media prerequisites without crashing the suite."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Check any added logs or manual validation notes follow existing operator-facing conventions."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Check that validation covers boundaries between generated artifacts and downstream consumers."}

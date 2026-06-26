@@ -11,8 +11,7 @@ testable deliverables.
 3. Explicit edit plans with teaser-before-main rendering
 4. Background music and sound-effect asset mixing
 5. Punch-in zoom transforms
-6. User-provided external reference inserts
-7. End-to-end reference validation against demo-derived expectations
+6. End-to-end reference validation against demo-derived expectations
 
 ## Recommended Order
 
@@ -75,18 +74,7 @@ testable deliverables.
   - ffmpeg filter graph is generated for punch-in segments
   - no transform is applied when disabled
 
-### 6. User-Provided External Reference Inserts
-
-- Add a local insert manifest format with source path, tags, default trim range,
-  and optional trigger keywords.
-- Planner may choose inserts from manifest; renderer validates local source file.
-- No internet download or copyrighted-clip discovery.
-- Tests:
-  - insert is skipped when manifest is absent
-  - insert is skipped when source file is missing
-  - configured insert becomes a timeline segment with `role="insert"`
-
-### 7. Reference Validation
+### 6. Reference Validation
 
 - Use `data/demo1` and `data/demo2` as human reference material.
 - Build small generated fixtures for automated render tests to avoid committing
@@ -132,13 +120,12 @@ Run full regression before final integration:
   boundaries. Keep teaser/main roles explicit and validate main coverage.
 - Audio mixing can easily overpower voice/game audio. Start with conservative
   gain and require opt-in assets.
-- External inserts create legal and asset-management risk. Keep them local,
-  explicit, and disabled by default.
 
 ## Deferred Work
 
 - LLM-backed title/summary generation.
 - Automatic raw-audio emotion detection for SFX placement.
 - Automatic target tracking for zoom centers.
+- User-provided external reference inserts / "引经据典" clips.
 - Internet-sourced film/meme clip retrieval.
 - A frontend review UI for manually accepting or adjusting edit plans.
