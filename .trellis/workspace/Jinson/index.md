@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 52
+- **Total Sessions**: 53
 - **Last Active**: 2026-06-26
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~172 | Active |
+| `journal-2.md` | ~205 | Active |
 | `journal-1.md` | ~1986 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 53 | 2026-06-26 | Edit plan punch-in zoom | `490eae8` | `main` |
 | 52 | 2026-06-26 | Edit plan audio mixing | `0a54424` | `main` |
 | 51 | 2026-06-26 | Edit plan teaser rendering | `200a800` | `main` |
 | 50 | 2026-06-26 | ASS subtitle burn-in path | `756e526` | `main` |

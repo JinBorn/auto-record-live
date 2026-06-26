@@ -170,3 +170,36 @@ Added opt-in local BGM and SFX audio instructions for edit plans, exporter FFmpe
 ### Next Steps
 
 - None - task complete
+
+
+## Session 53: Edit plan punch-in zoom
+
+**Date**: 2026-06-26
+**Task**: Edit plan punch-in zoom
+**Branch**: `main`
+
+### Summary
+
+Added opt-in high-signal teaser punch-in zoom transforms for edit plans, exporter scale/crop rendering, validation, tests, and backend export contract updates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `490eae8` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
