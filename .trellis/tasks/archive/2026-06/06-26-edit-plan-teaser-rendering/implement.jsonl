@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "New editing stage module placement and stage ownership rules."}
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "New postprocess manifest/state contract and exporter command behavior."}
+{"file": ".trellis/spec/backend/export-configuration.md", "reason": "Exporter opt-in flags, highlight plan compatibility, and subtitle burn-in behavior."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Postprocess stage completeness, idempotency, UTF-8 file handling, and test expectations."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Fail-closed behavior for invalid local manifests and missing assets."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Stage progress and skip/fallback logging conventions."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Search-first discipline before adding config and helpers."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Feature spans config, planner, manifests, exporter, status, and reset."}

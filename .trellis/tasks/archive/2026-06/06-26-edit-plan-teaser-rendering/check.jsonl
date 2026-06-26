@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "Verify edit-plan manifest/state, postprocess, status/reset, and exporter contracts."}
+{"file": ".trellis/spec/backend/export-configuration.md", "reason": "Verify edit-plan export remains opt-in and existing export modes stay unchanged."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify stage idempotency, UTF-8 handling, and coverage expectations."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Verify invalid/missing plan inputs fail closed."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Verify operator-facing logs stay compact and stage-scoped."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify data flow from planner manifest through exporter/status/reset."}
