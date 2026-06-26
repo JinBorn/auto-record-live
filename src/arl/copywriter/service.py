@@ -22,6 +22,17 @@ from arl.shared.jsonl_store import append_model, load_models
 from arl.shared.logging import log
 
 
+_HIGHLIGHT_REASON_PRIORITY = {
+    "highlight_keyword": 0,
+    "condensed_key_event": 0,
+    "condensed_tactical": 1,
+    "narration": 2,
+    "match_start_context": 3,
+    "match_end_context": 4,
+    "condensed_context": 5,
+}
+
+
 @dataclass(frozen=True)
 class _SubtitleCue:
     started_at_seconds: float
@@ -334,13 +345,28 @@ class CopywriterService:
             return []
         if highlight_plan is None or not highlight_plan.windows:
             return cues
+        selected_with_priority: list[tuple[int, float, _SubtitleCue]] = []
+        for cue in cues:
+            overlapping_priorities = [
+                _HIGHLIGHT_REASON_PRIORITY.get(window.reason, 100)
+                for window in highlight_plan.windows
+                if min(cue.ended_at_seconds, window.ended_at_seconds)
+                > max(cue.started_at_seconds, window.started_at_seconds)
+            ]
+            if not overlapping_priorities:
+                continue
+            selected_with_priority.append(
+                (
+                    min(overlapping_priorities),
+                    cue.started_at_seconds,
+                    cue,
+                )
+            )
         selected = [
             cue
-            for cue in cues
-            if any(
-                min(cue.ended_at_seconds, window.ended_at_seconds)
-                > max(cue.started_at_seconds, window.started_at_seconds)
-                for window in highlight_plan.windows
+            for _, _, cue in sorted(
+                selected_with_priority,
+                key=lambda item: (item[0], item[1], item[2].ended_at_seconds),
             )
         ]
         return selected or cues

@@ -1016,6 +1016,7 @@ class PublishingPackage(BaseModel):
   - copywriter also writes `data/processed/<session_id>/match-<idx>-publishing.json` and appends one `PublishingPackage` row to `data/tmp/publishing-packages.jsonl`; this artifact is additive and must not change the `CopyAsset` field contract.
   - publishing package JSON must include `summary`, `cover_lines`, `evidence`, title candidates, recommended title, tags, transcript excerpt, source subtitle/export/recording paths, optional `cover_path`, `status`, and `created_at`.
   - when a valid highlight plan matches the current boundary snapshot, title/cover/evidence generation should prefer subtitle cues overlapping the plan windows; stale or boundary-mismatched highlight plans are ignored, and the full subtitle transcript is used as fallback.
+  - when several subtitle cues overlap plan windows, copywriter metadata selection must sort candidates by highlight reason priority before cue timestamp: `highlight_keyword` and `condensed_key_event`, then `condensed_tactical`, `narration`, `match_start_context`, `match_end_context`, and `condensed_context`. This prevents ordinary edge/context windows from hiding the actual publishable moment.
   - optional cover rendering may use ffmpeg to extract a source frame and Pillow to render a `1920x1080` image under `data/processed/<session_id>/match-<idx>-cover.jpg`; missing recording files, missing ffmpeg, missing Pillow, or rendering errors must skip cover output while still writing publishing metadata.
   - placeholder or empty subtitles produce `status="placeholder_input"` with deterministic fallback metadata instead of crashing or blocking copy generation.
   - `copywriter-state.json` owns idempotency via the same `<session_id>:<match_index>` key shape used by subtitle/export stages; repeated runs must not append duplicate `CopyAsset` or `PublishingPackage` rows for already processed matches.
@@ -1154,6 +1155,7 @@ class PublishingPackage(BaseModel):
 | Exporter ffmpeg command burns in a subtitle file from a Windows absolute path | The `-vf` value uses forward slashes, escapes the drive colon (`D\:/...`), and wraps the filename in single quotes as `subtitles='...'` |
 | `arl copywriter` sees an existing subtitle asset and optional export asset | Write one per-match copy JSON under `data/processed/<session>/`, append one `CopyAsset`, write one publishing package JSON, append one `PublishingPackage`, and mark the match key processed |
 | `arl copywriter` sees a valid highlight plan for the current boundary | Prefer overlapping subtitle cues for `recommended_title`, `summary`, `cover_lines`, and `evidence` |
+| `arl copywriter` sees both edge/context windows and high-signal highlight windows | Build metadata from the high-signal cue first even when the edge/context cue has the earlier timestamp |
 | `arl copywriter` sees a stale highlight plan whose source boundary no longer matches the current boundary | Ignore the plan and generate metadata from the full subtitle transcript |
 | `arl copywriter` sees a usable recording but ffmpeg/Pillow/frame extraction is unavailable | Leave `cover_path=None`, still write the publishing JSON, and still append the `PublishingPackage` row |
 | `arl copywriter` sees a subtitle asset whose path does not exist | Log skip, do not append `CopyAsset`, and do not mark the match key processed |
@@ -1221,6 +1223,7 @@ class PublishingPackage(BaseModel):
 
 - Good:
   - Recorder emits one `RecordingAsset`, segmenter emits two `MatchBoundary` rows, subtitles emits one `SubtitleAsset` per match, exporter writes final output with stable naming, and copywriter emits one publishable copy JSON per match.
+  - Copywriter sees a `match_start_context` cue near match start and a later `highlight_keyword` cue; title, cover lines, and evidence lead with the highlight cue.
   - `postprocess` final summary shows `unregistered_recordings=0` and `missing_subtitles=missing_exports=missing_copies=0` for the processed match set.
 - Base:
   - Recorder succeeds, segmenter emits one low-confidence match boundary, export is deferred pending operator review.
@@ -1305,6 +1308,7 @@ class PublishingPackage(BaseModel):
 - Unit test: copywriter emits deterministic title/copy JSON plus one `CopyAsset` from an existing subtitle asset and optional export asset.
 - Unit test: copywriter emits one `PublishingPackage` with summary, cover lines, evidence, and source paths while preserving the existing `CopyAsset` contract.
 - Unit test: copywriter prefers highlight-window subtitle cues for publishing metadata when the highlight plan matches the current boundary.
+- Unit/integration test: copywriter highlight cue selection prefers `highlight_keyword` or `condensed_key_event` evidence over earlier `match_start_context` evidence in `recommended_title`, `cover_lines`, and `PublishingPackage.evidence`.
 - Unit test: copywriter skips optional cover rendering when recording/ffmpeg/Pillow is unavailable and still writes publishing metadata.
 - Unit test: copywriter remains idempotent across repeated runs.
 - Unit test: copywriter skips missing subtitle paths without marking the match processed.
@@ -1429,6 +1433,38 @@ copywriter_state.processed_match_keys.append(f"{draft.session_id}:{draft.match_i
 - Keeps the JSON artifact discoverable through the typed `CopyAsset` manifest
 - Preserves stage idempotency through `copywriter-state.json`
 - Lets `arl status` compute `missing_copies` from the manifest contract
+
+#### Wrong
+
+```python
+selected_cues = sorted(overlapping_highlight_cues, key=lambda cue: cue.started_at_seconds)
+title = build_title_from(selected_cues[0])
+```
+
+- Lets `match_start_context` or other edge windows outrank the actual highlight just because they appear earlier.
+- Produces cover lines and evidence from setup/context instead of the publishable moment.
+
+#### Correct
+
+```python
+reason_priority = {
+    "highlight_keyword": 0,
+    "condensed_key_event": 0,
+    "condensed_tactical": 1,
+    "narration": 2,
+    "match_start_context": 3,
+    "match_end_context": 4,
+    "condensed_context": 5,
+}
+selected_cues = sorted(
+    overlapping_highlight_cues,
+    key=lambda cue: (best_overlapping_reason_priority(cue, reason_priority), cue.started_at_seconds),
+)
+title = build_title_from(selected_cues[0])
+```
+
+- Keeps the headline, cover text, and evidence anchored to high-signal windows.
+- Preserves chronological ordering only as a tie-breaker within the same signal strength.
 
 #### Wrong
 
