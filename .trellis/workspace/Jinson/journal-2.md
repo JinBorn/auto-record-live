@@ -104,3 +104,36 @@ Added opt-in ASS subtitle sidecar generation for export burn-in, with config env
 ### Next Steps
 
 - None - task complete
+
+
+## Session 51: Edit plan teaser rendering
+
+**Date**: 2026-06-26
+**Task**: Edit plan teaser rendering
+**Branch**: `main`
+
+### Summary
+
+Added opt-in edit-plan generation and teaser-before-main exporter rendering with status/reset/CLI wiring and tests.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `200a800` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 50
+- **Total Sessions**: 51
 - **Last Active**: 2026-06-26
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~106 | Active |
+| `journal-2.md` | ~139 | Active |
 | `journal-1.md` | ~1986 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 51 | 2026-06-26 | Edit plan teaser rendering | `200a800` | `main` |
 | 50 | 2026-06-26 | ASS subtitle burn-in path | `756e526` | `main` |
 | 49 | 2026-06-26 | Publishing metadata and cover assets | `c29ad3d` | `main` |
 | 48 | 2026-06-25 | Condensed highlight action context | `86e616c` | `main` |
