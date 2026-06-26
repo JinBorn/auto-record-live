@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/export-configuration.md", "reason": "Verify audio mixing remains opt-in and compatible with edit-plan/export contracts."}
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "Verify durable artifact/state behavior and exporter fallback semantics."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify typed contracts, idempotency, and explicit UTF-8 file handling."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Verify missing audio assets fail closed without crashing the pipeline."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Verify skip/fallback logs are concise and no sensitive paths beyond local configured paths are over-logged."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify config-to-planner-to-exporter data flow is covered by tests."}

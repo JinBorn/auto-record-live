@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Stage/module ownership and shared contract placement for editing/exporter changes."}
+{"file": ".trellis/spec/backend/export-configuration.md", "reason": "Exporter quality, edit-plan rendering, subtitle burn-in, and FFmpeg command contracts."}
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "Durable JSONL/state contracts, postprocess stage behavior, and exporter failure semantics."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Typed models, idempotency, and durable UTF-8 state requirements."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Missing/invalid local asset handling must preserve forward progress."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Compact operator-visible skip/fallback logs and exporter audit consistency."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing edit-plan/exporter patterns instead of duplicating command logic."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Feature spans config, planner, manifest, exporter, reset/status, and tests."}
