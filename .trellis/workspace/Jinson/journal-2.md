@@ -137,3 +137,36 @@ Added opt-in edit-plan generation and teaser-before-main exporter rendering with
 ### Next Steps
 
 - None - task complete
+
+
+## Session 52: Edit plan audio mixing
+
+**Date**: 2026-06-26
+**Task**: Edit plan audio mixing
+**Branch**: `main`
+
+### Summary
+
+Added opt-in local BGM and SFX audio instructions for edit plans, exporter FFmpeg mixing support, tests, and backend export contract updates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0a54424` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
