@@ -446,6 +446,11 @@ write_plan(drafts)
   ARL_EDIT_TEASER_MAX_SEGMENTS=2
   ARL_EDIT_TEASER_MAX_TOTAL_SECONDS=45
   ARL_EDIT_TEASER_MIN_SEGMENT_SECONDS=3
+  ARL_EDIT_ZOOM_ENABLED=0
+  ARL_EDIT_ZOOM_SCALE=1.2
+  ARL_EDIT_ZOOM_X_ANCHOR=0.5
+  ARL_EDIT_ZOOM_Y_ANCHOR=0.5
+  ARL_EDIT_ZOOM_MAX_SEGMENTS=1
   ARL_EDIT_AUDIO_MIXING_ENABLED=0
   ARL_EDIT_BGM_PATH=
   ARL_EDIT_BGM_GAIN_DB=-24
@@ -455,6 +460,7 @@ write_plan(drafts)
   ```
 - Defaults must keep current exports unchanged:
   - `EditingSettings.enabled=False`
+  - `EditingSettings.zoom_enabled=False`
   - `EditingSettings.audio_mixing_enabled=False`
   - `ExportSettings.use_edit_plans=False`
 - Postprocess order must be:
@@ -471,8 +477,15 @@ write_plan(drafts)
      the highlight plan.
   3. Else render the full validated boundary.
 - Renderer supports local timeline segments (`source_path is None`), roles
-  `teaser` and `main`, optional local audio instructions, and no transform with
-  `kind != "none"`.
+  `teaser` and `main`, optional local audio instructions, and transforms with
+  `kind in {"none", "punch_in"}`.
+- Punch-in zoom is opt-in at planner time. When `ARL_EDIT_ZOOM_ENABLED=1`, the
+  planner may apply `TimelineVideoTransform(kind="punch_in")` to high-signal
+  teaser segments only, up to `ARL_EDIT_ZOOM_MAX_SEGMENTS`. The main segment
+  remains transform-free in the MVP.
+- Punch-in transforms must use a safe static transform: `1.0 < scale <= 1.5`
+  and anchors inside `[0.0, 1.0]`. Exporter renders them with per-segment
+  `scale` + `crop` filters and falls back for unsupported transform payloads.
 - Audio mixing is opt-in at planner time. When
   `ARL_EDIT_AUDIO_MIXING_ENABLED=1`, the planner may emit:
   - one BGM `AudioBed` when `ARL_EDIT_BGM_PATH` is set and exists as a file
@@ -508,7 +521,8 @@ write_plan(drafts)
 | Edit plan source boundary differs from current boundary by more than 1 second | Exporter ignores the edit plan and falls back |
 | Timeline has no main segment, more than one main segment, or main is first | Exporter ignores the edit plan and falls back |
 | Main segment does not start at `0.0` and end at boundary duration | Exporter ignores the edit plan and falls back |
-| Teaser appears after main, insert role appears, `source_path` is set, or transform kind is not `none` | Exporter ignores the edit plan and falls back |
+| Teaser appears after main, insert role appears, or `source_path` is set | Exporter ignores the edit plan and falls back |
+| Transform kind is not `none` or `punch_in`, punch-in scale is outside `(1.0, 1.5]`, or anchors are outside `[0.0, 1.0]` | Exporter ignores the edit plan and falls back |
 | Audio source path is missing, not a file, out of output range, reversed, or has gain outside the safety range | Exporter ignores the edit plan and falls back |
 | `ARL_EDIT_AUDIO_MIXING_ENABLED=1` but configured BGM/SFX files are missing | Edit planner writes the base audio-free edit plan and logs missing-file skips |
 | Burn-in subtitles are enabled | Exporter adds the existing escaped SRT/ASS `subtitles=` filter before each video `trim` in the edit-plan filter graph |
@@ -520,6 +534,9 @@ write_plan(drafts)
 - Good: With explicit existing BGM/SFX paths and audio mixing enabled, the edit
   plan carries typed audio instructions and exporter mixes them under original
   segment audio with `amix=duration=first`.
+- Good: With zoom enabled, a high-signal teaser segment carries
+  `TimelineVideoTransform(kind="punch_in", scale=1.2, ...)`, and exporter adds
+  static `scale` / `crop` filters before concat.
 - Base: Edit plans are generated for analysis, but `ARL_EXPORT_USE_EDIT_PLANS=0`
   keeps the current full-boundary or explicit highlight export behavior.
 - Bad: A teaser-only plan or a plan whose main segment starts mid-game is
@@ -535,6 +552,8 @@ write_plan(drafts)
 - Config: edit planner env values load and clamp; edit-plan export defaults off.
 - Config: audio mixing env values load, default off, and gain values clamp to
   safe ranges.
+- Config: zoom env values load, default off, and scale/anchor/max-segment
+  values clamp to safe ranges.
 - CLI/postprocess: parser includes `edit-planner`; postprocess order includes it
   between `highlight-planner` and `exporter`.
 - Exporter: edit plans are ignored by default, valid edit plans build
@@ -542,6 +561,8 @@ write_plan(drafts)
   precedence over highlight plans only when enabled.
 - Exporter: audio-enabled edit plans add asset inputs, `volume`, `adelay`, and
   `amix`; missing/stale audio asset paths fall back.
+- Exporter: punch-in edit plans add `scale`/`crop` filters; invalid transform
+  rows fall back.
 - Status/reset: counts and cleanup include `edit-plans.jsonl` and
   `editing-state.json`.
 
@@ -879,6 +900,11 @@ def _video_quality_args(self) -> list[str]:
 | `ARL_EDIT_TEASER_MAX_SEGMENTS` | int | 2 | Maximum teaser segments prepended before the main match |
 | `ARL_EDIT_TEASER_MAX_TOTAL_SECONDS` | float | 45.0 | Maximum total teaser duration |
 | `ARL_EDIT_TEASER_MIN_SEGMENT_SECONDS` | float | 3.0 | Minimum retained teaser segment duration |
+| `ARL_EDIT_ZOOM_ENABLED` | bool | False | Emit safe punch-in transforms for high-signal teaser segments |
+| `ARL_EDIT_ZOOM_SCALE` | float | 1.2 | Static punch-in scale, clamped to `[1.0, 1.5]` |
+| `ARL_EDIT_ZOOM_X_ANCHOR` | float | 0.5 | Horizontal zoom crop anchor, clamped to `[0.0, 1.0]` |
+| `ARL_EDIT_ZOOM_Y_ANCHOR` | float | 0.5 | Vertical zoom crop anchor, clamped to `[0.0, 1.0]` |
+| `ARL_EDIT_ZOOM_MAX_SEGMENTS` | int | 1 | Maximum teaser segments that receive punch-in transforms |
 | `ARL_EDIT_AUDIO_MIXING_ENABLED` | bool | False | Emit local BGM/SFX audio instructions into edit plans |
 | `ARL_EDIT_BGM_PATH` | path | None | Explicit local background-music file path |
 | `ARL_EDIT_BGM_GAIN_DB` | float | -24.0 | BGM gain in dB, clamped to `[-60.0, 0.0]` |
@@ -910,4 +936,4 @@ def _video_quality_args(self) -> list[str]:
 
 ---
 
-**Last Updated**: 2026-06-26 (Task: ass-subtitle-styling)
+**Last Updated**: 2026-06-26 (Task: punch-in-zoom-transforms)

@@ -87,10 +87,75 @@ class EditingPlannerServiceTest(unittest.TestCase):
         )
         self.assertEqual(plan.audio_beds, [])
         self.assertEqual(plan.sound_effects, [])
+        self.assertTrue(all(segment.transform is None for segment in plan.timeline))
         state = EditPlannerStateFile.model_validate_json(
             self.state_path.read_text(encoding="utf-8")
         )
         self.assertEqual(state.processed_match_keys, [f"{session_id}:1"])
+
+    def test_zoom_enabled_marks_high_signal_teaser_segments_only(self) -> None:
+        session_id = "session-edit-zoom"
+        self.settings.editing.zoom_enabled = True
+        self.settings.editing.zoom_scale = 1.25
+        self.settings.editing.zoom_x_anchor = 0.4
+        self.settings.editing.zoom_y_anchor = 0.35
+        self.settings.editing.zoom_max_segments = 1
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=300.0,
+                    ended_at_seconds=325.0,
+                    reason="highlight_keyword",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=120.0,
+                    ended_at_seconds=135.0,
+                    reason="condensed_context",
+                ),
+            ],
+            duration=600.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plans = load_models(self.edit_plans_path, EditPlanAsset)
+        self.assertEqual(len(plans), 1)
+        first_teaser = plans[0].timeline[0]
+        second_teaser = plans[0].timeline[1]
+        main = plans[0].timeline[2]
+        self.assertIsNotNone(first_teaser.transform)
+        assert first_teaser.transform is not None
+        self.assertEqual(first_teaser.transform.kind, "punch_in")
+        self.assertEqual(first_teaser.transform.scale, 1.25)
+        self.assertEqual(first_teaser.transform.x_anchor, 0.4)
+        self.assertEqual(first_teaser.transform.y_anchor, 0.35)
+        self.assertIsNone(second_teaser.transform)
+        self.assertIsNone(main.transform)
+
+    def test_zoom_max_segments_zero_emits_no_transforms(self) -> None:
+        session_id = "session-edit-zoom-zero"
+        self.settings.editing.zoom_enabled = True
+        self.settings.editing.zoom_max_segments = 0
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=100.0,
+                    ended_at_seconds=110.0,
+                    reason="highlight_keyword",
+                )
+            ],
+            duration=600.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plans = load_models(self.edit_plans_path, EditPlanAsset)
+        self.assertEqual(len(plans), 1)
+        self.assertTrue(all(segment.transform is None for segment in plans[0].timeline))
 
     def test_audio_instructions_emit_only_for_existing_configured_assets(self) -> None:
         session_id = "session-edit-audio"

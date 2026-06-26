@@ -12,6 +12,7 @@ from arl.shared.contracts import (
     MatchBoundary,
     SoundEffectHit,
     TimelineSegment,
+    TimelineVideoTransform,
 )
 from arl.shared.jsonl_store import append_model, load_models
 from arl.shared.logging import log
@@ -24,7 +25,7 @@ _REASON_PRIORITY = {
     "condensed_context": 3,
 }
 
-_SFX_REASONS = {"highlight_keyword", "condensed_key_event", "condensed_tactical"}
+_HIGH_SIGNAL_REASONS = {"highlight_keyword", "condensed_key_event", "condensed_tactical"}
 
 
 class EditingPlannerService:
@@ -215,6 +216,7 @@ class EditingPlannerService:
                 reason="full_validated_match",
             )
         )
+        self._apply_zoom_transforms(timeline)
         audio_beds, sound_effects = self._build_audio_instructions(
             boundary,
             timeline,
@@ -229,6 +231,25 @@ class EditingPlannerService:
             sound_effects=sound_effects,
             created_at=datetime.now(timezone.utc),
         )
+
+    def _apply_zoom_transforms(self, timeline: list[TimelineSegment]) -> None:
+        if not self.settings.editing.zoom_enabled:
+            return
+        remaining = self.settings.editing.zoom_max_segments
+        if remaining <= 0:
+            return
+        for segment in timeline:
+            if segment.role != "teaser" or segment.reason not in _HIGH_SIGNAL_REASONS:
+                continue
+            segment.transform = TimelineVideoTransform(
+                kind="punch_in",
+                scale=self.settings.editing.zoom_scale,
+                x_anchor=self.settings.editing.zoom_x_anchor,
+                y_anchor=self.settings.editing.zoom_y_anchor,
+            )
+            remaining -= 1
+            if remaining <= 0:
+                return
 
     def _build_audio_instructions(
         self,
@@ -275,7 +296,7 @@ class EditingPlannerService:
         timeline_cursor = 0.0
         for segment in timeline:
             segment_duration = segment.source_end_seconds - segment.source_start_seconds
-            if segment.role == "teaser" and segment.reason in _SFX_REASONS:
+            if segment.role == "teaser" and segment.reason in _HIGH_SIGNAL_REASONS:
                 sound_effects.append(
                     SoundEffectHit(
                         source_path=str(sfx_path),

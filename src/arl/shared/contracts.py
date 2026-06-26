@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class SourceType(str, Enum):
@@ -71,6 +71,18 @@ class TimelineVideoTransform(BaseModel):
     scale: float = 1.0
     x_anchor: float = 0.5
     y_anchor: float = 0.5
+
+    @model_validator(mode="after")
+    def _validate_transform(self) -> "TimelineVideoTransform":
+        if self.kind not in {"none", "punch_in"}:
+            raise ValueError("transform kind must be 'none' or 'punch_in'")
+        if not 0.0 <= self.x_anchor <= 1.0:
+            raise ValueError("transform x_anchor must be between 0.0 and 1.0")
+        if not 0.0 <= self.y_anchor <= 1.0:
+            raise ValueError("transform y_anchor must be between 0.0 and 1.0")
+        if self.kind == "punch_in" and not 1.0 < self.scale <= 1.5:
+            raise ValueError("punch_in scale must be greater than 1.0 and at most 1.5")
+        return self
 
 
 class TimelineSegment(BaseModel):

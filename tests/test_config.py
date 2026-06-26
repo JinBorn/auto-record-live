@@ -365,6 +365,30 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertIsNone(settings.editing.sfx_path)
         self.assertEqual(settings.editing.sfx_gain_db, -60.0)
 
+    def test_edit_zoom_envs_load_and_clamp(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_EDIT_ZOOM_ENABLED"] = "1"
+            os.environ["ARL_EDIT_ZOOM_SCALE"] = "2"
+            os.environ["ARL_EDIT_ZOOM_X_ANCHOR"] = "-0.5"
+            os.environ["ARL_EDIT_ZOOM_Y_ANCHOR"] = "1.5"
+            os.environ["ARL_EDIT_ZOOM_MAX_SEGMENTS"] = "-1"
+            settings = load_settings()
+
+        self.assertTrue(settings.editing.zoom_enabled)
+        self.assertEqual(settings.editing.zoom_scale, 1.5)
+        self.assertEqual(settings.editing.zoom_x_anchor, 0.0)
+        self.assertEqual(settings.editing.zoom_y_anchor, 1.0)
+        self.assertEqual(settings.editing.zoom_max_segments, 0)
+
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            settings = load_settings()
+
+        self.assertFalse(settings.editing.zoom_enabled)
+        self.assertEqual(settings.editing.zoom_scale, 1.2)
+        self.assertEqual(settings.editing.zoom_x_anchor, 0.5)
+        self.assertEqual(settings.editing.zoom_y_anchor, 0.5)
+        self.assertEqual(settings.editing.zoom_max_segments, 1)
+
     def test_highlight_planner_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             os.environ["ARL_HIGHLIGHT_PLANNER_ENABLED"] = "0"

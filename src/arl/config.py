@@ -268,6 +268,11 @@ class EditingSettings(BaseModel):
     teaser_max_segments: int = 2
     teaser_max_total_seconds: float = 45.0
     teaser_min_segment_seconds: float = 3.0
+    zoom_enabled: bool = False
+    zoom_scale: float = 1.2
+    zoom_x_anchor: float = 0.5
+    zoom_y_anchor: float = 0.5
+    zoom_max_segments: int = 1
     audio_mixing_enabled: bool = False
     bgm_path: Path | None = None
     bgm_gain_db: float = -24.0
@@ -840,6 +845,20 @@ def load_settings() -> Settings:
                 0.1,
                 _env_float("ARL_EDIT_TEASER_MIN_SEGMENT_SECONDS", 3.0),
             ),
+            zoom_enabled=_env_bool("ARL_EDIT_ZOOM_ENABLED", False),
+            zoom_scale=min(
+                1.5,
+                max(1.0, _env_float("ARL_EDIT_ZOOM_SCALE", 1.2)),
+            ),
+            zoom_x_anchor=min(
+                1.0,
+                max(0.0, _env_float("ARL_EDIT_ZOOM_X_ANCHOR", 0.5)),
+            ),
+            zoom_y_anchor=min(
+                1.0,
+                max(0.0, _env_float("ARL_EDIT_ZOOM_Y_ANCHOR", 0.5)),
+            ),
+            zoom_max_segments=max(0, _env_int("ARL_EDIT_ZOOM_MAX_SEGMENTS", 1)),
             audio_mixing_enabled=_env_bool(
                 "ARL_EDIT_AUDIO_MIXING_ENABLED",
                 False,

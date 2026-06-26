@@ -50,6 +50,7 @@ from arl.shared.contracts import (
     SoundEffectHit,
     SubtitleAsset,
     TimelineSegment,
+    TimelineVideoTransform,
 )
 from arl.shared.jsonl_store import append_model
 from arl.windows_agent.models import AgentSnapshot
@@ -2873,6 +2874,7 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self,
         *,
         duration: float,
+        teaser_transform: TimelineVideoTransform | None = None,
         audio_beds: list[AudioBed] | None = None,
         sound_effects: list[SoundEffectHit] | None = None,
     ) -> None:
@@ -2888,6 +2890,7 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
                         role="teaser",
                         source_start_seconds=90.0,
                         source_end_seconds=105.0,
+                        transform=teaser_transform,
                         reason="highlight_keyword",
                     ),
                     TimelineSegment(
@@ -3546,6 +3549,101 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertIn("volume=0.063096[bgm0]", filter_complex)
         self.assertIn("[2:a]asetpts=PTS-STARTPTS,volume=0.251189,adelay=15000|15000[sfx0]", filter_complex)
         self.assertIn("[basea][bgm0][sfx0]amix=inputs=3:duration=first:dropout_transition=0[a]", filter_complex)
+
+    def test_edit_plan_punch_in_transform_adds_scale_crop_filters(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=120.0)
+        settings = self.settings.model_copy(deep=True)
+        settings.export.use_edit_plans = True
+        self._append_edit_plan(
+            duration=120.0,
+            teaser_transform=TimelineVideoTransform(
+                kind="punch_in",
+                scale=1.25,
+                x_anchor=0.4,
+                y_anchor=0.35,
+            ),
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        filter_complex = command[command.index("-filter_complex") + 1]
+        self.assertIn(
+            "trim=start=90.000:end=105.000,setpts=PTS-STARTPTS,"
+            "scale=iw*1.250:ih*1.250,"
+            "crop=iw/1.250:ih/1.250:x=(iw-iw/1.250)*0.400:y=(ih-ih/1.250)*0.350[v0]",
+            filter_complex,
+        )
+        self.assertIn("[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]", filter_complex)
+
+    def test_edit_plan_invalid_transform_falls_back(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=120.0)
+        settings = self.settings.model_copy(deep=True)
+        settings.export.use_edit_plans = True
+        raw_plan = {
+            "session_id": "session-e",
+            "match_index": 1,
+            "source_boundary_start_seconds": 0.0,
+            "source_boundary_end_seconds": 120.0,
+            "timeline": [
+                {
+                    "role": "teaser",
+                    "source_start_seconds": 90.0,
+                    "source_end_seconds": 105.0,
+                    "transform": {
+                        "kind": "shake",
+                        "scale": 1.25,
+                        "x_anchor": 0.5,
+                        "y_anchor": 0.5,
+                    },
+                    "reason": "highlight_keyword",
+                },
+                {
+                    "role": "main",
+                    "source_start_seconds": 0.0,
+                    "source_end_seconds": 120.0,
+                    "reason": "full_validated_match",
+                },
+            ],
+            "audio_beds": [],
+            "sound_effects": [],
+            "created_at": datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc).isoformat(),
+        }
+        edit_plans_path = self.temp_root / "edit-plans.jsonl"
+        edit_plans_path.parent.mkdir(parents=True, exist_ok=True)
+        edit_plans_path.write_text(
+            json.dumps(raw_plan, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        self.assertIn("-to", command)
+        self.assertEqual(command[command.index("-to") + 1], "120.0")
+        self.assertNotIn("-filter_complex", command)
 
     def test_edit_plan_with_missing_audio_asset_falls_back(self) -> None:
         self._seed_export_inputs(boundary_ended_at_seconds=120.0)

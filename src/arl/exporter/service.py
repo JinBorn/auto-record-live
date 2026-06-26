@@ -22,6 +22,7 @@ from arl.shared.contracts import (
     SoundEffectHit,
     SubtitleAsset,
     TimelineSegment,
+    TimelineVideoTransform,
 )
 from arl.shared.failure_contracts import FailureDecision, classify_failure_reason
 from arl.shared.ffmpeg_runner import rotate_stderr_logs, run_ffmpeg_attempt
@@ -662,7 +663,7 @@ class ExporterService:
                 return None
             if segment.source_path is not None:
                 return None
-            if segment.transform is not None and segment.transform.kind != "none":
+            if not self._valid_timeline_transform(segment.transform):
                 return None
             if segment.source_start_seconds < 0.0:
                 return None
@@ -1070,7 +1071,40 @@ class ExporterService:
                 "setpts=PTS-STARTPTS",
             ]
         )
+        filters.extend(self._timeline_transform_filters(segment.transform))
         return filters
+
+    def _timeline_transform_filters(
+        self,
+        transform: TimelineVideoTransform | None,
+    ) -> list[str]:
+        if transform is None or transform.kind == "none":
+            return []
+        if transform.kind != "punch_in":
+            return []
+        scale = transform.scale
+        return [
+            f"scale=iw*{scale:.3f}:ih*{scale:.3f}",
+            (
+                f"crop=iw/{scale:.3f}:ih/{scale:.3f}:"
+                f"x=(iw-iw/{scale:.3f})*{transform.x_anchor:.3f}:"
+                f"y=(ih-ih/{scale:.3f})*{transform.y_anchor:.3f}"
+            ),
+        ]
+
+    @staticmethod
+    def _valid_timeline_transform(transform: TimelineVideoTransform | None) -> bool:
+        if transform is None:
+            return True
+        if transform.kind == "none":
+            return 0.0 <= transform.x_anchor <= 1.0 and 0.0 <= transform.y_anchor <= 1.0
+        if transform.kind != "punch_in":
+            return False
+        return (
+            1.0 < transform.scale <= 1.5
+            and 0.0 <= transform.x_anchor <= 1.0
+            and 0.0 <= transform.y_anchor <= 1.0
+        )
 
     def _highlight_select_expr(self, plan: HighlightPlanAsset) -> str:
         return "+".join(
