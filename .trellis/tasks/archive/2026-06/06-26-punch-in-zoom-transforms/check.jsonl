@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/export-configuration.md", "reason": "Verify zoom remains opt-in and compatible with edit-plan/audio export contracts."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify typed transform validation and regression coverage."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Verify invalid transforms fall back without crashing exporter runs."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Verify fallback/skip logs are concise and non-sensitive."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify config, planner, durable plan, and exporter behavior stay aligned."}

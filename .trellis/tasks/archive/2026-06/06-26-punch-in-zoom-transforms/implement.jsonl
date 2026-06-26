@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/export-configuration.md", "reason": "Edit-plan renderer and FFmpeg filter graph contracts for transforms."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Typed contract and regression-test expectations for cross-stage payload changes."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Fail-closed fallback behavior for invalid local edit plans."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Keep exporter/planner skip logs concise and operator-readable."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Config-to-planner-to-exporter data flow spans multiple layers."}
