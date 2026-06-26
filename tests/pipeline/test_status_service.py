@@ -12,6 +12,7 @@ from arl.config import (
     StorageSettings,
 )
 from arl.copywriter.models import CopywriterStateFile
+from arl.editing.models import EditPlannerStateFile
 from arl.exporter.models import ExporterAuditEvent, ExporterStateFile
 from arl.highlights.models import HighlightPlannerStateFile
 from arl.orchestrator.models import (
@@ -24,6 +25,7 @@ from arl.orchestrator.models import (
 from arl.recorder.models import RecorderAuditEvent, RecorderStateFile
 from arl.shared.contracts import (
     CopyAsset,
+    EditPlanAsset,
     ExportAsset,
     HighlightClipWindow,
     HighlightPlanAsset,
@@ -31,6 +33,7 @@ from arl.shared.contracts import (
     RecordingAsset,
     SourceType,
     SubtitleAsset,
+    TimelineSegment,
 )
 from arl.shared.jsonl_store import append_model
 from arl.status.service import StatusService
@@ -124,6 +127,30 @@ class StatusServiceTest(unittest.TestCase):
             ),
         )
         append_model(
+            self.temp_root / "edit-plans.jsonl",
+            EditPlanAsset(
+                session_id=session_id,
+                match_index=1,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=60.0,
+                timeline=[
+                    TimelineSegment(
+                        role="teaser",
+                        source_start_seconds=10.0,
+                        source_end_seconds=20.0,
+                        reason="highlight_keyword",
+                    ),
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=0.0,
+                        source_end_seconds=60.0,
+                        reason="full_validated_match",
+                    ),
+                ],
+                created_at=self._now(),
+            ),
+        )
+        append_model(
             self.temp_root / "export-assets.jsonl",
             ExportAsset(
                 session_id=session_id,
@@ -160,6 +187,10 @@ class StatusServiceTest(unittest.TestCase):
             HighlightPlannerStateFile(processed_match_keys=[f"{session_id}:1"]),
         )
         self._write_json_state(
+            self.temp_root / "editing-state.json",
+            EditPlannerStateFile(processed_match_keys=[f"{session_id}:1"]),
+        )
+        self._write_json_state(
             self.temp_root / "copywriter-state.json",
             CopywriterStateFile(processed_match_keys=[f"{session_id}:1"]),
         )
@@ -170,11 +201,14 @@ class StatusServiceTest(unittest.TestCase):
         self.assertEqual(status["postprocess"]["match_boundaries"], 1)
         self.assertEqual(status["postprocess"]["subtitle_assets"], 1)
         self.assertEqual(status["postprocess"]["highlight_plans"], 1)
+        self.assertEqual(status["postprocess"]["edit_plans"], 1)
         self.assertEqual(status["postprocess"]["export_assets"], 1)
         self.assertEqual(status["postprocess"]["copy_assets"], 1)
         self.assertEqual(status["postprocess"]["missing_copies"], 0)
         self.assertEqual(status["highlights"]["plans"], 1)
         self.assertEqual(status["highlights"]["processed_matches"], 1)
+        self.assertEqual(status["editing"]["plans"], 1)
+        self.assertEqual(status["editing"]["processed_matches"], 1)
         self.assertEqual(status["copywriter"]["processed_matches"], 1)
 
     def test_subtitle_fallback_and_missing_outputs_are_degraded(self) -> None:

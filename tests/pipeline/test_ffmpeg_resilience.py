@@ -38,6 +38,7 @@ from arl.recorder.service import (
     RecorderService,
 )
 from arl.shared.contracts import (
+    EditPlanAsset,
     ExportAsset,
     HighlightClipWindow,
     HighlightPlanAsset,
@@ -46,6 +47,7 @@ from arl.shared.contracts import (
     RecordingAsset,
     SourceType,
     SubtitleAsset,
+    TimelineSegment,
 )
 from arl.shared.jsonl_store import append_model
 from arl.windows_agent.models import AgentSnapshot
@@ -2865,6 +2867,32 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def _append_edit_plan(self, *, duration: float) -> None:
+        append_model(
+            self.temp_root / "edit-plans.jsonl",
+            EditPlanAsset(
+                session_id="session-e",
+                match_index=1,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=duration,
+                timeline=[
+                    TimelineSegment(
+                        role="teaser",
+                        source_start_seconds=90.0,
+                        source_end_seconds=105.0,
+                        reason="highlight_keyword",
+                    ),
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=0.0,
+                        source_end_seconds=duration,
+                        reason="full_validated_match",
+                    ),
+                ],
+                created_at=datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
+
     def _audit_payloads(self) -> list[dict]:
         path = self.temp_root / "exporter-events.jsonl"
         if not path.exists():
@@ -3381,6 +3409,119 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertNotIn("-t", command)
         self.assertNotIn("-vf", command)
         self.assertNotIn("-af", command)
+
+    def test_edit_plan_is_ignored_by_default_for_full_match_export(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=120.0)
+        self._append_edit_plan(duration=120.0)
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(self.settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        self.assertIn("-to", command)
+        self.assertEqual(command[command.index("-to") + 1], "120.0")
+        self.assertNotIn("-filter_complex", command)
+
+    def test_edit_plan_export_uses_teaser_before_main_filter_complex(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=120.0)
+        settings = self.settings.model_copy(deep=True)
+        settings.export.use_edit_plans = True
+        settings.export.use_highlight_plans = True
+        settings.export.burn_subtitles = True
+        self._append_edit_plan(duration=120.0)
+        append_model(
+            self.temp_root / "highlight-plans.jsonl",
+            HighlightPlanAsset(
+                session_id="session-e",
+                match_index=1,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=120.0,
+                windows=[
+                    HighlightClipWindow(
+                        started_at_seconds=0.0,
+                        ended_at_seconds=30.0,
+                        reason="highlight_keyword",
+                    )
+                ],
+                created_at=datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        self.assertIn("-filter_complex", command)
+        filter_complex = command[command.index("-filter_complex") + 1]
+        self.assertIn("[0:v]subtitles=", filter_complex)
+        self.assertIn("trim=start=90.000:end=105.000,setpts=PTS-STARTPTS[v0]", filter_complex)
+        self.assertIn("atrim=start=90.000:end=105.000,asetpts=PTS-STARTPTS[a0]", filter_complex)
+        self.assertIn("trim=start=0.000:end=120.000,setpts=PTS-STARTPTS[v1]", filter_complex)
+        self.assertIn("[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]", filter_complex)
+        self.assertIn("-map", command)
+        self.assertEqual(command[command.index("-map") + 1], "[v]")
+        self.assertNotIn("select=", filter_complex)
+
+    def test_invalid_edit_plan_falls_back_to_full_match_export(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=120.0)
+        settings = self.settings.model_copy(deep=True)
+        settings.export.use_edit_plans = True
+        append_model(
+            self.temp_root / "edit-plans.jsonl",
+            EditPlanAsset(
+                session_id="session-e",
+                match_index=1,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=120.0,
+                timeline=[
+                    TimelineSegment(
+                        role="teaser",
+                        source_start_seconds=90.0,
+                        source_end_seconds=105.0,
+                        reason="highlight_keyword",
+                    )
+                ],
+                created_at=datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        self.assertIn("-to", command)
+        self.assertEqual(command[command.index("-to") + 1], "120.0")
+        self.assertNotIn("-filter_complex", command)
 
     def test_visual_only_highlight_plan_is_ignored(self) -> None:
         self._seed_export_inputs(boundary_ended_at_seconds=120.0)

@@ -13,11 +13,13 @@ from arl.exporter.models import ExporterAuditEvent, ExporterStateFile
 from arl.orchestrator.state_store import load_orchestrator_state
 from arl.segmenter.durations import recording_duration_seconds
 from arl.shared.contracts import (
+    EditPlanAsset,
     ExportAsset,
     HighlightPlanAsset,
     MatchBoundary,
     RecordingAsset,
     SubtitleAsset,
+    TimelineSegment,
 )
 from arl.shared.failure_contracts import FailureDecision, classify_failure_reason
 from arl.shared.ffmpeg_runner import rotate_stderr_logs, run_ffmpeg_attempt
@@ -32,6 +34,7 @@ class ExporterService:
         self.boundaries_path = settings.storage.temp_dir / "match-boundaries.jsonl"
         self.subtitles_path = settings.storage.temp_dir / "subtitle-assets.jsonl"
         self.highlight_plans_path = settings.storage.temp_dir / "highlight-plans.jsonl"
+        self.edit_plans_path = settings.storage.temp_dir / "edit-plans.jsonl"
         self.exports_path = settings.storage.temp_dir / "export-assets.jsonl"
         self.state_path = settings.storage.temp_dir / "exporter-state.json"
         self.audit_path = settings.storage.temp_dir / "exporter-events.jsonl"
@@ -49,6 +52,10 @@ class ExporterService:
         log("exporter", f"ffmpeg_video_codec={self.settings.export.ffmpeg_video_codec}")
         log("exporter", f"burn_subtitles={int(self.settings.export.burn_subtitles)}")
         log("exporter", f"use_ass_subtitles={int(self.settings.export.use_ass_subtitles)}")
+        log(
+            "exporter",
+            f"use_edit_plans={int(self.settings.export.use_edit_plans)}",
+        )
         log(
             "exporter",
             f"use_highlight_plans={int(self.settings.export.use_highlight_plans)}",
@@ -79,6 +86,11 @@ class ExporterService:
             if self.settings.export.use_highlight_plans
             else []
         )
+        edit_plans = (
+            load_models(self.edit_plans_path, EditPlanAsset)
+            if self.settings.export.use_edit_plans
+            else []
+        )
         recording_assets = load_models(
             self.settings.storage.temp_dir / "recording-assets.jsonl",
             RecordingAsset,
@@ -87,6 +99,7 @@ class ExporterService:
         highlight_plan_map = {
             (item.session_id, item.match_index): item for item in highlight_plans
         }
+        edit_plan_map = {(item.session_id, item.match_index): item for item in edit_plans}
         recording_by_session = {item.session_id: item for item in recording_assets}
         platform_by_session = self._platform_by_session()
         state = self._load_state()
@@ -177,12 +190,20 @@ class ExporterService:
                 continue
 
             platform = platform_by_session.get(boundary.session_id, "unknown")
+            edit_plan = (
+                self._valid_edit_plan(
+                    edit_plan_map.get((boundary.session_id, boundary.match_index)),
+                    boundary,
+                )
+                if self.settings.export.use_edit_plans
+                else None
+            )
             highlight_plan = (
                 self._valid_highlight_plan(
                     highlight_plan_map.get((boundary.session_id, boundary.match_index)),
                     boundary,
                 )
-                if self.settings.export.use_highlight_plans
+                if edit_plan is None and self.settings.export.use_highlight_plans
                 else None
             )
             output_path, was_ffmpeg_fallback = self._write_export(
@@ -191,6 +212,7 @@ class ExporterService:
                 recording_asset,
                 platform,
                 highlight_plan,
+                edit_plan,
             )
             if output_path is None:
                 self._mark_deferred(state, deferred_keys, key)
@@ -325,6 +347,7 @@ class ExporterService:
         recording_asset: RecordingAsset | None,
         platform: str,
         highlight_plan: HighlightPlanAsset | None = None,
+        edit_plan: EditPlanAsset | None = None,
     ) -> tuple[Path | None, bool]:
         ffmpeg_path = shutil.which("ffmpeg")
         if (
@@ -340,6 +363,7 @@ class ExporterService:
                 recording_asset,
                 platform,
                 highlight_plan,
+                edit_plan,
             )
 
         if self.settings.export.enable_ffmpeg:
@@ -367,6 +391,7 @@ class ExporterService:
         recording_asset: RecordingAsset,
         platform: str,
         highlight_plan: HighlightPlanAsset | None = None,
+        edit_plan: EditPlanAsset | None = None,
     ) -> tuple[Path | None, bool]:
         output_dir = self._platform_export_dir(platform)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -382,7 +407,16 @@ class ExporterService:
             )
             if subtitle_filter_path is None:
                 return None, False
-        if highlight_plan is not None:
+        if edit_plan is not None:
+            command = self._edit_plan_ffmpeg_command(
+                boundary=boundary,
+                subtitle_path=subtitle_filter_path,
+                burn_subtitles=burn_subtitles,
+                recording_path=recording_asset.path,
+                output_path=output_path,
+                edit_plan=edit_plan,
+            )
+        elif highlight_plan is not None:
             command = self._planned_ffmpeg_command(
                 boundary=boundary,
                 subtitle_path=subtitle_filter_path,
@@ -578,6 +612,71 @@ class ExporterService:
         self._remove_file_if_exists(output_path)
         return None, True
 
+    def _valid_edit_plan(
+        self,
+        plan: EditPlanAsset | None,
+        boundary: MatchBoundary,
+    ) -> EditPlanAsset | None:
+        if plan is None:
+            return None
+        tolerance_seconds = 1.0
+        if (
+            abs(plan.source_boundary_start_seconds - boundary.started_at_seconds)
+            > tolerance_seconds
+            or abs(plan.source_boundary_end_seconds - boundary.ended_at_seconds)
+            > tolerance_seconds
+        ):
+            log(
+                "exporter",
+                "ignored stale edit plan "
+                f"session_id={boundary.session_id} match_index={boundary.match_index}",
+            )
+            return None
+        duration = boundary.ended_at_seconds - boundary.started_at_seconds
+        if duration <= 0.0 or not plan.timeline:
+            return None
+        if plan.audio_beds or plan.sound_effects:
+            log(
+                "exporter",
+                "ignored unsupported edit plan audio extensions "
+                f"session_id={boundary.session_id} match_index={boundary.match_index}",
+            )
+            return None
+
+        main_indices = [
+            index for index, segment in enumerate(plan.timeline) if segment.role == "main"
+        ]
+        if len(main_indices) != 1:
+            return None
+        first_main_index = main_indices[0]
+        if first_main_index <= 0:
+            return None
+        first_main = plan.timeline[first_main_index]
+        segment_tolerance_seconds = 0.001
+        if abs(first_main.source_start_seconds) > segment_tolerance_seconds:
+            return None
+        if abs(first_main.source_end_seconds - duration) > segment_tolerance_seconds:
+            return None
+
+        for index, segment in enumerate(plan.timeline):
+            if segment.role not in {"teaser", "main"}:
+                return None
+            if segment.source_path is not None:
+                return None
+            if segment.transform is not None and segment.transform.kind != "none":
+                return None
+            if segment.source_start_seconds < 0.0:
+                return None
+            if segment.source_end_seconds <= segment.source_start_seconds:
+                return None
+            if segment.source_end_seconds > duration + tolerance_seconds:
+                return None
+            if index < first_main_index and segment.role != "teaser":
+                return None
+            if index > first_main_index:
+                return None
+        return plan
+
     def _valid_highlight_plan(
         self,
         plan: HighlightPlanAsset | None,
@@ -726,6 +825,92 @@ class ExporterService:
         command.extend(self._video_quality_args())
         command.extend([str(output_path)])
         return command
+
+    def _edit_plan_ffmpeg_command(
+        self,
+        *,
+        boundary: MatchBoundary,
+        subtitle_path: Path,
+        burn_subtitles: bool,
+        recording_path: str,
+        output_path: Path,
+        edit_plan: EditPlanAsset,
+    ) -> list[str]:
+        duration = boundary.ended_at_seconds - boundary.started_at_seconds
+        filter_parts: list[str] = []
+        concat_inputs: list[str] = []
+        for index, segment in enumerate(edit_plan.timeline):
+            video_label = f"v{index}"
+            audio_label = f"a{index}"
+            video_filters = self._timeline_video_filters(
+                segment,
+                subtitle_path=subtitle_path,
+                burn_subtitles=burn_subtitles,
+            )
+            filter_parts.append(f"[0:v]{','.join(video_filters)}[{video_label}]")
+            filter_parts.append(
+                "[0:a]"
+                f"atrim=start={segment.source_start_seconds:.3f}:"
+                f"end={segment.source_end_seconds:.3f},"
+                f"asetpts=PTS-STARTPTS[{audio_label}]"
+            )
+            concat_inputs.extend([f"[{video_label}]", f"[{audio_label}]"])
+        filter_parts.append(
+            ""
+            f"{''.join(concat_inputs)}"
+            f"concat=n={len(edit_plan.timeline)}:v=1:a=1[v][a]"
+        )
+        log(
+            "exporter",
+            "edit plan export "
+            f"session_id={boundary.session_id} match_index={boundary.match_index} "
+            f"segments={len(edit_plan.timeline)}",
+        )
+        command = [
+            "ffmpeg",
+            "-y",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            str(boundary.started_at_seconds),
+            "-t",
+            str(duration),
+            "-i",
+            recording_path,
+            "-filter_complex",
+            ";".join(filter_parts),
+            "-map",
+            "[v]",
+            "-map",
+            "[a]",
+        ]
+        command.extend(self._video_encode_args())
+        command.extend(self._video_quality_args())
+        command.extend([str(output_path)])
+        return command
+
+    def _timeline_video_filters(
+        self,
+        segment: TimelineSegment,
+        *,
+        subtitle_path: Path,
+        burn_subtitles: bool,
+    ) -> list[str]:
+        filters: list[str] = []
+        if burn_subtitles:
+            filters.append(self._subtitle_filter_arg(subtitle_path))
+        filters.extend(
+            [
+                (
+                    f"trim=start={segment.source_start_seconds:.3f}:"
+                    f"end={segment.source_end_seconds:.3f}"
+                ),
+                "setpts=PTS-STARTPTS",
+            ]
+        )
+        return filters
 
     def _highlight_select_expr(self, plan: HighlightPlanAsset) -> str:
         return "+".join(

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from arl.config import Settings
 from arl.copywriter.models import CopywriterStateFile, PublishingPackage
+from arl.editing.models import EditPlannerStateFile
 from arl.exporter.models import ExporterStateFile
 from arl.highlights.models import HighlightPlannerStateFile
 from arl.segmenter.models import (
@@ -18,6 +19,7 @@ from arl.segmenter.models import (
 )
 from arl.shared.contracts import (
     CopyAsset,
+    EditPlanAsset,
     ExportAsset,
     HighlightPlanAsset,
     MatchBoundary,
@@ -121,6 +123,12 @@ class PostProcessResetService:
             lambda item: item.session_id in session_ids,
             result.removed_rows_by_file,
         )
+        self._rewrite_jsonl(
+            self.temp_dir / "edit-plans.jsonl",
+            EditPlanAsset,
+            lambda item: item.session_id in session_ids,
+            result.removed_rows_by_file,
+        )
         self._rewrite_artifact_manifest(
             self.temp_dir / "export-assets.jsonl",
             ExportAsset,
@@ -188,6 +196,15 @@ class PostProcessResetService:
         self._rewrite_state(
             self.temp_dir / "highlight-planner-state.json",
             HighlightPlannerStateFile,
+            lambda state: self._remove_session_prefixed_keys(
+                state.processed_match_keys,
+                session_ids,
+            ),
+            result.removed_state_keys_by_file,
+        )
+        self._rewrite_state(
+            self.temp_dir / "editing-state.json",
+            EditPlannerStateFile,
             lambda state: self._remove_session_prefixed_keys(
                 state.processed_match_keys,
                 session_ids,

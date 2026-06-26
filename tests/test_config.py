@@ -278,6 +278,7 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertFalse(settings.export.burn_subtitles)
         self.assertEqual(settings.export.ffmpeg_crf, 18)
         self.assertEqual(settings.export.ffmpeg_preset, "slow")
+        self.assertFalse(settings.export.use_edit_plans)
         self.assertFalse(settings.export.use_highlight_plans)
         self.assertFalse(settings.export.use_hardware_encoding)
 
@@ -316,12 +317,27 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
 
     def test_export_optional_processing_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_EXPORT_USE_EDIT_PLANS"] = "1"
             os.environ["ARL_EXPORT_USE_HIGHLIGHT_PLANS"] = "1"
             os.environ["ARL_EXPORT_USE_HARDWARE_ENCODING"] = "1"
             settings = load_settings()
 
+        self.assertTrue(settings.export.use_edit_plans)
         self.assertTrue(settings.export.use_highlight_plans)
         self.assertTrue(settings.export.use_hardware_encoding)
+
+    def test_edit_planner_envs_load(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_EDIT_PLANNER_ENABLED"] = "1"
+            os.environ["ARL_EDIT_TEASER_MAX_SEGMENTS"] = "0"
+            os.environ["ARL_EDIT_TEASER_MAX_TOTAL_SECONDS"] = "0"
+            os.environ["ARL_EDIT_TEASER_MIN_SEGMENT_SECONDS"] = "0"
+            settings = load_settings()
+
+        self.assertTrue(settings.editing.enabled)
+        self.assertEqual(settings.editing.teaser_max_segments, 1)
+        self.assertEqual(settings.editing.teaser_max_total_seconds, 1.0)
+        self.assertEqual(settings.editing.teaser_min_segment_seconds, 0.1)
 
     def test_highlight_planner_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):

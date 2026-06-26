@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SourceType(str, Enum):
@@ -63,6 +63,33 @@ class HighlightPlanAsset(BaseModel):
     source_boundary_start_seconds: float
     source_boundary_end_seconds: float
     windows: list[HighlightClipWindow]
+    created_at: datetime
+
+
+class TimelineVideoTransform(BaseModel):
+    kind: str = "none"
+    scale: float = 1.0
+    x_anchor: float = 0.5
+    y_anchor: float = 0.5
+
+
+class TimelineSegment(BaseModel):
+    role: str
+    source_path: str | None = None
+    source_start_seconds: float
+    source_end_seconds: float
+    transform: TimelineVideoTransform | None = None
+    reason: str
+
+
+class EditPlanAsset(BaseModel):
+    session_id: str
+    match_index: int
+    source_boundary_start_seconds: float
+    source_boundary_end_seconds: float
+    timeline: list[TimelineSegment]
+    audio_beds: list[dict[str, object]] = Field(default_factory=list)
+    sound_effects: list[dict[str, object]] = Field(default_factory=list)
     created_at: datetime
 
 

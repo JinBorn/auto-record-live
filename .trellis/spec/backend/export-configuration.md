@@ -375,6 +375,154 @@ write_plan(drafts)
 
 ---
 
+## Scenario: Edit-Plan Teaser Rendering
+
+### 1. Scope / Trigger
+- Trigger: The pipeline needs upload-style presentation timelines where teaser
+  clips can be duplicated before the full validated match.
+- Trigger: This spans shared contracts, edit-planner state, CLI/postprocess
+  ordering, exporter FFmpeg command construction, status, and reset cleanup.
+
+### 2. Signatures
+- Shared contract:
+  ```python
+  class TimelineVideoTransform(BaseModel):
+      kind: str = "none"
+      scale: float = 1.0
+      x_anchor: float = 0.5
+      y_anchor: float = 0.5
+
+  class TimelineSegment(BaseModel):
+      role: str  # "teaser" | "main" | future "insert"
+      source_path: str | None = None
+      source_start_seconds: float
+      source_end_seconds: float
+      transform: TimelineVideoTransform | None = None
+      reason: str
+
+  class EditPlanAsset(BaseModel):
+      session_id: str
+      match_index: int
+      source_boundary_start_seconds: float
+      source_boundary_end_seconds: float
+      timeline: list[TimelineSegment]
+      audio_beds: list[dict[str, object]] = Field(default_factory=list)
+      sound_effects: list[dict[str, object]] = Field(default_factory=list)
+      created_at: datetime
+  ```
+- Stage state:
+  ```python
+  class EditPlannerStateFile(BaseModel):
+      processed_match_keys: list[str] = Field(default_factory=list)
+  ```
+- Files:
+  - `data/tmp/edit-plans.jsonl`
+  - `data/tmp/editing-state.json`
+- CLI:
+  ```bash
+  python -m arl.cli edit-planner --session-id <session_id>
+  python -m arl.cli edit-planner --session-id <session_id> --match-index <n> --force-reprocess
+  python -m arl.cli exporter --session-id <session_id> --force-reprocess
+  ```
+
+### 3. Contracts
+- Environment:
+  ```bash
+  ARL_EDIT_PLANNER_ENABLED=1
+  ARL_EDIT_TEASER_MAX_SEGMENTS=2
+  ARL_EDIT_TEASER_MAX_TOTAL_SECONDS=45
+  ARL_EDIT_TEASER_MIN_SEGMENT_SECONDS=3
+  ARL_EXPORT_USE_EDIT_PLANS=1
+  ```
+- Defaults must keep current exports unchanged:
+  - `EditingSettings.enabled=False`
+  - `ExportSettings.use_edit_plans=False`
+- Postprocess order must be:
+  `stage-hints-semantic -> segmenter -> subtitles -> highlight-planner -> edit-planner -> exporter -> copywriter`.
+- Edit planner reads complete `MatchBoundary` rows and matching
+  `HighlightPlanAsset` rows. It emits teaser segment(s), then one `main`
+  segment covering `[0.0, boundary_duration]`.
+- Planner segment times are always relative to the validated match boundary.
+  Do not mutate `MatchBoundary` or treat teaser windows as canonical match
+  starts.
+- Exporter selection precedence:
+  1. If `use_edit_plans=True` and a valid edit plan exists, render the edit plan.
+  2. Else if `use_highlight_plans=True` and a valid highlight plan exists, render
+     the highlight plan.
+  3. Else render the full validated boundary.
+- MVP renderer supports only local timeline segments (`source_path is None`),
+  roles `teaser` and `main`, empty `audio_beds` / `sound_effects`, and no
+  transform with `kind != "none"`. Future BGM/SFX/zoom/insert tasks must extend
+  the renderer before emitting non-empty extension fields.
+- `postprocess-reset` must remove target-session `edit-plans.jsonl` rows and
+  `editing-state.json` processed keys. `status` must report `edit_plans` and
+  `editing.processed_matches`.
+
+### 4. Validation & Error Matrix
+| Condition | Behavior |
+|-----------|----------|
+| `ARL_EXPORT_USE_EDIT_PLANS=0` | Exporter does not load or apply `edit-plans.jsonl` |
+| Edit planner disabled | `edit-planner` logs disabled and writes no state/manifest rows |
+| Boundary incomplete or confidence `<0.8` | Edit planner skips; exporter already skips incomplete boundaries |
+| Missing or stale highlight plan | Edit planner skips without marking the match processed |
+| Highlight window is negative, reversed, out of bounds, or shorter than teaser minimum | Window is ignored for teaser selection |
+| No valid teaser windows remain | Edit planner writes no edit plan and does not mark processed |
+| Existing processed key but manifest row is missing | Edit planner compacts state and can regenerate |
+| `--force-reprocess` is used | Edit planner appends a replacement row; downstream latest row wins |
+| Edit plan source boundary differs from current boundary by more than 1 second | Exporter ignores the edit plan and falls back |
+| Timeline has no main segment, more than one main segment, or main is first | Exporter ignores the edit plan and falls back |
+| Main segment does not start at `0.0` and end at boundary duration | Exporter ignores the edit plan and falls back |
+| Teaser appears after main, insert role appears, `source_path` is set, audio extensions are non-empty, or transform kind is not `none` | Exporter ignores the edit plan and falls back |
+| Burn-in subtitles are enabled | Exporter adds the existing escaped SRT/ASS `subtitles=` filter before each video `trim` in the edit-plan filter graph |
+
+### 5. Good/Base/Bad Cases
+- Good: A complete match with a valid highlight plan emits teaser clips and one
+  full main segment. Exporter with `ARL_EXPORT_USE_EDIT_PLANS=1` builds a
+  `filter_complex` graph with `trim` / `atrim` / `concat`.
+- Base: Edit plans are generated for analysis, but `ARL_EXPORT_USE_EDIT_PLANS=0`
+  keeps the current full-boundary or explicit highlight export behavior.
+- Bad: A teaser-only plan or a plan whose main segment starts mid-game is
+  rendered as a publishable export. This hides segmentation defects and must
+  fall back instead.
+
+### 6. Tests Required
+- Unit: edit planner writes teaser-first plus full-main plans from valid
+  highlight plans.
+- Unit: edit planner skips missing/stale/invalid highlight input without marking
+  processed.
+- Unit: edit planner supports session/match filters and `--force-reprocess`.
+- Config: edit planner env values load and clamp; edit-plan export defaults off.
+- CLI/postprocess: parser includes `edit-planner`; postprocess order includes it
+  between `highlight-planner` and `exporter`.
+- Exporter: edit plans are ignored by default, valid edit plans build
+  `filter_complex`, invalid plans fall back, and valid edit plans take
+  precedence over highlight plans only when enabled.
+- Status/reset: counts and cleanup include `edit-plans.jsonl` and
+  `editing-state.json`.
+
+### 7. Wrong vs Correct
+#### Wrong
+```python
+plan = edit_plan_map.get((boundary.session_id, boundary.match_index))
+command = render_edit_plan(plan)  # applies teaser timelines whenever a row exists
+```
+
+#### Correct
+```python
+edit_plan = (
+    valid_edit_plan(edit_plan_map.get(key), boundary)
+    if settings.export.use_edit_plans
+    else None
+)
+highlight_plan = (
+    valid_highlight_plan(highlight_plan_map.get(key), boundary)
+    if edit_plan is None and settings.export.use_highlight_plans
+    else None
+)
+```
+
+---
+
 ## Scenario: Vision Timer Completeness Gate
 
 ### 1. Scope / Trigger
@@ -680,7 +828,12 @@ def _video_quality_args(self) -> list[str]:
 | `ARL_EXPORT_ASS_FONT_SIZE` | int | 36 | ASS style font size, clamped to at least 1 |
 | `ARL_EXPORT_ASS_MARGIN_V` | int | 20 | ASS vertical bottom margin, clamped to at least 0 |
 | `ARL_EXPORT_ASS_OUTLINE` | int | 2 | ASS text outline width, clamped to at least 0 |
+| `ARL_EXPORT_USE_EDIT_PLANS` | bool | False | Apply teaser-before-main edit plans |
 | `ARL_EXPORT_USE_HIGHLIGHT_PLANS` | bool | False | Apply highlight condensing |
+| `ARL_EDIT_PLANNER_ENABLED` | bool | False | Run edit-plan generation stage |
+| `ARL_EDIT_TEASER_MAX_SEGMENTS` | int | 2 | Maximum teaser segments prepended before the main match |
+| `ARL_EDIT_TEASER_MAX_TOTAL_SECONDS` | float | 45.0 | Maximum total teaser duration |
+| `ARL_EDIT_TEASER_MIN_SEGMENT_SECONDS` | float | 3.0 | Minimum retained teaser segment duration |
 | `ARL_HIGHLIGHT_PLANNER_ENABLED` | bool | False | Run highlight detection stage |
 | `ARL_HIGHLIGHT_CONDENSED_ACTION_RESOLUTION_TAIL_SECONDS` | float | 40.0 | Maximum short narration tail retained after key/tactical action windows |
 | `ARL_HIGHLIGHT_CONDENSED_ACTION_RESOLUTION_GAP_SECONDS` | float | 8.0 | Maximum subtitle gap considered continuous action-resolution narration |

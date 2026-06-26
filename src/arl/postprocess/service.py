@@ -5,6 +5,7 @@ from typing import Any
 
 from arl.config import Settings
 from arl.copywriter.service import CopywriterService
+from arl.editing.service import EditingPlannerService
 from arl.exporter.service import ExporterService
 from arl.highlights.service import HighlightPlannerService
 from arl.recorder.asset_repair import RecordingAssetRepairService
@@ -59,6 +60,13 @@ class PostProcessService:
                 ),
             ),
             (
+                "edit-planner",
+                lambda: self._run_stage(
+                    EditingPlannerService(self.settings),
+                    session_ids=session_ids,
+                ),
+            ),
+            (
                 "exporter",
                 lambda: self._run_stage(ExporterService(self.settings), session_ids=session_ids),
             ),
@@ -105,6 +113,7 @@ class PostProcessService:
             f"match_boundaries={postprocess['match_boundaries']} "
             f"subtitle_assets={postprocess['subtitle_assets']} "
             f"highlight_plans={postprocess['highlight_plans']} "
+            f"edit_plans={postprocess['edit_plans']} "
             f"export_assets={postprocess['export_assets']} "
             f"copy_assets={postprocess['copy_assets']} "
             f"missing_subtitles={postprocess['missing_subtitles']} "

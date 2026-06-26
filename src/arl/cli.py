@@ -7,6 +7,7 @@ from pathlib import Path
 
 from arl.config import load_settings
 from arl.copywriter.service import CopywriterService
+from arl.editing.service import EditingPlannerService
 from arl.exporter.service import ExporterService
 from arl.highlights.service import HighlightPlannerService
 from arl.maintenance.service import MaintenanceService
@@ -531,6 +532,33 @@ def build_parser() -> argparse.ArgumentParser:
         type=_parse_csv_int_values,
         help="Only plan comma-separated match indices from boundaries.",
     )
+    edit_planner = subparsers.add_parser(
+        "edit-planner",
+        help="Run the teaser edit planner worker.",
+    )
+    edit_planner.add_argument(
+        "--force-reprocess",
+        action="store_true",
+        help="Regenerate targeted edit plans even when a matching plan already exists.",
+    )
+    edit_planner.add_argument(
+        "--session-id",
+        help="Only plan edit timelines for one session id.",
+    )
+    edit_planner.add_argument(
+        "--session-ids",
+        help="Only plan edit timelines for comma-separated session ids.",
+    )
+    edit_planner.add_argument(
+        "--match-index",
+        type=_parse_positive_int,
+        help="Only plan one match index from boundaries.",
+    )
+    edit_planner.add_argument(
+        "--match-indices",
+        type=_parse_csv_int_values,
+        help="Only plan comma-separated match indices from boundaries.",
+    )
     exporter = subparsers.add_parser("exporter", help="Run the exporter worker.")
     exporter.add_argument(
         "--session-id",
@@ -879,6 +907,26 @@ def main() -> int:
         HighlightPlannerService(settings).run(
             session_ids=highlight_session_ids,
             match_indices=highlight_match_indices,
+            force_reprocess=args.force_reprocess,
+        )
+        return 0
+
+    if args.command == "edit-planner":
+        edit_session_ids = _collect_session_ids(args)
+
+        edit_match_indices: set[int] | None = None
+        if args.match_index is not None or args.match_indices:
+            edit_match_indices = set()
+            if args.match_index is not None:
+                edit_match_indices.add(args.match_index)
+            if args.match_indices:
+                edit_match_indices.update(args.match_indices)
+            if not edit_match_indices:
+                edit_match_indices = None
+
+        EditingPlannerService(settings).run(
+            session_ids=edit_session_ids,
+            match_indices=edit_match_indices,
             force_reprocess=args.force_reprocess,
         )
         return 0

@@ -7,6 +7,7 @@ from typing import Any
 
 from arl.config import Settings
 from arl.copywriter.models import CopywriterStateFile
+from arl.editing.models import EditPlannerStateFile
 from arl.exporter.models import ExporterAuditEvent, ExporterStateFile
 from arl.highlights.models import HighlightPlannerStateFile
 from arl.orchestrator.models import OrchestratorStateFile, RecordingJobStatus
@@ -16,6 +17,7 @@ from arl.recorder.models import RecorderAuditEvent, RecorderStateFile
 from arl.recovery.service import RecoveryService
 from arl.shared.contracts import (
     CopyAsset,
+    EditPlanAsset,
     ExportAsset,
     HighlightPlanAsset,
     MatchBoundary,
@@ -36,6 +38,7 @@ class StatusService:
         recorder_state = self._load_recorder_state()
         subtitle_state = self._load_subtitle_state()
         highlight_state = self._load_highlight_state()
+        editing_state = self._load_editing_state()
         exporter_state = self._load_exporter_state()
         copywriter_state = self._load_copywriter_state()
 
@@ -54,6 +57,7 @@ class StatusService:
             self.temp_dir / "highlight-plans.jsonl",
             HighlightPlanAsset,
         )
+        edit_plans = load_models(self.temp_dir / "edit-plans.jsonl", EditPlanAsset)
         recorder_events = load_models(
             self.settings.orchestrator.recorder_event_log_path,
             RecorderAuditEvent,
@@ -175,6 +179,7 @@ class StatusService:
                 "incomplete_match_boundaries": len(boundaries) - len(complete_boundaries),
                 "subtitle_assets": len(subtitle_assets),
                 "highlight_plans": len(highlight_plans),
+                "edit_plans": len(edit_plans),
                 "export_assets": len(export_assets),
                 "copy_assets": len(copy_assets),
                 "missing_subtitles": missing_subtitles,
@@ -194,6 +199,10 @@ class StatusService:
             "highlights": {
                 "processed_matches": len(highlight_state.processed_match_keys),
                 "plans": len(highlight_plans),
+            },
+            "editing": {
+                "processed_matches": len(editing_state.processed_match_keys),
+                "plans": len(edit_plans),
             },
             "exporter": {
                 "processed_matches": len(exporter_state.processed_match_keys),
@@ -230,6 +239,12 @@ class StatusService:
         if not path.exists():
             return HighlightPlannerStateFile()
         return HighlightPlannerStateFile.model_validate_json(path.read_text(encoding="utf-8"))
+
+    def _load_editing_state(self) -> EditPlannerStateFile:
+        path = self.temp_dir / "editing-state.json"
+        if not path.exists():
+            return EditPlannerStateFile()
+        return EditPlannerStateFile.model_validate_json(path.read_text(encoding="utf-8"))
 
     def _load_exporter_state(self) -> ExporterStateFile:
         path = self.temp_dir / "exporter-state.json"

@@ -263,6 +263,13 @@ class HighlightSettings(BaseModel):
         return self
 
 
+class EditingSettings(BaseModel):
+    enabled: bool = False
+    teaser_max_segments: int = 2
+    teaser_max_total_seconds: float = 45.0
+    teaser_min_segment_seconds: float = 3.0
+
+
 class ExportSettings(BaseModel):
     enable_ffmpeg: bool = False
     ffmpeg_video_codec: str = "auto"
@@ -282,6 +289,7 @@ class ExportSettings(BaseModel):
     backoff_initial_seconds: float = 2.0
     backoff_max_seconds: float = 8.0
     batch_fallback_budget: int = 3
+    use_edit_plans: bool = False
     use_highlight_plans: bool = False
     use_hardware_encoding: bool = False
 
@@ -330,6 +338,7 @@ class Settings(BaseModel):
     segmenter: SegmenterSettings = Field(default_factory=SegmenterSettings)
     vision: VisionSettings = Field(default_factory=VisionSettings)
     highlights: HighlightSettings = Field(default_factory=HighlightSettings)
+    editing: EditingSettings = Field(default_factory=EditingSettings)
     subtitles: SubtitleSettings = Field(default_factory=SubtitleSettings)
     export: ExportSettings = Field(default_factory=ExportSettings)
     maintenance: MaintenanceSettings = Field(default_factory=MaintenanceSettings)
@@ -810,6 +819,18 @@ def load_settings() -> Settings:
                 ),
             ),
         ),
+        editing=EditingSettings(
+            enabled=_env_bool("ARL_EDIT_PLANNER_ENABLED", False),
+            teaser_max_segments=max(1, _env_int("ARL_EDIT_TEASER_MAX_SEGMENTS", 2)),
+            teaser_max_total_seconds=max(
+                1.0,
+                _env_float("ARL_EDIT_TEASER_MAX_TOTAL_SECONDS", 45.0),
+            ),
+            teaser_min_segment_seconds=max(
+                0.1,
+                _env_float("ARL_EDIT_TEASER_MIN_SEGMENT_SECONDS", 3.0),
+            ),
+        ),
         recording=RecordingSettings(
             preferred_resolution=os.getenv("ARL_RECORDING_PREFERRED_RESOLUTION", "1080p"),
             segment_minutes=int(os.getenv("ARL_RECORDING_SEGMENT_MINUTES", "30")),
@@ -899,6 +920,7 @@ def load_settings() -> Settings:
                 1,
                 int(os.getenv("ARL_EXPORTER_BATCH_FALLBACK_BUDGET", "3")),
             ),
+            use_edit_plans=_env_bool("ARL_EXPORT_USE_EDIT_PLANS", False),
             use_highlight_plans=_env_bool("ARL_EXPORT_USE_HIGHLIGHT_PLANS", False),
             use_hardware_encoding=_env_bool("ARL_EXPORT_USE_HARDWARE_ENCODING", False),
         ),

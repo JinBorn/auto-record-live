@@ -8,6 +8,7 @@ from pathlib import Path
 
 from arl.config import Settings, StorageSettings
 from arl.copywriter.models import CopywriterStateFile, PublishingPackage
+from arl.editing.models import EditPlannerStateFile
 from arl.exporter.models import ExporterStateFile
 from arl.highlights.models import HighlightPlannerStateFile
 from arl.postprocess.reset import PostProcessResetService
@@ -19,12 +20,14 @@ from arl.segmenter.models import (
 )
 from arl.shared.contracts import (
     CopyAsset,
+    EditPlanAsset,
     ExportAsset,
     HighlightClipWindow,
     HighlightPlanAsset,
     MatchBoundary,
     MatchStage,
     SubtitleAsset,
+    TimelineSegment,
 )
 from arl.shared.jsonl_store import append_model, load_models
 from arl.subtitles.models import SubtitleStateFile
@@ -136,6 +139,12 @@ class PostProcessResetServiceTest(unittest.TestCase):
                 ),
             ),
             (
+                "editing-state.json",
+                EditPlannerStateFile(
+                    processed_match_keys=[f"{target}:1", f"{other}:1"]
+                ),
+            ),
+            (
                 "copywriter-state.json",
                 CopywriterStateFile(processed_match_keys=[f"{target}:1", f"{other}:1"]),
             ),
@@ -175,6 +184,7 @@ class PostProcessResetServiceTest(unittest.TestCase):
         self.assertEqual(self._session_ids("match-boundaries.jsonl", MatchBoundary), [other])
         self.assertEqual(self._session_ids("subtitle-assets.jsonl", SubtitleAsset), [other])
         self.assertEqual(self._session_ids("highlight-plans.jsonl", HighlightPlanAsset), [other])
+        self.assertEqual(self._session_ids("edit-plans.jsonl", EditPlanAsset), [other])
         self.assertEqual(self._session_ids("export-assets.jsonl", ExportAsset), [other])
         self.assertEqual(self._session_ids("copy-assets.jsonl", CopyAsset), [other])
         self.assertEqual(
@@ -207,6 +217,10 @@ class PostProcessResetServiceTest(unittest.TestCase):
             self._read_json(self.temp_root / "highlight-planner-state.json")[
                 "processed_match_keys"
             ],
+            [f"{other}:1"],
+        )
+        self.assertEqual(
+            self._read_json(self.temp_root / "editing-state.json")["processed_match_keys"],
             [f"{other}:1"],
         )
         self.assertEqual(
@@ -322,6 +336,30 @@ class PostProcessResetServiceTest(unittest.TestCase):
                         ended_at_seconds=1800.0,
                         reason="fixture",
                     )
+                ],
+                created_at=created_at,
+            ),
+        )
+        append_model(
+            self.temp_root / "edit-plans.jsonl",
+            EditPlanAsset(
+                session_id=session_id,
+                match_index=1,
+                source_boundary_start_seconds=75.0,
+                source_boundary_end_seconds=1875.0,
+                timeline=[
+                    TimelineSegment(
+                        role="teaser",
+                        source_start_seconds=300.0,
+                        source_end_seconds=330.0,
+                        reason="highlight_keyword",
+                    ),
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=0.0,
+                        source_end_seconds=1800.0,
+                        reason="full_validated_match",
+                    ),
                 ],
                 created_at=created_at,
             ),

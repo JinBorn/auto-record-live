@@ -197,6 +197,29 @@ class CliUnattendedTest(unittest.TestCase):
         self.assertEqual(args.match_index, 2)
         self.assertEqual(args.match_indices, [3, 4])
 
+    def test_edit_planner_command_parses_filters(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "edit-planner",
+                "--session-id",
+                "session-a",
+                "--session-ids",
+                "session-b,session-c",
+                "--match-index",
+                "2",
+                "--match-indices",
+                "3,4",
+                "--force-reprocess",
+            ]
+        )
+
+        self.assertEqual(args.command, "edit-planner")
+        self.assertEqual(args.session_id, "session-a")
+        self.assertEqual(args.session_ids, "session-b,session-c")
+        self.assertEqual(args.match_index, 2)
+        self.assertEqual(args.match_indices, [3, 4])
+        self.assertTrue(args.force_reprocess)
+
 
 if __name__ == "__main__":
     unittest.main()

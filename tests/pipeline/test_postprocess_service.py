@@ -43,6 +43,9 @@ class PostProcessServiceTest(unittest.TestCase):
             "arl.postprocess.service.HighlightPlannerService",
             side_effect=lambda _: _StageStub(calls, "highlight-planner"),
         ), patch(
+            "arl.postprocess.service.EditingPlannerService",
+            side_effect=lambda _: _StageStub(calls, "edit-planner"),
+        ), patch(
             "arl.postprocess.service.ExporterService",
             side_effect=lambda _: _StageStub(calls, "exporter"),
         ), patch(
@@ -58,6 +61,7 @@ class PostProcessServiceTest(unittest.TestCase):
                 "segmenter",
                 "subtitles",
                 "highlight-planner",
+                "edit-planner",
                 "exporter",
                 "copywriter",
             ],
@@ -80,6 +84,9 @@ class PostProcessServiceTest(unittest.TestCase):
             "arl.postprocess.service.HighlightPlannerService",
             side_effect=lambda _: _FilteredStageStub(calls, "highlight-planner"),
         ), patch(
+            "arl.postprocess.service.EditingPlannerService",
+            side_effect=lambda _: _FilteredStageStub(calls, "edit-planner"),
+        ), patch(
             "arl.postprocess.service.ExporterService",
             side_effect=lambda _: _FilteredStageStub(calls, "exporter"),
         ), patch(
@@ -95,6 +102,7 @@ class PostProcessServiceTest(unittest.TestCase):
                 ("segmenter", {"session-a", "session-b"}),
                 ("subtitles", {"session-a", "session-b"}),
                 ("highlight-planner", {"session-a", "session-b"}),
+                ("edit-planner", {"session-a", "session-b"}),
                 ("exporter", {"session-a", "session-b"}),
                 ("copywriter", {"session-a", "session-b"}),
             ],
