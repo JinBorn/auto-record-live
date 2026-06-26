@@ -82,14 +82,30 @@ class TimelineSegment(BaseModel):
     reason: str
 
 
+class AudioBed(BaseModel):
+    source_path: str
+    timeline_start_seconds: float = 0.0
+    timeline_end_seconds: float | None = None
+    gain_db: float = -24.0
+    loop: bool = True
+    reason: str = "background_music"
+
+
+class SoundEffectHit(BaseModel):
+    source_path: str
+    at_seconds: float
+    gain_db: float = -12.0
+    reason: str
+
+
 class EditPlanAsset(BaseModel):
     session_id: str
     match_index: int
     source_boundary_start_seconds: float
     source_boundary_end_seconds: float
     timeline: list[TimelineSegment]
-    audio_beds: list[dict[str, object]] = Field(default_factory=list)
-    sound_effects: list[dict[str, object]] = Field(default_factory=list)
+    audio_beds: list[AudioBed] = Field(default_factory=list)
+    sound_effects: list[SoundEffectHit] = Field(default_factory=list)
     created_at: datetime
 
 

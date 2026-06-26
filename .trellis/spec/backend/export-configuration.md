@@ -400,14 +400,28 @@ write_plan(drafts)
       transform: TimelineVideoTransform | None = None
       reason: str
 
+  class AudioBed(BaseModel):
+      source_path: str
+      timeline_start_seconds: float = 0.0
+      timeline_end_seconds: float | None = None
+      gain_db: float = -24.0
+      loop: bool = True
+      reason: str = "background_music"
+
+  class SoundEffectHit(BaseModel):
+      source_path: str
+      at_seconds: float
+      gain_db: float = -12.0
+      reason: str
+
   class EditPlanAsset(BaseModel):
       session_id: str
       match_index: int
       source_boundary_start_seconds: float
       source_boundary_end_seconds: float
       timeline: list[TimelineSegment]
-      audio_beds: list[dict[str, object]] = Field(default_factory=list)
-      sound_effects: list[dict[str, object]] = Field(default_factory=list)
+      audio_beds: list[AudioBed] = Field(default_factory=list)
+      sound_effects: list[SoundEffectHit] = Field(default_factory=list)
       created_at: datetime
   ```
 - Stage state:
@@ -432,10 +446,16 @@ write_plan(drafts)
   ARL_EDIT_TEASER_MAX_SEGMENTS=2
   ARL_EDIT_TEASER_MAX_TOTAL_SECONDS=45
   ARL_EDIT_TEASER_MIN_SEGMENT_SECONDS=3
+  ARL_EDIT_AUDIO_MIXING_ENABLED=0
+  ARL_EDIT_BGM_PATH=
+  ARL_EDIT_BGM_GAIN_DB=-24
+  ARL_EDIT_SFX_PATH=
+  ARL_EDIT_SFX_GAIN_DB=-12
   ARL_EXPORT_USE_EDIT_PLANS=1
   ```
 - Defaults must keep current exports unchanged:
   - `EditingSettings.enabled=False`
+  - `EditingSettings.audio_mixing_enabled=False`
   - `ExportSettings.use_edit_plans=False`
 - Postprocess order must be:
   `stage-hints-semantic -> segmenter -> subtitles -> highlight-planner -> edit-planner -> exporter -> copywriter`.
@@ -450,10 +470,26 @@ write_plan(drafts)
   2. Else if `use_highlight_plans=True` and a valid highlight plan exists, render
      the highlight plan.
   3. Else render the full validated boundary.
-- MVP renderer supports only local timeline segments (`source_path is None`),
-  roles `teaser` and `main`, empty `audio_beds` / `sound_effects`, and no
-  transform with `kind != "none"`. Future BGM/SFX/zoom/insert tasks must extend
-  the renderer before emitting non-empty extension fields.
+- Renderer supports local timeline segments (`source_path is None`), roles
+  `teaser` and `main`, optional local audio instructions, and no transform with
+  `kind != "none"`.
+- Audio mixing is opt-in at planner time. When
+  `ARL_EDIT_AUDIO_MIXING_ENABLED=1`, the planner may emit:
+  - one BGM `AudioBed` when `ARL_EDIT_BGM_PATH` is set and exists as a file
+  - `SoundEffectHit` rows at teaser output starts for high-signal reasons:
+    `highlight_keyword`, `condensed_key_event`, and `condensed_tactical`
+- Missing configured BGM/SFX files must not block edit-plan generation; the
+  planner logs the skip and writes the audio-free base plan.
+- Exporter renders audio instructions only through the edit-plan path. It must
+  validate that every audio source exists as a local file, timeline positions
+  are inside the rendered output duration, BGM gain is in `[-60, 0]`, and SFX
+  gain is in `[-60, 6]`. Invalid audio instructions make the edit plan
+  unsupported, so exporter falls back to highlight/full export.
+- Audio-enabled edit-plan FFmpeg commands concatenate original segment audio to
+  `[basea]`, add BGM/SFX asset inputs after the recording input, apply `volume`
+  plus `adelay` where needed, and mix with
+  `amix=inputs=N:duration=first:dropout_transition=0[a]`. Audio-free edit-plan
+  commands keep the existing `[v][a]` concat output shape.
 - `postprocess-reset` must remove target-session `edit-plans.jsonl` rows and
   `editing-state.json` processed keys. `status` must report `edit_plans` and
   `editing.processed_matches`.
@@ -472,13 +508,18 @@ write_plan(drafts)
 | Edit plan source boundary differs from current boundary by more than 1 second | Exporter ignores the edit plan and falls back |
 | Timeline has no main segment, more than one main segment, or main is first | Exporter ignores the edit plan and falls back |
 | Main segment does not start at `0.0` and end at boundary duration | Exporter ignores the edit plan and falls back |
-| Teaser appears after main, insert role appears, `source_path` is set, audio extensions are non-empty, or transform kind is not `none` | Exporter ignores the edit plan and falls back |
+| Teaser appears after main, insert role appears, `source_path` is set, or transform kind is not `none` | Exporter ignores the edit plan and falls back |
+| Audio source path is missing, not a file, out of output range, reversed, or has gain outside the safety range | Exporter ignores the edit plan and falls back |
+| `ARL_EDIT_AUDIO_MIXING_ENABLED=1` but configured BGM/SFX files are missing | Edit planner writes the base audio-free edit plan and logs missing-file skips |
 | Burn-in subtitles are enabled | Exporter adds the existing escaped SRT/ASS `subtitles=` filter before each video `trim` in the edit-plan filter graph |
 
 ### 5. Good/Base/Bad Cases
 - Good: A complete match with a valid highlight plan emits teaser clips and one
   full main segment. Exporter with `ARL_EXPORT_USE_EDIT_PLANS=1` builds a
   `filter_complex` graph with `trim` / `atrim` / `concat`.
+- Good: With explicit existing BGM/SFX paths and audio mixing enabled, the edit
+  plan carries typed audio instructions and exporter mixes them under original
+  segment audio with `amix=duration=first`.
 - Base: Edit plans are generated for analysis, but `ARL_EXPORT_USE_EDIT_PLANS=0`
   keeps the current full-boundary or explicit highlight export behavior.
 - Bad: A teaser-only plan or a plan whose main segment starts mid-game is
@@ -492,11 +533,15 @@ write_plan(drafts)
   processed.
 - Unit: edit planner supports session/match filters and `--force-reprocess`.
 - Config: edit planner env values load and clamp; edit-plan export defaults off.
+- Config: audio mixing env values load, default off, and gain values clamp to
+  safe ranges.
 - CLI/postprocess: parser includes `edit-planner`; postprocess order includes it
   between `highlight-planner` and `exporter`.
 - Exporter: edit plans are ignored by default, valid edit plans build
   `filter_complex`, invalid plans fall back, and valid edit plans take
   precedence over highlight plans only when enabled.
+- Exporter: audio-enabled edit plans add asset inputs, `volume`, `adelay`, and
+  `amix`; missing/stale audio asset paths fall back.
 - Status/reset: counts and cleanup include `edit-plans.jsonl` and
   `editing-state.json`.
 
@@ -834,6 +879,11 @@ def _video_quality_args(self) -> list[str]:
 | `ARL_EDIT_TEASER_MAX_SEGMENTS` | int | 2 | Maximum teaser segments prepended before the main match |
 | `ARL_EDIT_TEASER_MAX_TOTAL_SECONDS` | float | 45.0 | Maximum total teaser duration |
 | `ARL_EDIT_TEASER_MIN_SEGMENT_SECONDS` | float | 3.0 | Minimum retained teaser segment duration |
+| `ARL_EDIT_AUDIO_MIXING_ENABLED` | bool | False | Emit local BGM/SFX audio instructions into edit plans |
+| `ARL_EDIT_BGM_PATH` | path | None | Explicit local background-music file path |
+| `ARL_EDIT_BGM_GAIN_DB` | float | -24.0 | BGM gain in dB, clamped to `[-60.0, 0.0]` |
+| `ARL_EDIT_SFX_PATH` | path | None | Explicit local sound-effect file path |
+| `ARL_EDIT_SFX_GAIN_DB` | float | -12.0 | SFX gain in dB, clamped to `[-60.0, 6.0]` |
 | `ARL_HIGHLIGHT_PLANNER_ENABLED` | bool | False | Run highlight detection stage |
 | `ARL_HIGHLIGHT_CONDENSED_ACTION_RESOLUTION_TAIL_SECONDS` | float | 40.0 | Maximum short narration tail retained after key/tactical action windows |
 | `ARL_HIGHLIGHT_CONDENSED_ACTION_RESOLUTION_GAP_SECONDS` | float | 8.0 | Maximum subtitle gap considered continuous action-resolution narration |

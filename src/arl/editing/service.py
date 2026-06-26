@@ -5,10 +5,12 @@ from datetime import datetime, timezone
 from arl.config import Settings
 from arl.editing.models import EditPlannerStateFile
 from arl.shared.contracts import (
+    AudioBed,
     EditPlanAsset,
     HighlightClipWindow,
     HighlightPlanAsset,
     MatchBoundary,
+    SoundEffectHit,
     TimelineSegment,
 )
 from arl.shared.jsonl_store import append_model, load_models
@@ -21,6 +23,8 @@ _REASON_PRIORITY = {
     "condensed_tactical": 2,
     "condensed_context": 3,
 }
+
+_SFX_REASONS = {"highlight_keyword", "condensed_key_event", "condensed_tactical"}
 
 
 class EditingPlannerService:
@@ -211,14 +215,77 @@ class EditingPlannerService:
                 reason="full_validated_match",
             )
         )
+        audio_beds, sound_effects = self._build_audio_instructions(
+            boundary,
+            timeline,
+        )
         return EditPlanAsset(
             session_id=boundary.session_id,
             match_index=boundary.match_index,
             source_boundary_start_seconds=boundary.started_at_seconds,
             source_boundary_end_seconds=boundary.ended_at_seconds,
             timeline=timeline,
+            audio_beds=audio_beds,
+            sound_effects=sound_effects,
             created_at=datetime.now(timezone.utc),
         )
+
+    def _build_audio_instructions(
+        self,
+        boundary: MatchBoundary,
+        timeline: list[TimelineSegment],
+    ) -> tuple[list[AudioBed], list[SoundEffectHit]]:
+        if not self.settings.editing.audio_mixing_enabled:
+            return [], []
+
+        audio_beds: list[AudioBed] = []
+        sound_effects: list[SoundEffectHit] = []
+        bgm_path = self.settings.editing.bgm_path
+        if bgm_path is not None:
+            if bgm_path.is_file():
+                audio_beds.append(
+                    AudioBed(
+                        source_path=str(bgm_path),
+                        timeline_start_seconds=0.0,
+                        timeline_end_seconds=None,
+                        gain_db=self.settings.editing.bgm_gain_db,
+                        loop=True,
+                    )
+                )
+            else:
+                log(
+                    "editing",
+                    "skip configured bgm asset "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    f"path={bgm_path} reason=missing_file",
+                )
+
+        sfx_path = self.settings.editing.sfx_path
+        if sfx_path is None:
+            return audio_beds, sound_effects
+        if not sfx_path.is_file():
+            log(
+                "editing",
+                "skip configured sfx asset "
+                f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                f"path={sfx_path} reason=missing_file",
+            )
+            return audio_beds, sound_effects
+
+        timeline_cursor = 0.0
+        for segment in timeline:
+            segment_duration = segment.source_end_seconds - segment.source_start_seconds
+            if segment.role == "teaser" and segment.reason in _SFX_REASONS:
+                sound_effects.append(
+                    SoundEffectHit(
+                        source_path=str(sfx_path),
+                        at_seconds=round(timeline_cursor, 3),
+                        gain_db=self.settings.editing.sfx_gain_db,
+                        reason=segment.reason,
+                    )
+                )
+            timeline_cursor += max(0.0, segment_duration)
+        return audio_beds, sound_effects
 
     def _select_teaser_windows(
         self,
@@ -360,4 +427,3 @@ class EditingPlannerService:
     @staticmethod
     def _key(session_id: str, match_index: int) -> str:
         return f"{session_id}:{match_index}"
-

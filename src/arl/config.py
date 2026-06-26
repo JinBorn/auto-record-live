@@ -268,6 +268,11 @@ class EditingSettings(BaseModel):
     teaser_max_segments: int = 2
     teaser_max_total_seconds: float = 45.0
     teaser_min_segment_seconds: float = 3.0
+    audio_mixing_enabled: bool = False
+    bgm_path: Path | None = None
+    bgm_gain_db: float = -24.0
+    sfx_path: Path | None = None
+    sfx_gain_db: float = -12.0
 
 
 class ExportSettings(BaseModel):
@@ -395,6 +400,11 @@ def _pick_indexed(values: list[str], index: int, default: str = "") -> str:
     if index < len(values):
         return values[index]
     return default
+
+
+def _env_optional_path(key: str) -> Path | None:
+    raw = os.getenv(key, "").strip()
+    return Path(raw) if raw else None
 
 
 def _load_douyin_settings() -> DouyinSettings:
@@ -829,6 +839,20 @@ def load_settings() -> Settings:
             teaser_min_segment_seconds=max(
                 0.1,
                 _env_float("ARL_EDIT_TEASER_MIN_SEGMENT_SECONDS", 3.0),
+            ),
+            audio_mixing_enabled=_env_bool(
+                "ARL_EDIT_AUDIO_MIXING_ENABLED",
+                False,
+            ),
+            bgm_path=_env_optional_path("ARL_EDIT_BGM_PATH"),
+            bgm_gain_db=min(
+                0.0,
+                max(-60.0, _env_float("ARL_EDIT_BGM_GAIN_DB", -24.0)),
+            ),
+            sfx_path=_env_optional_path("ARL_EDIT_SFX_PATH"),
+            sfx_gain_db=min(
+                6.0,
+                max(-60.0, _env_float("ARL_EDIT_SFX_GAIN_DB", -12.0)),
             ),
         ),
         recording=RecordingSettings(

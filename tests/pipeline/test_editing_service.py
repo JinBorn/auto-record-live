@@ -92,6 +92,77 @@ class EditingPlannerServiceTest(unittest.TestCase):
         )
         self.assertEqual(state.processed_match_keys, [f"{session_id}:1"])
 
+    def test_audio_instructions_emit_only_for_existing_configured_assets(self) -> None:
+        session_id = "session-edit-audio"
+        bgm_path = self.temp_root / "audio" / "bgm.mp3"
+        sfx_path = self.temp_root / "audio" / "wow.wav"
+        bgm_path.parent.mkdir(parents=True, exist_ok=True)
+        bgm_path.write_text("fake bgm", encoding="utf-8")
+        sfx_path.write_text("fake sfx", encoding="utf-8")
+        self.settings.editing.audio_mixing_enabled = True
+        self.settings.editing.bgm_path = bgm_path
+        self.settings.editing.bgm_gain_db = -30.0
+        self.settings.editing.sfx_path = sfx_path
+        self.settings.editing.sfx_gain_db = -9.0
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=300.0,
+                    ended_at_seconds=325.0,
+                    reason="highlight_keyword",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=120.0,
+                    ended_at_seconds=135.0,
+                    reason="condensed_context",
+                ),
+            ],
+            duration=600.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plans = load_models(self.edit_plans_path, EditPlanAsset)
+        self.assertEqual(len(plans), 1)
+        plan = plans[0]
+        self.assertEqual(len(plan.audio_beds), 1)
+        self.assertEqual(plan.audio_beds[0].source_path, str(bgm_path))
+        self.assertEqual(plan.audio_beds[0].gain_db, -30.0)
+        self.assertTrue(plan.audio_beds[0].loop)
+        self.assertEqual(len(plan.sound_effects), 1)
+        self.assertEqual(plan.sound_effects[0].source_path, str(sfx_path))
+        self.assertEqual(plan.sound_effects[0].at_seconds, 0.0)
+        self.assertEqual(plan.sound_effects[0].gain_db, -9.0)
+        self.assertEqual(plan.sound_effects[0].reason, "highlight_keyword")
+
+    def test_missing_audio_assets_preserve_base_edit_plan(self) -> None:
+        session_id = "session-edit-missing-audio"
+        self.settings.editing.audio_mixing_enabled = True
+        self.settings.editing.bgm_path = self.temp_root / "audio" / "missing-bgm.mp3"
+        self.settings.editing.sfx_path = self.temp_root / "audio" / "missing-sfx.wav"
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=100.0,
+                    ended_at_seconds=110.0,
+                    reason="highlight_keyword",
+                )
+            ],
+            duration=600.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plans = load_models(self.edit_plans_path, EditPlanAsset)
+        self.assertEqual(len(plans), 1)
+        self.assertEqual(len(plans[0].timeline), 2)
+        self.assertEqual(plans[0].audio_beds, [])
+        self.assertEqual(plans[0].sound_effects, [])
+
     def test_missing_highlight_plan_does_not_mark_processed(self) -> None:
         session_id = "session-edit-missing-highlight"
         self._append_boundary(session_id, duration=600.0)
@@ -230,4 +301,3 @@ class EditingPlannerServiceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

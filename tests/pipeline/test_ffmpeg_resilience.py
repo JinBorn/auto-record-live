@@ -38,6 +38,7 @@ from arl.recorder.service import (
     RecorderService,
 )
 from arl.shared.contracts import (
+    AudioBed,
     EditPlanAsset,
     ExportAsset,
     HighlightClipWindow,
@@ -46,6 +47,7 @@ from arl.shared.contracts import (
     MatchBoundary,
     RecordingAsset,
     SourceType,
+    SoundEffectHit,
     SubtitleAsset,
     TimelineSegment,
 )
@@ -2867,7 +2869,13 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def _append_edit_plan(self, *, duration: float) -> None:
+    def _append_edit_plan(
+        self,
+        *,
+        duration: float,
+        audio_beds: list[AudioBed] | None = None,
+        sound_effects: list[SoundEffectHit] | None = None,
+    ) -> None:
         append_model(
             self.temp_root / "edit-plans.jsonl",
             EditPlanAsset(
@@ -2889,6 +2897,8 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
                         reason="full_validated_match",
                     ),
                 ],
+                audio_beds=audio_beds or [],
+                sound_effects=sound_effects or [],
                 created_at=datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc),
             ),
         )
@@ -3481,6 +3491,93 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertIn("-map", command)
         self.assertEqual(command[command.index("-map") + 1], "[v]")
         self.assertNotIn("select=", filter_complex)
+
+    def test_edit_plan_audio_mix_adds_asset_inputs_and_amix(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=120.0)
+        settings = self.settings.model_copy(deep=True)
+        settings.export.use_edit_plans = True
+        bgm_path = self.temp_root / "audio" / "bgm.mp3"
+        sfx_path = self.temp_root / "audio" / "wow.wav"
+        bgm_path.parent.mkdir(parents=True, exist_ok=True)
+        bgm_path.write_text("fake bgm", encoding="utf-8")
+        sfx_path.write_text("fake sfx", encoding="utf-8")
+        self._append_edit_plan(
+            duration=120.0,
+            audio_beds=[
+                AudioBed(
+                    source_path=str(bgm_path),
+                    timeline_start_seconds=0.0,
+                    timeline_end_seconds=None,
+                    gain_db=-24.0,
+                    loop=True,
+                )
+            ],
+            sound_effects=[
+                SoundEffectHit(
+                    source_path=str(sfx_path),
+                    at_seconds=15.0,
+                    gain_db=-12.0,
+                    reason="highlight_keyword",
+                )
+            ],
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        self.assertIn("-stream_loop", command)
+        self.assertEqual(command[command.index("-stream_loop") + 1], "-1")
+        self.assertIn(str(bgm_path), command)
+        self.assertIn(str(sfx_path), command)
+        filter_complex = command[command.index("-filter_complex") + 1]
+        self.assertIn("concat=n=2:v=1:a=1[v][basea]", filter_complex)
+        self.assertIn("[1:a]atrim=start=0.000:duration=135.000", filter_complex)
+        self.assertIn("volume=0.063096[bgm0]", filter_complex)
+        self.assertIn("[2:a]asetpts=PTS-STARTPTS,volume=0.251189,adelay=15000|15000[sfx0]", filter_complex)
+        self.assertIn("[basea][bgm0][sfx0]amix=inputs=3:duration=first:dropout_transition=0[a]", filter_complex)
+
+    def test_edit_plan_with_missing_audio_asset_falls_back(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=120.0)
+        settings = self.settings.model_copy(deep=True)
+        settings.export.use_edit_plans = True
+        self._append_edit_plan(
+            duration=120.0,
+            audio_beds=[
+                AudioBed(
+                    source_path=str(self.temp_root / "missing" / "bgm.mp3"),
+                    gain_db=-24.0,
+                )
+            ],
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        self.assertIn("-to", command)
+        self.assertEqual(command[command.index("-to") + 1], "120.0")
+        self.assertNotIn("-filter_complex", command)
 
     def test_invalid_edit_plan_falls_back_to_full_match_export(self) -> None:
         self._seed_export_inputs(boundary_ended_at_seconds=120.0)

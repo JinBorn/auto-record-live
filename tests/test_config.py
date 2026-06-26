@@ -339,6 +339,32 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(settings.editing.teaser_max_total_seconds, 1.0)
         self.assertEqual(settings.editing.teaser_min_segment_seconds, 0.1)
 
+    def test_edit_audio_mixing_envs_load_and_clamp(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_EDIT_AUDIO_MIXING_ENABLED"] = "1"
+            os.environ["ARL_EDIT_BGM_PATH"] = "C:/audio/bgm.mp3"
+            os.environ["ARL_EDIT_BGM_GAIN_DB"] = "3"
+            os.environ["ARL_EDIT_SFX_PATH"] = "C:/audio/wow.wav"
+            os.environ["ARL_EDIT_SFX_GAIN_DB"] = "12"
+            settings = load_settings()
+
+        self.assertTrue(settings.editing.audio_mixing_enabled)
+        self.assertEqual(settings.editing.bgm_path, Path("C:/audio/bgm.mp3"))
+        self.assertEqual(settings.editing.bgm_gain_db, 0.0)
+        self.assertEqual(settings.editing.sfx_path, Path("C:/audio/wow.wav"))
+        self.assertEqual(settings.editing.sfx_gain_db, 6.0)
+
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_EDIT_BGM_GAIN_DB"] = "-90"
+            os.environ["ARL_EDIT_SFX_GAIN_DB"] = "-90"
+            settings = load_settings()
+
+        self.assertFalse(settings.editing.audio_mixing_enabled)
+        self.assertIsNone(settings.editing.bgm_path)
+        self.assertEqual(settings.editing.bgm_gain_db, -60.0)
+        self.assertIsNone(settings.editing.sfx_path)
+        self.assertEqual(settings.editing.sfx_gain_db, -60.0)
+
     def test_highlight_planner_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             os.environ["ARL_HIGHLIGHT_PLANNER_ENABLED"] = "0"

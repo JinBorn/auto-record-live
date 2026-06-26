@@ -13,11 +13,13 @@ from arl.exporter.models import ExporterAuditEvent, ExporterStateFile
 from arl.orchestrator.state_store import load_orchestrator_state
 from arl.segmenter.durations import recording_duration_seconds
 from arl.shared.contracts import (
+    AudioBed,
     EditPlanAsset,
     ExportAsset,
     HighlightPlanAsset,
     MatchBoundary,
     RecordingAsset,
+    SoundEffectHit,
     SubtitleAsset,
     TimelineSegment,
 )
@@ -26,6 +28,10 @@ from arl.shared.ffmpeg_runner import rotate_stderr_logs, run_ffmpeg_attempt
 from arl.shared.jsonl_store import append_model, load_models
 from arl.shared.logging import log
 from arl.subtitles.ass import AssSubtitleStyle, write_ass_from_srt
+
+
+_BGM_GAIN_RANGE_DB = (-60.0, 0.0)
+_SFX_GAIN_RANGE_DB = (-60.0, 6.0)
 
 
 class ExporterService:
@@ -635,13 +641,6 @@ class ExporterService:
         duration = boundary.ended_at_seconds - boundary.started_at_seconds
         if duration <= 0.0 or not plan.timeline:
             return None
-        if plan.audio_beds or plan.sound_effects:
-            log(
-                "exporter",
-                "ignored unsupported edit plan audio extensions "
-                f"session_id={boundary.session_id} match_index={boundary.match_index}",
-            )
-            return None
 
         main_indices = [
             index for index, segment in enumerate(plan.timeline) if segment.role == "main"
@@ -675,7 +674,62 @@ class ExporterService:
                 return None
             if index > first_main_index:
                 return None
+        rendered_duration = self._edit_plan_output_duration(plan)
+        if not self._valid_edit_plan_audio(plan, boundary, rendered_duration):
+            return None
         return plan
+
+    def _valid_edit_plan_audio(
+        self,
+        plan: EditPlanAsset,
+        boundary: MatchBoundary,
+        rendered_duration: float,
+    ) -> bool:
+        for index, bed in enumerate(plan.audio_beds):
+            if not self._audio_source_is_valid(bed.source_path):
+                log(
+                    "exporter",
+                    "ignored edit plan audio bed "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    f"index={index} reason=missing_source",
+                )
+                return False
+            if bed.timeline_start_seconds < 0.0:
+                return False
+            if bed.timeline_start_seconds >= rendered_duration:
+                return False
+            if bed.timeline_end_seconds is not None:
+                if bed.timeline_end_seconds <= bed.timeline_start_seconds:
+                    return False
+                if bed.timeline_end_seconds > rendered_duration + 0.001:
+                    return False
+            if not self._gain_in_range(bed.gain_db, _BGM_GAIN_RANGE_DB):
+                return False
+
+        for index, hit in enumerate(plan.sound_effects):
+            if not self._audio_source_is_valid(hit.source_path):
+                log(
+                    "exporter",
+                    "ignored edit plan sound effect "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    f"index={index} reason=missing_source",
+                )
+                return False
+            if hit.at_seconds < 0.0 or hit.at_seconds >= rendered_duration:
+                return False
+            if not self._gain_in_range(hit.gain_db, _SFX_GAIN_RANGE_DB):
+                return False
+        return True
+
+    @staticmethod
+    def _audio_source_is_valid(source_path: str) -> bool:
+        path = Path(source_path)
+        return path.exists() and path.is_file()
+
+    @staticmethod
+    def _gain_in_range(value: float, valid_range: tuple[float, float]) -> bool:
+        minimum, maximum = valid_range
+        return minimum <= value <= maximum
 
     def _valid_highlight_plan(
         self,
@@ -837,6 +891,7 @@ class ExporterService:
         edit_plan: EditPlanAsset,
     ) -> list[str]:
         duration = boundary.ended_at_seconds - boundary.started_at_seconds
+        has_audio_mix = bool(edit_plan.audio_beds or edit_plan.sound_effects)
         filter_parts: list[str] = []
         concat_inputs: list[str] = []
         for index, segment in enumerate(edit_plan.timeline):
@@ -855,11 +910,14 @@ class ExporterService:
                 f"asetpts=PTS-STARTPTS[{audio_label}]"
             )
             concat_inputs.extend([f"[{video_label}]", f"[{audio_label}]"])
+        concat_audio_label = "basea" if has_audio_mix else "a"
         filter_parts.append(
             ""
             f"{''.join(concat_inputs)}"
-            f"concat=n={len(edit_plan.timeline)}:v=1:a=1[v][a]"
+            f"concat=n={len(edit_plan.timeline)}:v=1:a=1[v][{concat_audio_label}]"
         )
+        if has_audio_mix:
+            filter_parts.extend(self._edit_plan_audio_filters(edit_plan))
         log(
             "exporter",
             "edit plan export "
@@ -879,17 +937,119 @@ class ExporterService:
             str(duration),
             "-i",
             recording_path,
-            "-filter_complex",
-            ";".join(filter_parts),
-            "-map",
-            "[v]",
-            "-map",
-            "[a]",
         ]
+        command.extend(self._edit_plan_audio_inputs(edit_plan))
+        command.extend(
+            [
+                "-filter_complex",
+                ";".join(filter_parts),
+                "-map",
+                "[v]",
+                "-map",
+                "[a]",
+            ]
+        )
         command.extend(self._video_encode_args())
         command.extend(self._video_quality_args())
         command.extend([str(output_path)])
         return command
+
+    def _edit_plan_audio_inputs(self, edit_plan: EditPlanAsset) -> list[str]:
+        args: list[str] = []
+        for bed in edit_plan.audio_beds:
+            if bed.loop:
+                args.extend(["-stream_loop", "-1"])
+            args.extend(["-i", bed.source_path])
+        for hit in edit_plan.sound_effects:
+            args.extend(["-i", hit.source_path])
+        return args
+
+    def _edit_plan_audio_filters(self, edit_plan: EditPlanAsset) -> list[str]:
+        filter_parts: list[str] = []
+        mix_inputs = ["[basea]"]
+        rendered_duration = self._edit_plan_output_duration(edit_plan)
+        next_input_index = 1
+        for index, bed in enumerate(edit_plan.audio_beds):
+            label = f"bgm{index}"
+            filter_parts.append(
+                self._audio_bed_filter(
+                    bed,
+                    input_index=next_input_index,
+                    label=label,
+                    rendered_duration=rendered_duration,
+                )
+            )
+            mix_inputs.append(f"[{label}]")
+            next_input_index += 1
+        for index, hit in enumerate(edit_plan.sound_effects):
+            label = f"sfx{index}"
+            filter_parts.append(
+                self._sound_effect_filter(
+                    hit,
+                    input_index=next_input_index,
+                    label=label,
+                )
+            )
+            mix_inputs.append(f"[{label}]")
+            next_input_index += 1
+        filter_parts.append(
+            ""
+            f"{''.join(mix_inputs)}"
+            f"amix=inputs={len(mix_inputs)}:duration=first:dropout_transition=0[a]"
+        )
+        return filter_parts
+
+    def _audio_bed_filter(
+        self,
+        bed: AudioBed,
+        *,
+        input_index: int,
+        label: str,
+        rendered_duration: float,
+    ) -> str:
+        start = bed.timeline_start_seconds
+        end = bed.timeline_end_seconds if bed.timeline_end_seconds is not None else rendered_duration
+        bed_duration = max(0.001, end - start)
+        filters = [
+            f"atrim=start=0.000:duration={bed_duration:.3f}",
+            "asetpts=PTS-STARTPTS",
+            f"volume={self._linear_gain(bed.gain_db)}",
+        ]
+        delay_ms = self._milliseconds(start)
+        if delay_ms > 0:
+            filters.append(f"adelay={delay_ms}|{delay_ms}")
+        return f"[{input_index}:a]{','.join(filters)}[{label}]"
+
+    def _sound_effect_filter(
+        self,
+        hit: SoundEffectHit,
+        *,
+        input_index: int,
+        label: str,
+    ) -> str:
+        delay_ms = self._milliseconds(hit.at_seconds)
+        return (
+            f"[{input_index}:a]"
+            "asetpts=PTS-STARTPTS,"
+            f"volume={self._linear_gain(hit.gain_db)},"
+            f"adelay={delay_ms}|{delay_ms}"
+            f"[{label}]"
+        )
+
+    @staticmethod
+    def _linear_gain(gain_db: float) -> str:
+        return f"{10 ** (gain_db / 20.0):.6f}"
+
+    @staticmethod
+    def _milliseconds(seconds: float) -> int:
+        return max(0, int(round(seconds * 1000)))
+
+    @staticmethod
+    def _edit_plan_output_duration(edit_plan: EditPlanAsset) -> float:
+        return sum(
+            max(0.0, segment.source_end_seconds - segment.source_start_seconds)
+            for segment in edit_plan.timeline
+        )
 
     def _timeline_video_filters(
         self,
