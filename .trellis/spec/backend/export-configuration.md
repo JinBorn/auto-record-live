@@ -176,18 +176,22 @@ ARL_EXPORT_USE_HIGHLIGHT_PLANS=1
       burn_subtitles: bool = False
       use_ass_subtitles: bool = False
       ass_font_name: str = "SimHei"
-      ass_font_size: int = 36
-      ass_margin_v: int = 20
+      ass_font_size: int = 32
+      ass_margin_v: int = 110
       ass_outline: int = 2
+      ass_max_chars_per_line: int = 18
+      ass_max_lines: int = 2
   ```
 - Environment:
   ```bash
   ARL_EXPORT_BURN_SUBTITLES=1
   ARL_EXPORT_USE_ASS_SUBTITLES=1
   ARL_EXPORT_ASS_FONT_NAME=SimHei
-  ARL_EXPORT_ASS_FONT_SIZE=36
-  ARL_EXPORT_ASS_MARGIN_V=20
+  ARL_EXPORT_ASS_FONT_SIZE=32
+  ARL_EXPORT_ASS_MARGIN_V=110
   ARL_EXPORT_ASS_OUTLINE=2
+  ARL_EXPORT_ASS_MAX_CHARS_PER_LINE=18
+  ARL_EXPORT_ASS_MAX_LINES=2
   ```
 - Helper module:
   ```python
@@ -203,7 +207,7 @@ ARL_EXPORT_USE_HIGHLIGHT_PLANS=1
   - burn enabled with ASS disabled: use the existing SRT path in `subtitles=`
   - placeholder SRT: do not burn subtitles and do not generate ASS
 - ASS sidecars must use the same `_subtitle_filter_arg()` escaping path as SRT subtitles so Windows drive letters and forward slashes stay valid for FFmpeg.
-- ASS style defaults are bottom-centered white text with black outline at `PlayResX=1280`, `PlayResY=720`, font size `36`, margin V `20`, and outline `2`.
+- ASS style defaults are bottom-centered white text with black outline at `PlayResX=1280`, `PlayResY=720`, font size `32`, margin V `110`, outline `2`, hard wrapping after `18` characters per visual line, and at most `2` lines per displayed Dialogue event. The raised/smaller default keeps burned subtitles above bottom HUD/game information, while wrapping prevents a single subtitle line from spanning most of the screen. If a cue wraps beyond the max-line limit, split it into consecutive Dialogue events over the original cue duration instead of rendering a dense 3+ line subtitle block. Use `ARL_EXPORT_ASS_MARGIN_V`, `ARL_EXPORT_ASS_FONT_SIZE`, `ARL_EXPORT_ASS_MAX_CHARS_PER_LINE`, and `ARL_EXPORT_ASS_MAX_LINES` to tune per layout.
 
 ### 4. Validation & Error Matrix
 | Condition | Behavior |
@@ -214,7 +218,7 @@ ARL_EXPORT_USE_HIGHLIGHT_PLANS=1
 | Real SRT contains valid cues | Write/overwrite `match-NN.ass` and pass it to `subtitles=` |
 | SRT is missing before export | Existing exporter missing-subtitle skip/defer behavior applies |
 | SRT has no valid cues during ASS conversion | Defer the export instead of writing a broken FFmpeg command |
-| Numeric ASS env values are below minimum | Clamp `font_size >= 1`, `margin_v >= 0`, and `outline >= 0` |
+| Numeric ASS env values are below minimum | Clamp `font_size >= 1`, `margin_v >= 0`, `outline >= 0`, `max_chars_per_line >= 1`, and `max_lines >= 1` |
 
 ### 5. Good/Base/Bad Cases
 - Good: `burn_subtitles=1` and `use_ass_subtitles=1` converts a real SRT to `match-01.ass`, then the FFmpeg command contains `-vf subtitles='.../match-01.ass'`.
@@ -223,7 +227,7 @@ ARL_EXPORT_USE_HIGHLIGHT_PLANS=1
 
 ### 6. Tests Required
 - Unit: ASS helper emits `[Script Info]`, `[V4+ Styles]`, `[Events]`, expected style fields, and `Dialogue:` rows.
-- Unit: ASS helper preserves SRT cue timing, text, multiline breaks, Chinese text, and common formatting-tag cleanup.
+- Unit: ASS helper preserves SRT cue timing, text, multiline breaks, Chinese text, common formatting-tag cleanup, deterministic long-line wrapping, and max-lines splitting.
 - Config: `tests/test_config.py` asserts ASS env values load and numeric values clamp.
 - Exporter: command tests assert `.ass` is used only when burn-in and ASS are both enabled.
 - Exporter: regression tests assert SRT burn-in, soft-subtitle stream-copy, and placeholder no-burn behavior remain unchanged.
@@ -391,6 +395,7 @@ write_plan(drafts)
       scale: float = 1.0
       x_anchor: float = 0.5
       y_anchor: float = 0.5
+      target: str | None = None
 
   class TimelineSegment(BaseModel):
       role: str  # "teaser" | "main" | future "insert"
@@ -447,6 +452,7 @@ write_plan(drafts)
   ARL_EDIT_TEASER_MAX_TOTAL_SECONDS=45
   ARL_EDIT_TEASER_MIN_SEGMENT_SECONDS=3
   ARL_EDIT_ZOOM_ENABLED=0
+  ARL_EDIT_ZOOM_TARGET=chat
   ARL_EDIT_ZOOM_SCALE=1.2
   ARL_EDIT_ZOOM_X_ANCHOR=0.5
   ARL_EDIT_ZOOM_Y_ANCHOR=0.5
@@ -466,8 +472,15 @@ write_plan(drafts)
 - Postprocess order must be:
   `stage-hints-semantic -> segmenter -> subtitles -> highlight-planner -> edit-planner -> exporter -> copywriter`.
 - Edit planner reads complete `MatchBoundary` rows and matching
-  `HighlightPlanAsset` rows. It emits teaser segment(s), then one `main`
-  segment covering `[0.0, boundary_duration]`.
+  `HighlightPlanAsset` rows. It may emit high-confidence teaser segment(s), then
+  `main` segment(s) copied from the validated highlight/condensed windows.
+  Main segments must cover both the start and the end of the source boundary,
+  but they must not be a single full-boundary `full_validated_match` segment.
+- Teasers are optional. The planner should prepend teaser segments only for
+  explicit high-confidence highlight windows (`highlight_keyword`). Generic
+  `condensed_key_event` or `condensed_tactical` windows are useful main-edit
+  material, but they are not sufficient by themselves for a cold-open teaser.
+  If no high-confidence teaser remains, write a valid main-only edit plan.
 - Planner segment times are always relative to the validated match boundary.
   Do not mutate `MatchBoundary` or treat teaser windows as canonical match
   starts.
@@ -481,26 +494,67 @@ write_plan(drafts)
   `kind in {"none", "punch_in"}`.
 - Punch-in zoom is opt-in at planner time. When `ARL_EDIT_ZOOM_ENABLED=1`, the
   planner may apply `TimelineVideoTransform(kind="punch_in")` to high-signal
-  teaser segments only, up to `ARL_EDIT_ZOOM_MAX_SEGMENTS`. The main segment
-  remains transform-free in the MVP.
+  `teaser` or `main` segments with reasons `highlight_keyword`,
+  `condensed_key_event`, or `condensed_tactical`, up to
+  `ARL_EDIT_ZOOM_MAX_SEGMENTS`. This keeps close-ups anchored to concrete
+  highlight moments instead of cropping the whole video.
+- `ARL_EDIT_ZOOM_TARGET=chat` is the default target and maps to the bottom-left
+  crop anchor (`x_anchor=0.0`, `y_anchor=1.0`) for in-game chat/HUD interaction
+  close-ups. Use `center` for legacy centered punch-in or `custom` to honor
+  `ARL_EDIT_ZOOM_X_ANCHOR` / `ARL_EDIT_ZOOM_Y_ANCHOR`.
 - Punch-in transforms must use a safe static transform: `1.0 < scale <= 1.5`
   and anchors inside `[0.0, 1.0]`. Exporter renders them with per-segment
   `scale` + `crop` filters and falls back for unsupported transform payloads.
 - Audio mixing is opt-in at planner time. When
   `ARL_EDIT_AUDIO_MIXING_ENABLED=1`, the planner may emit:
   - one BGM `AudioBed` when `ARL_EDIT_BGM_PATH` is set and exists as a file
-  - `SoundEffectHit` rows at teaser output starts for high-signal reasons:
-    `highlight_keyword`, `condensed_key_event`, and `condensed_tactical`
+  - matched local library BGM tracks when `ARL_EDIT_BGM_PATH` is unset and
+    `ARL_EDIT_BGM_LIBRARY_PATH` points at a JSON manifest. The manifest may be a
+    list of track objects or `{"tracks": [...]}`; each track supports `path`
+    (relative to the manifest file or absolute), `tags`, `mood`, `energy`, and
+    `phase`. The planner infers context tags from subtitle text, highlight
+    reasons, and streamer name, then scores library tracks by tag overlap,
+    phase (`early` / `climax`), mood, and energy. Common Chinese aliases in
+    `tags`, `mood`, and `phase` are normalized before scoring, so operators may
+    write manifests with Chinese-only values such as `机器人`, `套路`, `前期`,
+    `高潮`, `俏皮`, or `高燃`. Long edits may select one early track plus one
+    climax track with the same fade/switch behavior as generated default BGM.
+    Library loading must log a compact diagnostic summary when a manifest path
+    is configured, including loaded track count and skipped malformed or
+    missing-file entries; no-match logs must include inferred context tags and
+    available track count without dumping transcript text.
+  - generated default WAV BGM assets under `data/tmp/editing-audio/` when
+    `ARL_EDIT_BGM_PATH` is unset and the library is missing, invalid, empty, or
+    has no positive match; long edit plans should split BGM into a playful early
+    bed and a higher-energy later bed
+  - `SoundEffectHit` rows at teaser and main output starts for high-signal
+    reasons: `highlight_keyword`, `condensed_key_event`, and
+    `condensed_tactical`. The planner must rate-limit generated SFX hits so
+    they stay occasional emphasis points instead of playing on every retained
+    window.
+  - a generated default `wow.wav` SFX under `data/tmp/editing-audio/` when
+    `ARL_EDIT_SFX_PATH` is unset
+- When `ARL_EDIT_SKIP_BGM_WHEN_SOURCE_HAS_MUSIC=1` (default), the planner must
+  inspect the matching source `RecordingAsset` audio before adding any BGM bed.
+  If multiple sampled windows indicate a persistent music-like bed in the
+  livestream recording, it skips both configured and default BGM for that match
+  while still allowing SFX hits. Missing recording assets, missing ffmpeg, decode
+  errors, or low-confidence/no-music samples must not block edit planning and
+  must fall back to the normal BGM decision path.
+  For segmented recordings, source-music detection must resolve the match
+  boundary to `MediaSpan` rows and sample concrete chunk paths with chunk-local
+  timestamps; the manifest JSON path must never be passed to FFmpeg as media.
 - Missing configured BGM/SFX files must not block edit-plan generation; the
-  planner logs the skip and writes the audio-free base plan.
+  planner logs the skip and writes the audio-free base plan for that configured
+  asset instead of silently replacing an explicit operator path.
 - Exporter renders audio instructions only through the edit-plan path. It must
   validate that every audio source exists as a local file, timeline positions
   are inside the rendered output duration, BGM gain is in `[-60, 0]`, and SFX
   gain is in `[-60, 6]`. Invalid audio instructions make the edit plan
   unsupported, so exporter falls back to highlight/full export.
 - Audio-enabled edit-plan FFmpeg commands concatenate original segment audio to
-  `[basea]`, add BGM/SFX asset inputs after the recording input, apply `volume`
-  plus `adelay` where needed, and mix with
+  `[basea]`, add BGM/SFX asset inputs after the recording input, apply `volume`,
+  short BGM `afade` in/out, plus `adelay` where needed, and mix with
   `amix=inputs=N:duration=first:dropout_transition=0[a]`. Audio-free edit-plan
   commands keep the existing `[v][a]` concat output shape.
 - `postprocess-reset` must remove target-session `edit-plans.jsonl` rows and
@@ -515,28 +569,53 @@ write_plan(drafts)
 | Boundary incomplete or confidence `<0.8` | Edit planner skips; exporter already skips incomplete boundaries |
 | Missing or stale highlight plan | Edit planner skips without marking the match processed |
 | Highlight window is negative, reversed, out of bounds, or shorter than teaser minimum | Window is ignored for teaser selection |
-| No valid teaser windows remain | Edit planner writes no edit plan and does not mark processed |
+| No high-confidence teaser windows remain but main windows are valid | Edit planner writes a main-only edit plan and marks processed |
+| Highlight windows do not cover both source start and source end | Edit planner writes no edit plan and does not mark processed |
+| Highlight windows collapse to one full-boundary main segment | Edit planner writes no edit plan; use full/highlight export instead |
 | Existing processed key but manifest row is missing | Edit planner compacts state and can regenerate |
+| Existing edit plan contains `full_validated_match` | Edit planner treats it as stale and can append a replacement; exporter ignores it and falls back |
+| Existing edit plan no longer matches current zoom settings or lacks required high-signal main punch-ins | Edit planner treats it as stale and can append a replacement |
 | `--force-reprocess` is used | Edit planner appends a replacement row; downstream latest row wins |
 | Edit plan source boundary differs from current boundary by more than 1 second | Exporter ignores the edit plan and falls back |
-| Timeline has no main segment, more than one main segment, or main is first | Exporter ignores the edit plan and falls back |
-| Main segment does not start at `0.0` and end at boundary duration | Exporter ignores the edit plan and falls back |
+| Timeline has no main segment or teaser appears after main | Exporter ignores the edit plan and falls back |
+| Timeline starts with main and contains only main segments | Exporter accepts the main-only edit plan |
+| Main segment sequence lacks a segment starting at `0.0` or ending at boundary duration | Exporter ignores the edit plan and falls back |
+| Main segment sequence is a single full-boundary `full_validated_match` segment | Exporter ignores the edit plan and falls back |
 | Teaser appears after main, insert role appears, or `source_path` is set | Exporter ignores the edit plan and falls back |
 | Transform kind is not `none` or `punch_in`, punch-in scale is outside `(1.0, 1.5]`, or anchors are outside `[0.0, 1.0]` | Exporter ignores the edit plan and falls back |
 | Audio source path is missing, not a file, out of output range, reversed, or has gain outside the safety range | Exporter ignores the edit plan and falls back |
 | `ARL_EDIT_AUDIO_MIXING_ENABLED=1` but configured BGM/SFX files are missing | Edit planner writes the base audio-free edit plan and logs missing-file skips |
-| Burn-in subtitles are enabled | Exporter adds the existing escaped SRT/ASS `subtitles=` filter before each video `trim` in the edit-plan filter graph |
+| `ARL_EDIT_BGM_LIBRARY_PATH` is set and contains matching local tracks | Edit planner emits library-backed `AudioBed` rows before falling back to generated default BGM |
+| BGM library manifest contains malformed rows or missing local files | Edit planner logs loaded/skipped counts once, ignores invalid rows, and keeps processing valid tracks |
+| `ARL_EDIT_BGM_LIBRARY_PATH` is missing, invalid JSON, has missing files, or has no positive match | Edit planner keeps the normal generated default BGM behavior |
+| `ARL_EDIT_AUDIO_MIXING_ENABLED=1` and BGM/SFX paths are unset | Edit planner generates deterministic default WAV assets under `storage.temp_dir/editing-audio/` and references them from `AudioBed` / `SoundEffectHit` rows |
+| Source recording audio already has a persistent music bed and skip-source-music protection is enabled | Edit planner emits no BGM `AudioBed` for that match, keeps eligible `SoundEffectHit` rows, and logs the skip confidence |
+| Source recording is segmented | Source-music detection resolves chunk spans and samples chunk-local windows before deciding whether to skip BGM |
+| Source music detection cannot run or is inconclusive | Edit planner keeps the normal configured/default BGM behavior |
+| Burn-in subtitles are enabled | Exporter writes an edit-plan subtitle sidecar retimed to the edited output timeline, then applies `subtitles=` after video `concat` so punch-in transforms do not scale subtitle text |
+| Edit-plan source media resolves to chunk spans | Exporter expands every timeline segment into chunk-local media spans, preserves the segment transform on each expanded span, and starts BGM/SFX inputs after all media inputs |
 
 ### 5. Good/Base/Bad Cases
-- Good: A complete match with a valid highlight plan emits teaser clips and one
-  full main segment. Exporter with `ARL_EXPORT_USE_EDIT_PLANS=1` builds a
-  `filter_complex` graph with `trim` / `atrim` / `concat`.
+- Good: A complete match with a valid condensed/highlight plan emits optional
+  teaser clips plus multiple `main` segments from the same validated edit
+  windows. Exporter with `ARL_EXPORT_USE_EDIT_PLANS=1` builds a
+  `filter_complex` graph with per-segment `trim` / `atrim` / `concat`.
 - Good: With explicit existing BGM/SFX paths and audio mixing enabled, the edit
   plan carries typed audio instructions and exporter mixes them under original
   segment audio with `amix=duration=first`.
-- Good: With zoom enabled, a high-signal teaser segment carries
-  `TimelineVideoTransform(kind="punch_in", scale=1.2, ...)`, and exporter adds
-  static `scale` / `crop` filters before concat.
+- Good: With audio mixing enabled and no configured audio paths, the edit plan
+  references generated low-volume BGM/SFX WAV files; long edits switch from
+  playful BGM to a higher-energy BGM later in the timeline with a short
+  fade-out/fade-in transition instead of a hard cut.
+- Good: Main-only edit plans can still receive a small number of default "wow"
+  SFX hits on high-signal `condensed_key_event` / `condensed_tactical` windows,
+  while nearby hits are suppressed to avoid over-dense sound effects.
+- Good: With zoom enabled, a high-signal teaser or main segment carries
+  `TimelineVideoTransform(kind="punch_in", scale=1.2, target="chat", ...)`,
+  and exporter adds static `scale` / `crop` filters before concat.
+- Good: A main segment from `8.0` to `12.0` seconds on a recording split at
+  `10.0` seconds becomes two FFmpeg inputs with local trims `8.0..10.0` and
+  `0.0..2.0`, then rejoins through the same edit-plan concat graph.
 - Base: Edit plans are generated for analysis, but `ARL_EXPORT_USE_EDIT_PLANS=0`
   keeps the current full-boundary or explicit highlight export behavior.
 - Bad: A teaser-only plan or a plan whose main segment starts mid-game is
@@ -544,25 +623,57 @@ write_plan(drafts)
   fall back instead.
 
 ### 6. Tests Required
-- Unit: edit planner writes teaser-first plus full-main plans from valid
-  highlight plans.
+- Unit: edit planner writes teaser-first plus multi-main plans from explicit
+  highlight windows.
+- Unit: edit planner writes main-only multi-main plans when generic condensed
+  key/tactical windows provide no high-confidence teaser.
+- Unit: edit planner treats legacy `full_validated_match` edit plans as stale
+  and appends a replacement without `--force-reprocess`.
+- Unit: edit planner applies punch-in transforms to high-signal main segments
+  when no teaser consumes the zoom budget, and treats legacy no-main-zoom plans
+  as stale when zoom is enabled.
 - Unit: edit planner skips missing/stale/invalid highlight input without marking
   processed.
 - Unit: edit planner supports session/match filters and `--force-reprocess`.
 - Config: edit planner env values load and clamp; edit-plan export defaults off.
 - Config: audio mixing env values load, default off, and gain values clamp to
   safe ranges.
+- Unit: edit planner generates deterministic default BGM/SFX WAV assets when
+  audio mixing is enabled and no explicit audio paths are configured.
+- Unit: edit planner selects local BGM library tracks from subtitle/highlight
+  context when `ARL_EDIT_BGM_LIBRARY_PATH` is configured, and replans older
+  default-BGM edit plans when the current library match differs.
+- Unit: BGM library matching accepts Chinese-only `tags`, `phase`, and `mood`
+  aliases and normalizes them before selecting early and climax tracks.
+- Unit: BGM library loading logs configured-manifest diagnostics for loaded
+  tracks, malformed rows, missing paths, missing files, and no-match context.
+- Unit: edit planner skips BGM but keeps SFX when source music detection reports
+  an existing persistent music bed, and treats older BGM-bearing edit plans as
+  stale in that condition.
+- Unit: edit planner resolves segmented recordings to chunk-local source-music
+  detector calls instead of passing the manifest JSON path as media.
+- Unit: edit planner emits rate-limited SFX hits for high-signal main windows,
+  including main-only edit plans without a teaser.
 - Config: zoom env values load, default off, and scale/anchor/max-segment
-  values clamp to safe ranges.
+  values clamp to safe ranges; default zoom target is `chat`.
 - CLI/postprocess: parser includes `edit-planner`; postprocess order includes it
   between `highlight-planner` and `exporter`.
-- Exporter: edit plans are ignored by default, valid edit plans build
+- Exporter: edit plans are ignored by default, valid teaser-first and main-only edit plans build
   `filter_complex`, invalid plans fall back, and valid edit plans take
   precedence over highlight plans only when enabled.
-- Exporter: audio-enabled edit plans add asset inputs, `volume`, `adelay`, and
-  `amix`; missing/stale audio asset paths fall back.
+- Exporter: chunked highlight plans resolve each highlight window to concrete
+  chunk inputs and retime burned subtitles to the post-concat output timeline.
+- Exporter: edit-plan subtitle burn-in retimes SRT cues to the edited output
+  timeline and applies `subtitles=` after concat, not before per-segment
+  punch-in transforms.
+- Exporter: audio-enabled edit plans add asset inputs, `volume`, BGM `afade`,
+  `adelay`, and `amix`; missing/stale audio asset paths fall back.
+- Exporter: chunked edit plans expand cross-chunk timeline windows into
+  concrete chunk inputs and offset BGM/SFX input indexes by media input count.
 - Exporter: punch-in edit plans add `scale`/`crop` filters; invalid transform
   rows fall back.
+- Exporter: legacy full-main edit plans are ignored and, when enabled, valid
+  highlight plans are used as the fallback path.
 - Status/reset: counts and cleanup include `edit-plans.jsonl` and
   `editing-state.json`.
 
@@ -585,6 +696,108 @@ highlight_plan = (
     if edit_plan is None and settings.export.use_highlight_plans
     else None
 )
+```
+
+---
+
+## Scenario: Publish Edit Preset
+
+### 1. Scope / Trigger
+- Trigger: The pipeline has multiple publish-quality features (condensed
+  highlight planning, edit plans, ASS subtitle burn-in, punch-in zoom, BGM/SFX),
+  but leaving each behind a separate env flag makes real exports easy to run in
+  a half-enabled state.
+- Trigger: The preset spans config loading, CLI settings resolution,
+  postprocess orchestration, edit-planner generation, and exporter plan
+  consumption.
+
+### 2. Signatures
+- Config helper:
+  ```python
+  def apply_publish_preset(settings: Settings) -> Settings: ...
+  ```
+- Environment:
+  ```bash
+  ARL_POSTPROCESS_PRESET=publish
+  # Back-compat/boolean alias:
+  ARL_POSTPROCESS_PUBLISH_PRESET=1
+  ```
+- CLI:
+  ```bash
+  python -m arl.cli postprocess --once --publish
+  python -m arl.cli postprocess --once --session-id <session_id> --publish
+  ```
+
+### 3. Contracts
+- The publish preset is explicit opt-in. Plain `load_settings()` and plain
+  `postprocess --once` must preserve full-boundary/diagnostic defaults unless
+  `ARL_POSTPROCESS_PRESET=publish`, `ARL_POSTPROCESS_PUBLISH_PRESET=1`, or
+  `postprocess --publish` is present.
+- `apply_publish_preset(settings)` must return a copied settings object; it must
+  not mutate the object it receives.
+- The preset enables:
+  - `highlights.enabled=True`
+  - `highlights.mode="condensed"`
+  - `editing.enabled=True`
+  - `editing.zoom_enabled=True`
+  - `editing.audio_mixing_enabled=True`
+  - `export.enable_ffmpeg=True`
+  - `export.burn_subtitles=True`
+  - `export.use_ass_subtitles=True`
+  - `export.use_edit_plans=True`
+  - `export.use_highlight_plans=True`
+- The preset must not make teaser selection less strict. It only enables the
+  existing edit planner; teaser clips still require explicit `highlight_keyword`
+  windows, and valid main-only edit plans remain allowed.
+- Subtitle burn-in still follows the exporter placeholder guard: placeholder SRT
+  files are not burned even when the preset enables burn-in.
+- Missing ffmpeg or missing recording prerequisites must defer export through
+  the existing exporter behavior, not crash postprocess.
+
+### 4. Validation & Error Matrix
+| Condition | Behavior |
+|-----------|----------|
+| No publish preset env/flag | Defaults remain compatible: edit plans, burn-in, zoom, and audio mixing stay disabled |
+| `ARL_POSTPROCESS_PRESET=publish` | `load_settings()` returns settings with the publish pipeline enabled |
+| `ARL_POSTPROCESS_PRESET` is any other value | Preset is not applied |
+| `ARL_POSTPROCESS_PUBLISH_PRESET=1` | Boolean alias applies the same preset |
+| `postprocess --publish` | CLI applies the preset before constructing `PostProcessService` |
+| `postprocess --publish` and ffmpeg is missing | Exporter defers/skips with `reason=missing_binary`; postprocess does not crash |
+| Placeholder subtitles under publish preset | Exporter skips subtitle burn-in for that match |
+
+### 5. Good/Base/Bad Cases
+- Good: A user runs `postprocess --once --session-id <id> --publish` and gets
+  condensed edit-plan export, raised ASS subtitles, chat-target punch-in where
+  a real teaser exists, low-volume default audio, copywriting, cover, and
+  friendly published aliases from one command.
+- Base: A background postprocess loop keeps using plain defaults until the
+  operator sets `ARL_POSTPROCESS_PRESET=publish`.
+- Bad: Turning `ExportSettings.use_edit_plans=True` globally without enabling
+  `editing.enabled` or `highlights.mode="condensed"` produces full-length
+  exports and makes users think the 14-minute edit feature regressed.
+
+### 6. Tests Required
+- Config: `tests/test_config.py` asserts normal defaults remain non-publish.
+- Config: `tests/test_config.py` asserts `ARL_POSTPROCESS_PRESET=publish` and
+  `ARL_POSTPROCESS_PUBLISH_PRESET=1` enable the publish pipeline fields.
+- CLI: `tests/pipeline/test_cli_unattended.py` asserts `postprocess --publish`
+  parses and the `PostProcessService` receives publish-enabled settings.
+- Exporter regression: existing edit-plan, ASS, placeholder-subtitle, zoom, and
+  audio-mixing tests remain the behavioral gate for the enabled preset.
+
+### 7. Wrong vs Correct
+#### Wrong
+```python
+class ExportSettings(BaseModel):
+    use_edit_plans: bool = True
+    burn_subtitles: bool = True
+```
+
+#### Correct
+```python
+settings = load_settings()
+if args.publish:
+    settings = apply_publish_preset(settings)
 ```
 
 ---
@@ -883,6 +1096,8 @@ def _video_quality_args(self) -> list[str]:
 
 | Variable | Type | Default | Purpose |
 |----------|------|---------|---------|
+| `ARL_POSTPROCESS_PRESET` | string | "" | Set to `publish` to enable the publish edit preset during settings load |
+| `ARL_POSTPROCESS_PUBLISH_PRESET` | bool | False | Boolean alias for the publish edit preset |
 | `ARL_EXPORT_FFMPEG_BITRATE` | string | None | Fixed average bitrate (e.g., "4000k") |
 | `ARL_EXPORT_FFMPEG_MAX_BITRATE` | string | None | Maximum burst bitrate (e.g., "5000k") |
 | `ARL_EXPORT_FFMPEG_CRF` | int | 18 | CRF value when bitrate not set |
@@ -891,21 +1106,26 @@ def _video_quality_args(self) -> list[str]:
 | `ARL_EXPORT_BURN_SUBTITLES` | bool | False | Burn subtitles into video instead of muxing soft subtitles |
 | `ARL_EXPORT_USE_ASS_SUBTITLES` | bool | False | Convert real SRT subtitles to ASS sidecars for burn-in |
 | `ARL_EXPORT_ASS_FONT_NAME` | string | "SimHei" | ASS style font name for burned subtitles |
-| `ARL_EXPORT_ASS_FONT_SIZE` | int | 36 | ASS style font size, clamped to at least 1 |
-| `ARL_EXPORT_ASS_MARGIN_V` | int | 20 | ASS vertical bottom margin, clamped to at least 0 |
+| `ARL_EXPORT_ASS_FONT_SIZE` | int | 32 | ASS style font size, clamped to at least 1 |
+| `ARL_EXPORT_ASS_MARGIN_V` | int | 110 | ASS vertical bottom margin, clamped to at least 0 |
 | `ARL_EXPORT_ASS_OUTLINE` | int | 2 | ASS text outline width, clamped to at least 0 |
+| `ARL_EXPORT_ASS_MAX_CHARS_PER_LINE` | int | 18 | ASS hard-wrap character count per visual line, clamped to at least 1 |
+| `ARL_EXPORT_ASS_MAX_LINES` | int | 2 | Maximum ASS visual lines per Dialogue event before splitting the cue, clamped to at least 1 |
 | `ARL_EXPORT_USE_EDIT_PLANS` | bool | False | Apply teaser-before-main edit plans |
 | `ARL_EXPORT_USE_HIGHLIGHT_PLANS` | bool | False | Apply highlight condensing |
 | `ARL_EDIT_PLANNER_ENABLED` | bool | False | Run edit-plan generation stage |
 | `ARL_EDIT_TEASER_MAX_SEGMENTS` | int | 2 | Maximum teaser segments prepended before the main match |
 | `ARL_EDIT_TEASER_MAX_TOTAL_SECONDS` | float | 45.0 | Maximum total teaser duration |
 | `ARL_EDIT_TEASER_MIN_SEGMENT_SECONDS` | float | 3.0 | Minimum retained teaser segment duration |
-| `ARL_EDIT_ZOOM_ENABLED` | bool | False | Emit safe punch-in transforms for high-signal teaser segments |
+| `ARL_EDIT_ZOOM_ENABLED` | bool | False | Emit safe punch-in transforms for high-signal teaser/main segments |
+| `ARL_EDIT_ZOOM_TARGET` | string | "chat" | Punch-in target preset: `chat`, `center`, or `custom` |
 | `ARL_EDIT_ZOOM_SCALE` | float | 1.2 | Static punch-in scale, clamped to `[1.0, 1.5]` |
 | `ARL_EDIT_ZOOM_X_ANCHOR` | float | 0.5 | Horizontal zoom crop anchor, clamped to `[0.0, 1.0]` |
 | `ARL_EDIT_ZOOM_Y_ANCHOR` | float | 0.5 | Vertical zoom crop anchor, clamped to `[0.0, 1.0]` |
-| `ARL_EDIT_ZOOM_MAX_SEGMENTS` | int | 1 | Maximum teaser segments that receive punch-in transforms |
+| `ARL_EDIT_ZOOM_MAX_SEGMENTS` | int | 1 | Maximum high-signal teaser/main segments that receive punch-in transforms |
 | `ARL_EDIT_AUDIO_MIXING_ENABLED` | bool | False | Emit local BGM/SFX audio instructions into edit plans |
+| `ARL_EDIT_SKIP_BGM_WHEN_SOURCE_HAS_MUSIC` | bool | True | Skip adding edit BGM when the source recording already appears to contain a persistent music bed |
+| `ARL_EDIT_BGM_LIBRARY_PATH` | path | None | Optional JSON manifest for automatic local BGM matching |
 | `ARL_EDIT_BGM_PATH` | path | None | Explicit local background-music file path |
 | `ARL_EDIT_BGM_GAIN_DB` | float | -24.0 | BGM gain in dB, clamped to `[-60.0, 0.0]` |
 | `ARL_EDIT_SFX_PATH` | path | None | Explicit local sound-effect file path |
@@ -936,4 +1156,4 @@ def _video_quality_args(self) -> list[str]:
 
 ---
 
-**Last Updated**: 2026-06-26 (Task: punch-in-zoom-transforms)
+**Last Updated**: 2026-06-27 (Task: publish-edit-preset)

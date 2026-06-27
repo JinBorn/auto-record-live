@@ -31,6 +31,8 @@ from arl.shared.contracts import (
     HighlightPlanAsset,
     MatchBoundary,
     RecordingAsset,
+    RecordingChunk,
+    RecordingChunkManifest,
     SourceType,
     SubtitleAsset,
     TimelineSegment,
@@ -495,6 +497,38 @@ class StatusServiceTest(unittest.TestCase):
             ],
         )
 
+    def test_unregistered_chunk_manifest_is_degraded_diagnostic(self) -> None:
+        session_id = "session-20260606101149-9fe32958"
+        manifest_path = self._write_chunk_manifest(session_id)
+
+        status = StatusService(self.settings).build()
+
+        self.assertEqual(status["summary"]["health"], "degraded")
+        self.assertEqual(status["postprocess"]["unregistered_recordings"], 1)
+        self.assertEqual(
+            status["postprocess"]["unregistered_recording_paths"],
+            [str(manifest_path)],
+        )
+
+    def test_registered_chunk_manifest_is_not_unregistered(self) -> None:
+        session_id = "session-20260606101149-9fe32958"
+        manifest_path = self._write_chunk_manifest(session_id)
+        append_model(
+            self.temp_root / "recording-assets.jsonl",
+            RecordingAsset(
+                session_id=session_id,
+                source_type=SourceType.DIRECT_STREAM,
+                path=str(manifest_path),
+                started_at=datetime(2026, 6, 6, 10, 11, 49, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 6, 6, 10, 12, 9, tzinfo=timezone.utc),
+            ),
+        )
+
+        status = StatusService(self.settings).build()
+
+        self.assertEqual(status["summary"]["health"], "ok")
+        self.assertEqual(status["postprocess"]["unregistered_recordings"], 0)
+
     def _write_orchestrator_state(
         self,
         *,
@@ -527,6 +561,45 @@ class StatusServiceTest(unittest.TestCase):
             ],
         )
         self._write_json_state(self.settings.orchestrator.state_file, state)
+
+    def _write_chunk_manifest(self, session_id: str) -> Path:
+        raw_dir = self.settings.storage.raw_dir / session_id
+        chunk_dir = raw_dir / "chunks"
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+        (chunk_dir / "recording-00000.mp4").write_bytes(b"chunk-0")
+        (chunk_dir / "recording-00001.mp4").write_bytes(b"chunk-1")
+        manifest_path = raw_dir / "recording-chunks.json"
+        started_at = datetime(2026, 6, 6, 10, 11, 49, tzinfo=timezone.utc)
+        manifest = RecordingChunkManifest(
+            session_id=session_id,
+            source_type=SourceType.DIRECT_STREAM,
+            path=str(manifest_path),
+            started_at=started_at,
+            chunks=[
+                RecordingChunk(
+                    path="chunks/recording-00000.mp4",
+                    started_at_seconds=0.0,
+                    ended_at_seconds=10.0,
+                    duration_seconds=10.0,
+                    index=0,
+                ),
+                RecordingChunk(
+                    path="chunks/recording-00001.mp4",
+                    started_at_seconds=10.0,
+                    ended_at_seconds=20.0,
+                    duration_seconds=10.0,
+                    index=1,
+                ),
+            ],
+            created_at=started_at,
+        )
+        manifest_path.write_text(
+            manifest.model_dump_json(indent=2) + "\n",
+            encoding="utf-8",
+        )
+        old_time = 1_000_000_000
+        os.utime(manifest_path, (old_time, old_time))
+        return manifest_path
 
     def _write_file(self, *parts: str) -> Path:
         path = self.settings.storage.temp_dir.parent.joinpath(*parts)

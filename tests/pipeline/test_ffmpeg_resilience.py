@@ -46,6 +46,8 @@ from arl.shared.contracts import (
     LiveState,
     MatchBoundary,
     RecordingAsset,
+    RecordingChunk,
+    RecordingChunkManifest,
     SourceType,
     SoundEffectHit,
     SubtitleAsset,
@@ -1544,6 +1546,86 @@ class RecorderHardeningTest(unittest.TestCase):
         self.assertEqual(mocked_run.call_count, 1)
         command = list(mocked_run.call_args[0][0])
         self.assertEqual(command[command.index("-t") + 1], "7140")
+        self.assertNotIn("-f", command)
+
+    def test_segmented_direct_stream_writes_chunk_manifest_when_enabled(self) -> None:
+        self._seed_state(job_id="job-segmented")
+        self.settings.recording.segmented_recording_enabled = True
+        self.settings.recording.segmented_chunk_seconds = 10
+        self.settings.recording.validate_actual_resolution = False
+        commands: list[list[str]] = []
+
+        def _which(binary: str) -> str | None:
+            if binary in {"ffmpeg", "ffprobe"}:
+                return f"/usr/bin/{binary}"
+            return None
+
+        def _fake_run(command, **kwargs):
+            commands.append(list(command))
+            if command[0].endswith("ffmpeg"):
+                output_pattern = Path(command[-1])
+                self.assertEqual(output_pattern.name, "recording-%05d.mp4")
+                output_pattern.parent.mkdir(parents=True, exist_ok=True)
+                (output_pattern.parent / "recording-00000.mp4").write_text(
+                    "chunk-0",
+                    encoding="utf-8",
+                )
+                (output_pattern.parent / "recording-00001.mp4").write_text(
+                    "chunk-1",
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(args=command, returncode=0)
+            if command[0].endswith("ffprobe"):
+                target = Path(command[-1])
+                duration = 10.0 if target.name == "recording-00000.mp4" else 7.5
+                return subprocess.CompletedProcess(
+                    args=command,
+                    returncode=0,
+                    stdout=json.dumps({"format": {"duration": str(duration)}}),
+                )
+            raise AssertionError(f"unexpected command: {command}")
+
+        with patch("arl.recorder.service.shutil.which", side_effect=_which), patch(
+            "arl.recorder.service.subprocess.run",
+            side_effect=_fake_run,
+        ):
+            RecorderService(self.settings).run()
+
+        ffmpeg_command = [command for command in commands if command[0].endswith("ffmpeg")][0]
+        self.assertIn("-f", ffmpeg_command)
+        self.assertEqual(ffmpeg_command[ffmpeg_command.index("-f") + 1], "segment")
+        self.assertEqual(
+            ffmpeg_command[ffmpeg_command.index("-segment_time") + 1],
+            "10",
+        )
+        self.assertIn("-reset_timestamps", ffmpeg_command)
+        self.assertIn("-segment_format_options", ffmpeg_command)
+        self.assertTrue(ffmpeg_command[-1].endswith("chunks\\recording-%05d.mp4") or ffmpeg_command[-1].endswith("chunks/recording-%05d.mp4"))
+
+        asset_payload = json.loads(
+            (self.temp_root / "recording-assets.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()[0]
+        )
+        manifest_path = Path(asset_payload["path"])
+        self.assertEqual(manifest_path.name, "recording-chunks.json")
+        manifest = RecordingChunkManifest.model_validate_json(
+            manifest_path.read_text(encoding="utf-8")
+        )
+        self.assertEqual(len(manifest.chunks), 2)
+        index_payload = json.loads(
+            (self.temp_root / "recording-chunk-assets.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()[0]
+        )
+        self.assertEqual(index_payload["path"], str(manifest_path))
+        self.assertEqual(
+            [
+                (chunk.index, chunk.started_at_seconds, chunk.ended_at_seconds)
+                for chunk in manifest.chunks
+            ],
+            [(0, 0.0, 10.0), (1, 10.0, 17.5)],
+        )
 
     def test_recorder_runs_multiple_jobs_with_bounded_parallelism(self) -> None:
         self._seed_state(
@@ -2896,8 +2978,14 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
                     TimelineSegment(
                         role="main",
                         source_start_seconds=0.0,
+                        source_end_seconds=30.0,
+                        reason="condensed_match_context",
+                    ),
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=max(30.0, duration - 30.0),
                         source_end_seconds=duration,
-                        reason="full_validated_match",
+                        reason="condensed_key_event",
                     ),
                 ],
                 audio_beds=audio_beds or [],
@@ -2905,6 +2993,59 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
                 created_at=datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc),
             ),
         )
+
+    def _append_chunked_recording_asset(
+        self,
+        *,
+        session_id: str = "session-e",
+    ) -> tuple[Path, Path, Path]:
+        raw_dir = self.raw_root / session_id
+        chunk_dir = raw_dir / "chunks"
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+        first_chunk = chunk_dir / "recording-00000.mp4"
+        second_chunk = chunk_dir / "recording-00001.mp4"
+        first_chunk.write_text("chunk-0", encoding="utf-8")
+        second_chunk.write_text("chunk-1", encoding="utf-8")
+        manifest_path = raw_dir / "recording-chunks.json"
+        manifest = RecordingChunkManifest(
+            session_id=session_id,
+            source_type=SourceType.DIRECT_STREAM,
+            path=str(manifest_path),
+            started_at=datetime(2026, 5, 12, 1, 0, tzinfo=timezone.utc),
+            ended_at=datetime(2026, 5, 12, 1, 20, tzinfo=timezone.utc),
+            chunks=[
+                RecordingChunk(
+                    path="chunks/recording-00000.mp4",
+                    started_at_seconds=0.0,
+                    ended_at_seconds=10.0,
+                    duration_seconds=10.0,
+                    index=0,
+                ),
+                RecordingChunk(
+                    path="chunks/recording-00001.mp4",
+                    started_at_seconds=10.0,
+                    ended_at_seconds=20.0,
+                    duration_seconds=10.0,
+                    index=1,
+                ),
+            ],
+            created_at=datetime(2026, 5, 12, 1, 21, tzinfo=timezone.utc),
+        )
+        manifest_path.write_text(
+            manifest.model_dump_json(indent=2) + "\n",
+            encoding="utf-8",
+        )
+        append_model(
+            self.temp_root / "recording-assets.jsonl",
+            RecordingAsset(
+                session_id=session_id,
+                source_type=SourceType.DIRECT_STREAM,
+                path=str(manifest_path),
+                started_at=datetime(2026, 5, 12, 1, 0, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 5, 12, 1, 20, tzinfo=timezone.utc),
+            ),
+        )
+        return manifest_path, first_chunk, second_chunk
 
     def _audit_payloads(self) -> list[dict]:
         path = self.temp_root / "exporter-events.jsonl"
@@ -3378,6 +3519,71 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertIn("select='between(t,0.000,30.000)+between(t,90.000,120.000)'", video_filter)
         self.assertIn("setpts=N/FRAME_RATE/TB", video_filter)
 
+    def test_chunked_highlight_plan_export_concats_resolved_spans(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=20.0)
+        _manifest_path, first_chunk, second_chunk = self._append_chunked_recording_asset()
+        subtitle_path = self.processed_root / "session-e" / "match-01.srt"
+        subtitle_path.write_text(
+            "1\n00:00:09,000 --> 00:00:10,000\nchunk cue\n",
+            encoding="utf-8",
+        )
+        settings = self.settings.model_copy(deep=True)
+        settings.export.use_highlight_plans = True
+        settings.export.burn_subtitles = True
+        append_model(
+            self.temp_root / "highlight-plans.jsonl",
+            HighlightPlanAsset(
+                session_id="session-e",
+                match_index=1,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=20.0,
+                windows=[
+                    HighlightClipWindow(
+                        started_at_seconds=8.0,
+                        ended_at_seconds=12.0,
+                        reason="highlight_keyword",
+                    )
+                ],
+                created_at=datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        self.assertIn(str(first_chunk), command)
+        self.assertIn(str(second_chunk), command)
+        self.assertNotIn("-vf", command)
+        self.assertNotIn("-af", command)
+        self.assertIn("-filter_complex", command)
+        filter_complex = command[command.index("-filter_complex") + 1]
+        self.assertIn("[0:v]trim=start=8.000:end=10.000,setpts=PTS-STARTPTS[v0]", filter_complex)
+        self.assertIn("[1:v]trim=start=0.000:end=2.000,setpts=PTS-STARTPTS[v1]", filter_complex)
+        self.assertIn("[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]", filter_complex)
+        highlight_subtitle_path = (
+            self.processed_root / "session-e" / "match-01-highlight-plan.srt"
+        ).resolve()
+        escaped_highlight_subtitle_path = highlight_subtitle_path.as_posix().replace(":", "\\:")
+        self.assertIn(
+            f"[v]subtitles='{escaped_highlight_subtitle_path}'[vsub]",
+            filter_complex,
+        )
+        highlight_subtitle_text = highlight_subtitle_path.read_text(encoding="utf-8")
+        self.assertIn("00:00:01,000 --> 00:00:02,000", highlight_subtitle_text)
+        self.assertIn("chunk cue", highlight_subtitle_text)
+        self.assertNotIn("select=", filter_complex)
+
     def test_highlight_plan_is_ignored_by_default_for_full_match_export(self) -> None:
         self._seed_export_inputs(boundary_ended_at_seconds=120.0)
         append_model(
@@ -3445,6 +3651,79 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertEqual(command[command.index("-to") + 1], "120.0")
         self.assertNotIn("-filter_complex", command)
 
+    def test_legacy_full_main_edit_plan_falls_back_to_highlight_plan(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=120.0)
+        settings = self.settings.model_copy(deep=True)
+        settings.export.use_edit_plans = True
+        settings.export.use_highlight_plans = True
+        append_model(
+            self.temp_root / "edit-plans.jsonl",
+            EditPlanAsset(
+                session_id="session-e",
+                match_index=1,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=120.0,
+                timeline=[
+                    TimelineSegment(
+                        role="teaser",
+                        source_start_seconds=90.0,
+                        source_end_seconds=105.0,
+                        reason="highlight_keyword",
+                    ),
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=0.0,
+                        source_end_seconds=120.0,
+                        reason="full_validated_match",
+                    ),
+                ],
+                created_at=datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
+        append_model(
+            self.temp_root / "highlight-plans.jsonl",
+            HighlightPlanAsset(
+                session_id="session-e",
+                match_index=1,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=120.0,
+                windows=[
+                    HighlightClipWindow(
+                        started_at_seconds=0.0,
+                        ended_at_seconds=30.0,
+                        reason="condensed_match_context",
+                    ),
+                    HighlightClipWindow(
+                        started_at_seconds=90.0,
+                        ended_at_seconds=120.0,
+                        reason="condensed_key_event",
+                    ),
+                ],
+                created_at=datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        self.assertNotIn("-filter_complex", command)
+        video_filter = command[command.index("-vf") + 1]
+        self.assertIn(
+            "select='between(t,0.000,30.000)+between(t,90.000,120.000)'",
+            video_filter,
+        )
+
     def test_edit_plan_export_uses_teaser_before_main_filter_complex(self) -> None:
         self._seed_export_inputs(boundary_ended_at_seconds=120.0)
         settings = self.settings.model_copy(deep=True)
@@ -3486,13 +3765,146 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         ][0]
         self.assertIn("-filter_complex", command)
         filter_complex = command[command.index("-filter_complex") + 1]
-        self.assertIn("[0:v]subtitles=", filter_complex)
+        self.assertNotIn("[0:v]subtitles=", filter_complex)
         self.assertIn("trim=start=90.000:end=105.000,setpts=PTS-STARTPTS[v0]", filter_complex)
         self.assertIn("atrim=start=90.000:end=105.000,asetpts=PTS-STARTPTS[a0]", filter_complex)
-        self.assertIn("trim=start=0.000:end=120.000,setpts=PTS-STARTPTS[v1]", filter_complex)
-        self.assertIn("[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]", filter_complex)
+        self.assertIn("trim=start=0.000:end=30.000,setpts=PTS-STARTPTS[v1]", filter_complex)
+        self.assertIn("trim=start=90.000:end=120.000,setpts=PTS-STARTPTS[v2]", filter_complex)
+        self.assertIn("[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[v][a]", filter_complex)
+        edit_subtitle_path = (
+            self.processed_root / "session-e" / "match-01-edit-plan.srt"
+        ).resolve()
+        escaped_edit_subtitle_path = edit_subtitle_path.as_posix().replace(":", "\\:")
+        self.assertIn(
+            f"[v]subtitles='{escaped_edit_subtitle_path}'[vsub]",
+            filter_complex,
+        )
+        edit_subtitle_text = edit_subtitle_path.read_text(encoding="utf-8")
+        self.assertIn("00:00:15,000 --> 00:00:16,000", edit_subtitle_text)
+        self.assertIn("hello", edit_subtitle_text)
         self.assertIn("-map", command)
-        self.assertEqual(command[command.index("-map") + 1], "[v]")
+        self.assertEqual(command[command.index("-map") + 1], "[vsub]")
+        self.assertNotIn("select=", filter_complex)
+
+    def test_main_only_edit_plan_export_uses_filter_complex(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=120.0)
+        settings = self.settings.model_copy(deep=True)
+        settings.export.use_edit_plans = True
+        append_model(
+            self.temp_root / "edit-plans.jsonl",
+            EditPlanAsset(
+                session_id="session-e",
+                match_index=1,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=120.0,
+                timeline=[
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=0.0,
+                        source_end_seconds=30.0,
+                        reason="condensed_match_context",
+                    ),
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=90.0,
+                        source_end_seconds=120.0,
+                        reason="condensed_key_event",
+                    ),
+                ],
+                created_at=datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        self.assertIn("-filter_complex", command)
+        self.assertNotIn("-to", command)
+        filter_complex = command[command.index("-filter_complex") + 1]
+        self.assertIn("trim=start=0.000:end=30.000,setpts=PTS-STARTPTS[v0]", filter_complex)
+        self.assertIn("trim=start=90.000:end=120.000,setpts=PTS-STARTPTS[v1]", filter_complex)
+        self.assertIn("[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]", filter_complex)
+        self.assertNotIn("select=", filter_complex)
+
+    def test_chunked_edit_plan_export_expands_timeline_segments(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=12.0)
+        _manifest_path, first_chunk, second_chunk = self._append_chunked_recording_asset()
+        settings = self.settings.model_copy(deep=True)
+        settings.export.use_edit_plans = True
+        settings.export.burn_subtitles = False
+        bgm_path = self.temp_root / "audio" / "bgm.mp3"
+        bgm_path.parent.mkdir(parents=True, exist_ok=True)
+        bgm_path.write_text("fake bgm", encoding="utf-8")
+        append_model(
+            self.temp_root / "edit-plans.jsonl",
+            EditPlanAsset(
+                session_id="session-e",
+                match_index=1,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=12.0,
+                timeline=[
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=0.0,
+                        source_end_seconds=5.0,
+                        reason="condensed_match_context",
+                    ),
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=8.0,
+                        source_end_seconds=12.0,
+                        reason="condensed_key_event",
+                    ),
+                ],
+                audio_beds=[
+                    AudioBed(
+                        source_path=str(bgm_path),
+                        timeline_start_seconds=0.0,
+                        timeline_end_seconds=None,
+                        gain_db=-24.0,
+                        loop=True,
+                    )
+                ],
+                created_at=datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        self.assertEqual(command.count(str(first_chunk)), 2)
+        self.assertEqual(command.count(str(second_chunk)), 1)
+        self.assertIn(str(bgm_path), command)
+        self.assertIn("-filter_complex", command)
+        filter_complex = command[command.index("-filter_complex") + 1]
+        self.assertIn("[0:v]trim=start=0.000:end=5.000,setpts=PTS-STARTPTS[v0]", filter_complex)
+        self.assertIn("[1:v]trim=start=8.000:end=10.000,setpts=PTS-STARTPTS[v1]", filter_complex)
+        self.assertIn("[2:v]trim=start=0.000:end=2.000,setpts=PTS-STARTPTS[v2]", filter_complex)
+        self.assertIn("[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[v][basea]", filter_complex)
+        self.assertIn("[3:a]atrim=start=0.000:duration=9.000", filter_complex)
+        self.assertIn("[basea][bgm0]amix=inputs=2:duration=first:dropout_transition=0[a]", filter_complex)
         self.assertNotIn("select=", filter_complex)
 
     def test_edit_plan_audio_mix_adds_asset_inputs_and_amix(self) -> None:
@@ -3544,16 +3956,84 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertIn(str(bgm_path), command)
         self.assertIn(str(sfx_path), command)
         filter_complex = command[command.index("-filter_complex") + 1]
-        self.assertIn("concat=n=2:v=1:a=1[v][basea]", filter_complex)
-        self.assertIn("[1:a]atrim=start=0.000:duration=135.000", filter_complex)
-        self.assertIn("volume=0.063096[bgm0]", filter_complex)
+        self.assertIn("concat=n=3:v=1:a=1[v][basea]", filter_complex)
+        self.assertIn("[1:a]atrim=start=0.000:duration=75.000", filter_complex)
+        self.assertIn(
+            "volume=0.063096,afade=t=in:st=0.000:d=2.000,"
+            "afade=t=out:st=73.000:d=2.000[bgm0]",
+            filter_complex,
+        )
         self.assertIn("[2:a]asetpts=PTS-STARTPTS,volume=0.251189,adelay=15000|15000[sfx0]", filter_complex)
         self.assertIn("[basea][bgm0][sfx0]amix=inputs=3:duration=first:dropout_transition=0[a]", filter_complex)
+
+    def test_edit_plan_bgm_switch_fades_between_beds(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=120.0)
+        settings = self.settings.model_copy(deep=True)
+        settings.export.use_edit_plans = True
+        playful_path = self.temp_root / "audio" / "bgm-playful.wav"
+        climax_path = self.temp_root / "audio" / "bgm-climax.wav"
+        playful_path.parent.mkdir(parents=True, exist_ok=True)
+        playful_path.write_text("fake playful bgm", encoding="utf-8")
+        climax_path.write_text("fake climax bgm", encoding="utf-8")
+        self._append_edit_plan(
+            duration=120.0,
+            audio_beds=[
+                AudioBed(
+                    source_path=str(playful_path),
+                    timeline_start_seconds=0.0,
+                    timeline_end_seconds=40.0,
+                    gain_db=-24.0,
+                    loop=True,
+                    reason="background_music_playful",
+                ),
+                AudioBed(
+                    source_path=str(climax_path),
+                    timeline_start_seconds=40.0,
+                    timeline_end_seconds=None,
+                    gain_db=-24.0,
+                    loop=True,
+                    reason="background_music_climax",
+                ),
+            ],
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        filter_complex = command[command.index("-filter_complex") + 1]
+        self.assertIn(
+            "[1:a]atrim=start=0.000:duration=40.000,asetpts=PTS-STARTPTS,"
+            "volume=0.063096,afade=t=in:st=0.000:d=2.000,"
+            "afade=t=out:st=38.000:d=2.000[bgm0]",
+            filter_complex,
+        )
+        self.assertIn(
+            "[2:a]atrim=start=0.000:duration=35.000,asetpts=PTS-STARTPTS,"
+            "volume=0.063096,afade=t=in:st=0.000:d=2.000,"
+            "afade=t=out:st=33.000:d=2.000,adelay=40000|40000[bgm1]",
+            filter_complex,
+        )
+        self.assertIn(
+            "[basea][bgm0][bgm1]amix=inputs=3:duration=first:dropout_transition=0[a]",
+            filter_complex,
+        )
 
     def test_edit_plan_punch_in_transform_adds_scale_crop_filters(self) -> None:
         self._seed_export_inputs(boundary_ended_at_seconds=120.0)
         settings = self.settings.model_copy(deep=True)
         settings.export.use_edit_plans = True
+        settings.export.burn_subtitles = True
         self._append_edit_plan(
             duration=120.0,
             teaser_transform=TimelineVideoTransform(
@@ -3585,7 +4065,9 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
             "crop=iw/1.250:ih/1.250:x=(iw-iw/1.250)*0.400:y=(ih-ih/1.250)*0.350[v0]",
             filter_complex,
         )
-        self.assertIn("[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]", filter_complex)
+        self.assertIn("[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[v][a]", filter_complex)
+        self.assertNotIn("[0:v]subtitles=", filter_complex)
+        self.assertIn("[v]subtitles=", filter_complex)
 
     def test_edit_plan_invalid_transform_falls_back(self) -> None:
         self._seed_export_inputs(boundary_ended_at_seconds=120.0)

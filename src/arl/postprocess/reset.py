@@ -149,7 +149,13 @@ class PostProcessResetService:
             self.temp_dir / "publishing-packages.jsonl",
             PublishingPackage,
             lambda item: item.session_id in session_ids,
-            lambda item: [item.path, item.cover_path],
+            lambda item: [
+                item.path,
+                item.cover_path,
+                item.published_video_path,
+                item.published_cover_path,
+                item.published_metadata_path,
+            ],
             result=result,
             delete_files=delete_files,
         )

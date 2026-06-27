@@ -5,7 +5,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from arl.config import BilibiliSettings, DouyinSettings, Settings, load_settings
+from arl.config import (
+    BilibiliSettings,
+    DouyinSettings,
+    Settings,
+    apply_publish_preset,
+    load_settings,
+)
 
 
 class _ARLEnvIsolation:
@@ -239,6 +245,22 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
 
         self.assertEqual(settings.recording.direct_stream_finalize_headroom_seconds, 90)
 
+    def test_segmented_recording_envs_load(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_RECORDING_SEGMENTED_ENABLED"] = "1"
+            os.environ["ARL_RECORDING_SEGMENTED_CHUNK_SECONDS"] = "600"
+            settings = load_settings()
+
+        self.assertTrue(settings.recording.segmented_recording_enabled)
+        self.assertEqual(settings.recording.segmented_chunk_seconds, 600)
+
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_RECORDING_SEGMENTED_CHUNK_SECONDS"] = "0"
+            settings = load_settings()
+
+        self.assertFalse(settings.recording.segmented_recording_enabled)
+        self.assertEqual(settings.recording.segmented_chunk_seconds, 1)
+
     def test_vision_min_match_duration_env_loads(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             os.environ["ARL_VISION_MIN_MATCH_DURATION_SECONDS"] = "420"
@@ -278,9 +300,55 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertFalse(settings.export.burn_subtitles)
         self.assertEqual(settings.export.ffmpeg_crf, 18)
         self.assertEqual(settings.export.ffmpeg_preset, "slow")
+        self.assertEqual(settings.export.ass_font_size, 32)
+        self.assertEqual(settings.export.ass_margin_v, 110)
+        self.assertEqual(settings.export.ass_max_chars_per_line, 18)
+        self.assertEqual(settings.export.ass_max_lines, 2)
         self.assertFalse(settings.export.use_edit_plans)
         self.assertFalse(settings.export.use_highlight_plans)
         self.assertFalse(settings.export.use_hardware_encoding)
+        self.assertEqual(settings.highlights.mode, "highlight")
+        self.assertFalse(settings.editing.enabled)
+        self.assertFalse(settings.editing.zoom_enabled)
+        self.assertFalse(settings.editing.audio_mixing_enabled)
+
+    def test_postprocess_publish_preset_env_enables_publish_pipeline(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_POSTPROCESS_PRESET"] = "publish"
+            settings = load_settings()
+
+        self.assertTrue(settings.highlights.enabled)
+        self.assertEqual(settings.highlights.mode, "condensed")
+        self.assertTrue(settings.editing.enabled)
+        self.assertTrue(settings.editing.zoom_enabled)
+        self.assertEqual(settings.editing.zoom_target, "chat")
+        self.assertTrue(settings.editing.audio_mixing_enabled)
+        self.assertTrue(settings.export.enable_ffmpeg)
+        self.assertTrue(settings.export.burn_subtitles)
+        self.assertTrue(settings.export.use_ass_subtitles)
+        self.assertTrue(settings.export.use_edit_plans)
+        self.assertTrue(settings.export.use_highlight_plans)
+
+    def test_postprocess_publish_preset_bool_env_enables_publish_pipeline(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_POSTPROCESS_PUBLISH_PRESET"] = "1"
+            settings = load_settings()
+
+        self.assertEqual(settings.highlights.mode, "condensed")
+        self.assertTrue(settings.editing.enabled)
+        self.assertTrue(settings.export.use_edit_plans)
+
+    def test_apply_publish_preset_does_not_mutate_source_settings(self) -> None:
+        settings = Settings()
+
+        published = apply_publish_preset(settings)
+
+        self.assertEqual(settings.highlights.mode, "highlight")
+        self.assertFalse(settings.editing.enabled)
+        self.assertFalse(settings.export.use_edit_plans)
+        self.assertEqual(published.highlights.mode, "condensed")
+        self.assertTrue(published.editing.enabled)
+        self.assertTrue(published.export.use_edit_plans)
 
     def test_export_burn_subtitles_env_loads(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
@@ -296,6 +364,8 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             os.environ["ARL_EXPORT_ASS_FONT_SIZE"] = "42"
             os.environ["ARL_EXPORT_ASS_MARGIN_V"] = "18"
             os.environ["ARL_EXPORT_ASS_OUTLINE"] = "3"
+            os.environ["ARL_EXPORT_ASS_MAX_CHARS_PER_LINE"] = "12"
+            os.environ["ARL_EXPORT_ASS_MAX_LINES"] = "1"
             settings = load_settings()
 
         self.assertTrue(settings.export.use_ass_subtitles)
@@ -303,17 +373,23 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(settings.export.ass_font_size, 42)
         self.assertEqual(settings.export.ass_margin_v, 18)
         self.assertEqual(settings.export.ass_outline, 3)
+        self.assertEqual(settings.export.ass_max_chars_per_line, 12)
+        self.assertEqual(settings.export.ass_max_lines, 1)
 
     def test_export_ass_subtitle_numeric_envs_clamp(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             os.environ["ARL_EXPORT_ASS_FONT_SIZE"] = "0"
             os.environ["ARL_EXPORT_ASS_MARGIN_V"] = "-1"
             os.environ["ARL_EXPORT_ASS_OUTLINE"] = "-2"
+            os.environ["ARL_EXPORT_ASS_MAX_CHARS_PER_LINE"] = "0"
+            os.environ["ARL_EXPORT_ASS_MAX_LINES"] = "0"
             settings = load_settings()
 
         self.assertEqual(settings.export.ass_font_size, 1)
         self.assertEqual(settings.export.ass_margin_v, 0)
         self.assertEqual(settings.export.ass_outline, 0)
+        self.assertEqual(settings.export.ass_max_chars_per_line, 1)
+        self.assertEqual(settings.export.ass_max_lines, 1)
 
     def test_export_optional_processing_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
@@ -342,6 +418,8 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
     def test_edit_audio_mixing_envs_load_and_clamp(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             os.environ["ARL_EDIT_AUDIO_MIXING_ENABLED"] = "1"
+            os.environ["ARL_EDIT_SKIP_BGM_WHEN_SOURCE_HAS_MUSIC"] = "0"
+            os.environ["ARL_EDIT_BGM_LIBRARY_PATH"] = "C:/audio/library.json"
             os.environ["ARL_EDIT_BGM_PATH"] = "C:/audio/bgm.mp3"
             os.environ["ARL_EDIT_BGM_GAIN_DB"] = "3"
             os.environ["ARL_EDIT_SFX_PATH"] = "C:/audio/wow.wav"
@@ -349,6 +427,8 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             settings = load_settings()
 
         self.assertTrue(settings.editing.audio_mixing_enabled)
+        self.assertFalse(settings.editing.skip_bgm_when_source_has_music)
+        self.assertEqual(settings.editing.bgm_library_path, Path("C:/audio/library.json"))
         self.assertEqual(settings.editing.bgm_path, Path("C:/audio/bgm.mp3"))
         self.assertEqual(settings.editing.bgm_gain_db, 0.0)
         self.assertEqual(settings.editing.sfx_path, Path("C:/audio/wow.wav"))
@@ -360,6 +440,8 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             settings = load_settings()
 
         self.assertFalse(settings.editing.audio_mixing_enabled)
+        self.assertTrue(settings.editing.skip_bgm_when_source_has_music)
+        self.assertIsNone(settings.editing.bgm_library_path)
         self.assertIsNone(settings.editing.bgm_path)
         self.assertEqual(settings.editing.bgm_gain_db, -60.0)
         self.assertIsNone(settings.editing.sfx_path)
@@ -368,6 +450,7 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
     def test_edit_zoom_envs_load_and_clamp(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             os.environ["ARL_EDIT_ZOOM_ENABLED"] = "1"
+            os.environ["ARL_EDIT_ZOOM_TARGET"] = "custom"
             os.environ["ARL_EDIT_ZOOM_SCALE"] = "2"
             os.environ["ARL_EDIT_ZOOM_X_ANCHOR"] = "-0.5"
             os.environ["ARL_EDIT_ZOOM_Y_ANCHOR"] = "1.5"
@@ -375,6 +458,7 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             settings = load_settings()
 
         self.assertTrue(settings.editing.zoom_enabled)
+        self.assertEqual(settings.editing.zoom_target, "custom")
         self.assertEqual(settings.editing.zoom_scale, 1.5)
         self.assertEqual(settings.editing.zoom_x_anchor, 0.0)
         self.assertEqual(settings.editing.zoom_y_anchor, 1.0)
@@ -384,6 +468,7 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             settings = load_settings()
 
         self.assertFalse(settings.editing.zoom_enabled)
+        self.assertEqual(settings.editing.zoom_target, "chat")
         self.assertEqual(settings.editing.zoom_scale, 1.2)
         self.assertEqual(settings.editing.zoom_x_anchor, 0.5)
         self.assertEqual(settings.editing.zoom_y_anchor, 0.5)

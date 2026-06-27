@@ -41,6 +41,32 @@ class RecordingAsset(BaseModel):
     ended_at: datetime | None = None
 
 
+class RecordingChunk(BaseModel):
+    path: str
+    started_at_seconds: float
+    ended_at_seconds: float
+    duration_seconds: float
+    index: int
+
+
+class RecordingChunkManifest(BaseModel):
+    session_id: str
+    source_type: SourceType
+    path: str
+    started_at: datetime
+    ended_at: datetime | None = None
+    chunks: list[RecordingChunk]
+    created_at: datetime
+
+
+class MediaSpan(BaseModel):
+    path: str
+    source_start_seconds: float
+    source_end_seconds: float
+    local_start_seconds: float
+    local_end_seconds: float
+
+
 class MatchBoundary(BaseModel):
     session_id: str
     match_index: int
@@ -71,6 +97,7 @@ class TimelineVideoTransform(BaseModel):
     scale: float = 1.0
     x_anchor: float = 0.5
     y_anchor: float = 0.5
+    target: str | None = None
 
     @model_validator(mode="after")
     def _validate_transform(self) -> "TimelineVideoTransform":
@@ -82,6 +109,8 @@ class TimelineVideoTransform(BaseModel):
             raise ValueError("transform y_anchor must be between 0.0 and 1.0")
         if self.kind == "punch_in" and not 1.0 < self.scale <= 1.5:
             raise ValueError("punch_in scale must be greater than 1.0 and at most 1.5")
+        if self.target is not None:
+            self.target = self.target.strip().lower() or None
         return self
 
 

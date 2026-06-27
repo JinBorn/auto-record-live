@@ -15,7 +15,13 @@ from unittest.mock import patch
 
 from arl.config import Settings, StorageSettings, SubtitleSettings
 from arl.segmenter.models import MatchStageSignal
-from arl.shared.contracts import MatchBoundary, RecordingAsset, SourceType
+from arl.shared.contracts import (
+    MatchBoundary,
+    RecordingAsset,
+    RecordingChunk,
+    RecordingChunkManifest,
+    SourceType,
+)
 from arl.shared.jsonl_store import append_model, load_models
 from arl.subtitles.ass import AssSubtitleStyle, convert_srt_to_ass
 from arl.subtitles.service import SubtitleService, TranscribeOutcome
@@ -68,6 +74,45 @@ class AssSubtitleConversionTest(unittest.TestCase):
             dialogue_lines[1],
             "Dialogue: 0,1:02:03.00,1:02:04.01,Default,,0,0,0,,结尾",
         )
+
+    def test_convert_srt_to_ass_wraps_long_cjk_lines(self) -> None:
+        han = "\u4e00"
+        ass_text = convert_srt_to_ass(
+            "1\n"
+            "00:00:01,000 --> 00:00:03,000\n"
+            f"{han * 19}\n",
+            AssSubtitleStyle(max_chars_per_line=6),
+        )
+
+        dialogue_lines = [
+            line for line in ass_text.splitlines() if line.startswith("Dialogue:")
+        ]
+        self.assertEqual(len(dialogue_lines), 2)
+        self.assertEqual(
+            dialogue_lines[0],
+            "Dialogue: 0,0:00:01.00,0:00:02.00,"
+            f"Default,,0,0,0,,{han * 6}\\N{han * 6}",
+        )
+        self.assertEqual(
+            dialogue_lines[1],
+            "Dialogue: 0,0:00:02.00,0:00:03.00,"
+            f"Default,,0,0,0,,{han * 6}\\N{han}",
+        )
+
+    def test_convert_srt_to_ass_limits_each_dialogue_to_configured_lines(self) -> None:
+        han = "\u4e00"
+        ass_text = convert_srt_to_ass(
+            "1\n"
+            "00:00:00,000 --> 00:00:04,000\n"
+            f"{han * 30}\n",
+            AssSubtitleStyle(max_chars_per_line=5, max_lines=2),
+        )
+
+        dialogue_lines = [
+            line for line in ass_text.splitlines() if line.startswith("Dialogue:")
+        ]
+        self.assertEqual(len(dialogue_lines), 3)
+        self.assertTrue(all(line.count("\\N") <= 1 for line in dialogue_lines))
 
 
 class _Segment:
@@ -705,6 +750,101 @@ class SubtitleServiceTest(unittest.TestCase):
         subtitle_text = Path(subtitle_assets[0]["path"]).read_text(encoding="utf-8")
         self.assertIn("00:00:02,000 --> 00:00:04,000", subtitle_text)
         self.assertIn("preprocessed speech", subtitle_text)
+
+    def test_chunked_boundary_audio_is_preprocessed_from_resolved_spans(self) -> None:
+        session_id = "session-subtitle-chunked"
+        append_model(
+            self.boundaries_path,
+            MatchBoundary(
+                session_id=session_id,
+                match_index=1,
+                started_at_seconds=8.0,
+                ended_at_seconds=12.0,
+                confidence=0.9,
+            ),
+        )
+        raw_dir = self.raw_root / session_id
+        chunk_dir = raw_dir / "chunks"
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+        first_chunk = chunk_dir / "recording-00000.mp4"
+        second_chunk = chunk_dir / "recording-00001.mp4"
+        first_chunk.write_text("chunk 0", encoding="utf-8")
+        second_chunk.write_text("chunk 1", encoding="utf-8")
+        manifest_path = raw_dir / "recording-chunks.json"
+        manifest = RecordingChunkManifest(
+            session_id=session_id,
+            source_type=SourceType.DIRECT_STREAM,
+            path=str(manifest_path),
+            started_at=datetime(2026, 4, 26, 9, 0, tzinfo=timezone.utc),
+            ended_at=datetime(2026, 4, 26, 9, 30, tzinfo=timezone.utc),
+            chunks=[
+                RecordingChunk(
+                    path="chunks/recording-00000.mp4",
+                    started_at_seconds=0.0,
+                    ended_at_seconds=10.0,
+                    duration_seconds=10.0,
+                    index=0,
+                ),
+                RecordingChunk(
+                    path="chunks/recording-00001.mp4",
+                    started_at_seconds=10.0,
+                    ended_at_seconds=20.0,
+                    duration_seconds=10.0,
+                    index=1,
+                ),
+            ],
+            created_at=datetime(2026, 4, 26, 9, 31, tzinfo=timezone.utc),
+        )
+        manifest_path.write_text(
+            manifest.model_dump_json(indent=2) + "\n",
+            encoding="utf-8",
+        )
+        append_model(
+            self.recording_assets_path,
+            RecordingAsset(
+                session_id=session_id,
+                source_type=SourceType.DIRECT_STREAM,
+                path=str(manifest_path),
+                started_at=datetime(2026, 4, 26, 9, 0, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 4, 26, 9, 30, tzinfo=timezone.utc),
+            ),
+        )
+        settings = self.settings.model_copy(deep=True)
+        settings.subtitles.device = "cpu"
+        settings.subtitles.preprocess_audio = False
+        model = _WhisperModelStub(
+            language_probability=0.95,
+            language="zh",
+            segments=[_Segment(1.0, 3.0, "chunked speech")],
+        )
+        service = SubtitleService(settings)
+        service._load_whisper_model = lambda: model
+
+        def _fake_ffmpeg(command, **kwargs):
+            Path(command[-1]).write_bytes(b"wav")
+            return types.SimpleNamespace(returncode=0)
+
+        with patch("arl.subtitles.service.shutil.which", return_value="ffmpeg"), patch(
+            "arl.subtitles.service.subprocess.run",
+            side_effect=_fake_ffmpeg,
+        ) as mocked_run:
+            service.run()
+
+        mocked_run.assert_called_once()
+        command = list(mocked_run.call_args.args[0])
+        self.assertIn(str(first_chunk), command)
+        self.assertIn(str(second_chunk), command)
+        filter_complex = command[command.index("-filter_complex") + 1]
+        self.assertIn("[0:a]atrim=start=8.000:end=10.000", filter_complex)
+        self.assertIn("[1:a]atrim=start=0.000:end=2.000", filter_complex)
+        self.assertIn("[a0][a1]concat=n=2:v=0:a=1[aconcat]", filter_complex)
+        transcribe_kwargs = model.transcribe_kwargs[0]
+        self.assertTrue(str(transcribe_kwargs["path"]).endswith("match-01.wav"))
+        self.assertIsNone(transcribe_kwargs["clip_timestamps"])
+        subtitle_assets = _read_jsonl(self.subtitle_assets_path)
+        subtitle_text = Path(subtitle_assets[0]["path"]).read_text(encoding="utf-8")
+        self.assertIn("00:00:01,000 --> 00:00:03,000", subtitle_text)
+        self.assertIn("chunked speech", subtitle_text)
 
     def test_preprocess_failure_falls_back_to_original_media(self) -> None:
         session_id = "session-subtitle-preprocess-fallback"

@@ -26,7 +26,13 @@ from arl.recorder.models import (
     RecorderRecoveryAction,
     RecorderStateFile,
 )
-from arl.shared.contracts import LiveState, RecordingAsset, SourceType
+from arl.shared.contracts import (
+    LiveState,
+    RecordingAsset,
+    RecordingChunk,
+    RecordingChunkManifest,
+    SourceType,
+)
 from arl.shared.failure_contracts import (
     FAILURE_CATEGORY_FFMPEG_PROCESS_ERROR_RETRYABLE,
     FAILURE_CATEGORY_QUALITY_UNUSABLE_NON_RETRYABLE,
@@ -694,11 +700,18 @@ class RecorderService:
     ) -> tuple[Path | None, str | None]:
         output_dir = self.settings.storage.raw_dir / session_id
         output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / "recording-source.mp4"
+        segmented = self.settings.recording.segmented_recording_enabled
+        output_path = (
+            output_dir / "chunks" / "recording-%05d.mp4"
+            if segmented
+            else output_dir / "recording-source.mp4"
+        )
+        recording_started_at = datetime.now(timezone.utc)
         command = self._build_direct_stream_ffmpeg_command(
             stream_url=stream_url,
             stream_headers=stream_headers,
             output_path=output_path,
+            segmented=segmented,
         )
         attempts = self.settings.recording.ffmpeg_max_retries + 1
         last_failure_reason = None
@@ -713,11 +726,24 @@ class RecorderService:
                 attempt=attempt,
             )
             if outcome.success:
-                quality_failure = self._validate_actual_resolution(
-                    session_id=session_id,
-                    job_id=job_id,
-                    output_path=output_path,
-                )
+                if segmented:
+                    manifest_path, quality_failure = self._finalize_segmented_recording(
+                        session_id=session_id,
+                        job_id=job_id,
+                        output_dir=output_dir,
+                        started_at=recording_started_at,
+                    )
+                    if quality_failure is not None:
+                        return None, quality_failure
+                    if manifest_path is None:
+                        return None, "segmented_recording_no_chunks"
+                    output_path = manifest_path
+                else:
+                    quality_failure = self._validate_actual_resolution(
+                        session_id=session_id,
+                        job_id=job_id,
+                        output_path=output_path,
+                    )
                 if quality_failure is not None:
                     return None, quality_failure
                 self._append_audit(
@@ -787,6 +813,7 @@ class RecorderService:
                         stream_url=stream_url,
                         stream_headers=stream_headers,
                         output_path=output_path,
+                        segmented=segmented,
                     )
                     attempt += 1
                     continue
@@ -813,7 +840,9 @@ class RecorderService:
         stream_url: str,
         stream_headers: dict[str, str],
         output_path: Path,
+        segmented: bool = False,
     ) -> list[str]:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         command = [
             "ffmpeg",
             "-y",
@@ -835,14 +864,131 @@ class RecorderService:
         )
         if self._direct_stream_needs_aac_adtstoasc(stream_url):
             command.extend(["-bsf:a", "aac_adtstoasc"])
-        command.extend(
-            [
-                "-movflags",
-                "+frag_keyframe+empty_moov+default_base_moof",
-                str(output_path),
-            ]
-        )
+        if segmented:
+            command.extend(
+                [
+                    "-f",
+                    "segment",
+                    "-segment_time",
+                    str(self.settings.recording.segmented_chunk_seconds),
+                    "-reset_timestamps",
+                    "1",
+                    "-segment_format",
+                    "mp4",
+                    "-segment_format_options",
+                    "movflags=+frag_keyframe+empty_moov+default_base_moof",
+                    str(output_path),
+                ]
+            )
+        else:
+            command.extend(
+                [
+                    "-movflags",
+                    "+frag_keyframe+empty_moov+default_base_moof",
+                    str(output_path),
+                ]
+            )
         return command
+
+    def _finalize_segmented_recording(
+        self,
+        *,
+        session_id: str,
+        job_id: str,
+        output_dir: Path,
+        started_at: datetime,
+    ) -> tuple[Path | None, str | None]:
+        chunk_paths = sorted((output_dir / "chunks").glob("recording-*.mp4"))
+        if not chunk_paths:
+            log(
+                "recorder",
+                f"segmented recording produced no chunks session_id={session_id}",
+            )
+            return None, None
+
+        quality_failure = self._validate_actual_resolution(
+            session_id=session_id,
+            job_id=job_id,
+            output_path=chunk_paths[0],
+        )
+        if quality_failure is not None:
+            return None, quality_failure
+
+        manifest_path = output_dir / "recording-chunks.json"
+        chunks: list[RecordingChunk] = []
+        cursor = 0.0
+        for index, chunk_path in enumerate(chunk_paths):
+            duration = self._probe_media_duration_seconds(chunk_path)
+            if duration is None:
+                duration = float(self.settings.recording.segmented_chunk_seconds)
+            chunk_started = cursor
+            cursor += max(0.001, duration)
+            chunks.append(
+                RecordingChunk(
+                    path=str(chunk_path.relative_to(output_dir)),
+                    started_at_seconds=round(chunk_started, 3),
+                    ended_at_seconds=round(cursor, 3),
+                    duration_seconds=round(max(0.001, duration), 3),
+                    index=index,
+                )
+            )
+
+        manifest = RecordingChunkManifest(
+            session_id=session_id,
+            source_type=SourceType.DIRECT_STREAM,
+            path=str(manifest_path),
+            started_at=started_at,
+            ended_at=datetime.now(timezone.utc),
+            chunks=chunks,
+            created_at=datetime.now(timezone.utc),
+        )
+        manifest_path.write_text(
+            manifest.model_dump_json(indent=2) + "\n",
+            encoding="utf-8",
+        )
+        append_model(
+            self.settings.storage.temp_dir / "recording-chunk-assets.jsonl",
+            manifest,
+        )
+        log(
+            "recorder",
+            "segmented recording manifest written "
+            f"session_id={session_id} chunks={len(chunks)} path={manifest_path}",
+        )
+        return manifest_path, None
+
+    def _probe_media_duration_seconds(self, path: Path) -> float | None:
+        ffprobe_path = shutil.which("ffprobe")
+        if ffprobe_path is None:
+            return None
+        command = [
+            ffprobe_path,
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "json",
+            str(path),
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=self.settings.recording.actual_resolution_probe_timeout_seconds,
+            )
+            payload = json.loads(result.stdout or "{}")
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload.get("format"), dict):
+            return None
+        try:
+            duration = float(payload["format"].get("duration"))
+        except (TypeError, ValueError):
+            return None
+        return duration if duration > 0.0 else None
 
     def _diagnose_bilibili_403_and_refresh_stream(
         self,

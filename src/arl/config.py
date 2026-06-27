@@ -111,6 +111,8 @@ class StorageSettings(BaseModel):
 class RecordingSettings(BaseModel):
     preferred_resolution: str = "1080p"
     segment_minutes: int = 30
+    segmented_recording_enabled: bool = False
+    segmented_chunk_seconds: int = 900
     direct_stream_timeout_seconds: int = 20
     direct_stream_finalize_headroom_seconds: int = 60
     max_concurrent_jobs: int = 1
@@ -269,15 +271,35 @@ class EditingSettings(BaseModel):
     teaser_max_total_seconds: float = 45.0
     teaser_min_segment_seconds: float = 3.0
     zoom_enabled: bool = False
+    zoom_target: str = "chat"
     zoom_scale: float = 1.2
     zoom_x_anchor: float = 0.5
     zoom_y_anchor: float = 0.5
     zoom_max_segments: int = 1
     audio_mixing_enabled: bool = False
+    skip_bgm_when_source_has_music: bool = True
+    bgm_library_path: Path | None = None
     bgm_path: Path | None = None
     bgm_gain_db: float = -24.0
     sfx_path: Path | None = None
     sfx_gain_db: float = -12.0
+
+    @model_validator(mode="after")
+    def _normalize_zoom_target(self) -> "EditingSettings":
+        aliases = {
+            "chat": "chat",
+            "game_chat": "chat",
+            "bottom_left": "chat",
+            "bottom-left": "chat",
+            "center": "center",
+            "centre": "center",
+            "custom": "custom",
+        }
+        raw = self.zoom_target.strip().lower()
+        if raw not in aliases:
+            raise ValueError("zoom_target must be one of chat, center, or custom")
+        self.zoom_target = aliases[raw]
+        return self
 
 
 class ExportSettings(BaseModel):
@@ -286,9 +308,11 @@ class ExportSettings(BaseModel):
     burn_subtitles: bool = False
     use_ass_subtitles: bool = False
     ass_font_name: str = "SimHei"
-    ass_font_size: int = 36
-    ass_margin_v: int = 20
+    ass_font_size: int = 32
+    ass_margin_v: int = 110
     ass_outline: int = 2
+    ass_max_chars_per_line: int = 18
+    ass_max_lines: int = 2
     ffmpeg_preset: str = "slow"
     ffmpeg_crf: int = 18
     ffmpeg_bitrate: str | None = None
@@ -328,6 +352,8 @@ class ExportSettings(BaseModel):
         self.ass_font_size = max(1, self.ass_font_size)
         self.ass_margin_v = max(0, self.ass_margin_v)
         self.ass_outline = max(0, self.ass_outline)
+        self.ass_max_chars_per_line = max(1, self.ass_max_chars_per_line)
+        self.ass_max_lines = max(1, self.ass_max_lines)
         return self
 
 
@@ -360,6 +386,38 @@ class Settings(BaseModel):
         return self
 
 
+def apply_publish_preset(settings: Settings) -> Settings:
+    """Enable the full publish-edit pipeline on top of existing settings."""
+
+    return settings.model_copy(
+        deep=True,
+        update={
+            "highlights": settings.highlights.model_copy(
+                update={
+                    "enabled": True,
+                    "mode": "condensed",
+                }
+            ),
+            "editing": settings.editing.model_copy(
+                update={
+                    "enabled": True,
+                    "zoom_enabled": True,
+                    "audio_mixing_enabled": True,
+                }
+            ),
+            "export": settings.export.model_copy(
+                update={
+                    "enable_ffmpeg": True,
+                    "burn_subtitles": True,
+                    "use_ass_subtitles": True,
+                    "use_edit_plans": True,
+                    "use_highlight_plans": True,
+                }
+            ),
+        },
+    )
+
+
 def _env_int(key: str, default: int) -> int:
     raw = os.getenv(key)
     if raw is None or raw.strip() == "":
@@ -379,6 +437,13 @@ def _env_bool(key: str, default: bool) -> bool:
     if raw is None or raw.strip() == "":
         return default
     return raw != "0"
+
+
+def _postprocess_publish_preset_enabled() -> bool:
+    preset = os.getenv("ARL_POSTPROCESS_PRESET", "").strip().lower()
+    if preset:
+        return preset in {"publish", "publishing", "bilibili"}
+    return _env_bool("ARL_POSTPROCESS_PUBLISH_PRESET", False)
 
 
 def _env_csv(key: str) -> list[str]:
@@ -564,7 +629,7 @@ def load_settings() -> Settings:
     stage_keywords_path_raw = os.getenv("ARL_STAGE_KEYWORDS_PATH", "").strip()
     stage_keywords_path = Path(stage_keywords_path_raw) if stage_keywords_path_raw else None
 
-    return Settings(
+    settings = Settings(
         douyin=douyin_settings,
         platforms=platforms,
         windows_agent=WindowsAgentSettings(
@@ -846,6 +911,7 @@ def load_settings() -> Settings:
                 _env_float("ARL_EDIT_TEASER_MIN_SEGMENT_SECONDS", 3.0),
             ),
             zoom_enabled=_env_bool("ARL_EDIT_ZOOM_ENABLED", False),
+            zoom_target=os.getenv("ARL_EDIT_ZOOM_TARGET", "chat"),
             zoom_scale=min(
                 1.5,
                 max(1.0, _env_float("ARL_EDIT_ZOOM_SCALE", 1.2)),
@@ -863,6 +929,11 @@ def load_settings() -> Settings:
                 "ARL_EDIT_AUDIO_MIXING_ENABLED",
                 False,
             ),
+            skip_bgm_when_source_has_music=_env_bool(
+                "ARL_EDIT_SKIP_BGM_WHEN_SOURCE_HAS_MUSIC",
+                True,
+            ),
+            bgm_library_path=_env_optional_path("ARL_EDIT_BGM_LIBRARY_PATH"),
             bgm_path=_env_optional_path("ARL_EDIT_BGM_PATH"),
             bgm_gain_db=min(
                 0.0,
@@ -877,6 +948,14 @@ def load_settings() -> Settings:
         recording=RecordingSettings(
             preferred_resolution=os.getenv("ARL_RECORDING_PREFERRED_RESOLUTION", "1080p"),
             segment_minutes=int(os.getenv("ARL_RECORDING_SEGMENT_MINUTES", "30")),
+            segmented_recording_enabled=_env_bool(
+                "ARL_RECORDING_SEGMENTED_ENABLED",
+                False,
+            ),
+            segmented_chunk_seconds=max(
+                1,
+                _env_int("ARL_RECORDING_SEGMENTED_CHUNK_SECONDS", 900),
+            ),
             direct_stream_timeout_seconds=int(
                 os.getenv("ARL_DIRECT_STREAM_TIMEOUT_SECONDS", "20")
             ),
@@ -935,9 +1014,14 @@ def load_settings() -> Settings:
             burn_subtitles=_env_bool("ARL_EXPORT_BURN_SUBTITLES", False),
             use_ass_subtitles=_env_bool("ARL_EXPORT_USE_ASS_SUBTITLES", False),
             ass_font_name=os.getenv("ARL_EXPORT_ASS_FONT_NAME", "SimHei"),
-            ass_font_size=max(1, _env_int("ARL_EXPORT_ASS_FONT_SIZE", 36)),
-            ass_margin_v=max(0, _env_int("ARL_EXPORT_ASS_MARGIN_V", 20)),
+            ass_font_size=max(1, _env_int("ARL_EXPORT_ASS_FONT_SIZE", 32)),
+            ass_margin_v=max(0, _env_int("ARL_EXPORT_ASS_MARGIN_V", 110)),
             ass_outline=max(0, _env_int("ARL_EXPORT_ASS_OUTLINE", 2)),
+            ass_max_chars_per_line=max(
+                1,
+                _env_int("ARL_EXPORT_ASS_MAX_CHARS_PER_LINE", 18),
+            ),
+            ass_max_lines=max(1, _env_int("ARL_EXPORT_ASS_MAX_LINES", 2)),
             ffmpeg_preset=os.getenv("ARL_EXPORT_FFMPEG_PRESET", "slow"),
             ffmpeg_crf=int(os.getenv("ARL_EXPORT_FFMPEG_CRF", "18")),
             ffmpeg_bitrate=os.getenv("ARL_EXPORT_FFMPEG_BITRATE") or None,
@@ -985,3 +1069,6 @@ def load_settings() -> Settings:
             ),
         ),
     )
+    if _postprocess_publish_preset_enabled():
+        settings = apply_publish_preset(settings)
+    return settings

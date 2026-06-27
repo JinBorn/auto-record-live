@@ -10,14 +10,18 @@ from typing import Any
 
 from arl.config import Settings
 from arl.exporter.models import ExporterAuditEvent, ExporterStateFile
+from arl.media.recording_resolver import (
+    recording_duration_seconds,
+    resolve_recording_window,
+)
 from arl.orchestrator.state_store import load_orchestrator_state
-from arl.segmenter.durations import recording_duration_seconds
 from arl.shared.contracts import (
     AudioBed,
     EditPlanAsset,
     ExportAsset,
     HighlightPlanAsset,
     MatchBoundary,
+    MediaSpan,
     RecordingAsset,
     SoundEffectHit,
     SubtitleAsset,
@@ -28,11 +32,12 @@ from arl.shared.failure_contracts import FailureDecision, classify_failure_reaso
 from arl.shared.ffmpeg_runner import rotate_stderr_logs, run_ffmpeg_attempt
 from arl.shared.jsonl_store import append_model, load_models
 from arl.shared.logging import log
-from arl.subtitles.ass import AssSubtitleStyle, write_ass_from_srt
+from arl.subtitles.ass import AssSubtitleStyle, SrtCue, parse_srt_cues, write_ass_from_srt
 
 
 _BGM_GAIN_RANGE_DB = (-60.0, 0.0)
 _SFX_GAIN_RANGE_DB = (-60.0, 6.0)
+_BGM_FADE_SECONDS = 2.0
 
 
 class ExporterService:
@@ -360,8 +365,7 @@ class ExporterService:
         if (
             self.settings.export.enable_ffmpeg
             and recording_asset is not None
-            and self._looks_like_video(recording_asset.path)
-            and Path(recording_asset.path).exists()
+            and self._recording_asset_is_exportable(recording_asset, boundary)
             and ffmpeg_path is not None
         ):
             return self._write_export_with_ffmpeg(
@@ -376,10 +380,10 @@ class ExporterService:
         if self.settings.export.enable_ffmpeg:
             if recording_asset is None:
                 reason = "missing_recording_asset"
-            elif not self._looks_like_video(recording_asset.path):
-                reason = "non_video_recording_asset"
             elif not Path(recording_asset.path).exists():
                 reason = "recording_asset_not_found"
+            elif not self._recording_asset_is_exportable(recording_asset, boundary):
+                reason = "recording_asset_not_exportable"
             elif ffmpeg_path is None:
                 reason = "missing_binary"
             else:
@@ -403,118 +407,193 @@ class ExporterService:
         output_dir = self._platform_export_dir(platform)
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{boundary.session_id}_match{boundary.match_index:02d}.mp4"
+        boundary_spans = self._resolve_export_spans(
+            recording_asset,
+            start_seconds=boundary.started_at_seconds,
+            end_seconds=boundary.ended_at_seconds,
+        )
+        use_span_commands = self._requires_span_command(recording_asset, boundary_spans)
         subtitle_path = Path(subtitle.path).resolve()
         subtitle_is_placeholder = self._subtitle_is_placeholder(subtitle_path)
         burn_subtitles = self._should_burn_subtitles(subtitle_is_placeholder)
         subtitle_filter_path = subtitle_path
-        if burn_subtitles:
-            subtitle_filter_path = self._subtitle_render_path(
-                subtitle_path,
-                boundary=boundary,
-            )
-            if subtitle_filter_path is None:
-                return None, False
         if edit_plan is not None:
-            command = self._edit_plan_ffmpeg_command(
-                boundary=boundary,
-                subtitle_path=subtitle_filter_path,
-                burn_subtitles=burn_subtitles,
-                recording_path=recording_asset.path,
-                output_path=output_path,
-                edit_plan=edit_plan,
-            )
-        elif highlight_plan is not None:
-            command = self._planned_ffmpeg_command(
-                boundary=boundary,
-                subtitle_path=subtitle_filter_path,
-                burn_subtitles=burn_subtitles,
-                recording_path=recording_asset.path,
-                output_path=output_path,
-                highlight_plan=highlight_plan,
-            )
-        elif not burn_subtitles and self._should_stream_copy_export():
-            log(
-                "exporter",
-                "subtitle burn disabled; using quality-preserving stream copy "
-                f"session_id={boundary.session_id} match_index={boundary.match_index}",
-            )
-            command = [
-                "ffmpeg",
-                "-y",
-                "-nostdin",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-ss",
-                str(boundary.started_at_seconds),
-                "-to",
-                str(boundary.ended_at_seconds),
-                "-i",
-                recording_asset.path,
-            ]
-            if subtitle_is_placeholder:
-                command.extend(
-                    [
-                        "-map",
-                        "0",
-                        "-c",
-                        "copy",
-                    ]
+            edit_plan_burn_subtitles = burn_subtitles
+            if burn_subtitles:
+                edit_subtitle_path = self._edit_plan_subtitle_render_path(
+                    subtitle_path,
+                    boundary=boundary,
+                    edit_plan=edit_plan,
+                )
+                if edit_subtitle_path is None:
+                    edit_plan_burn_subtitles = False
+                else:
+                    subtitle_filter_path = edit_subtitle_path
+            if use_span_commands:
+                command = self._edit_plan_span_ffmpeg_command(
+                    boundary=boundary,
+                    subtitle_path=subtitle_filter_path,
+                    burn_subtitles=edit_plan_burn_subtitles,
+                    recording_asset=recording_asset,
+                    output_path=output_path,
+                    edit_plan=edit_plan,
                 )
             else:
-                command.extend(
-                    [
-                        "-i",
-                        str(subtitle_path),
-                        "-map",
-                        "0:v?",
-                        "-map",
-                        "0:a?",
-                        "-map",
-                        "1:0",
-                        "-c:v",
-                        "copy",
-                        "-c:a",
-                        "copy",
-                        "-c:s",
-                        "mov_text",
-                        "-metadata:s:s:0",
-                        "language=chi",
-                    ]
+                command = self._edit_plan_ffmpeg_command(
+                    boundary=boundary,
+                    subtitle_path=subtitle_filter_path,
+                    burn_subtitles=edit_plan_burn_subtitles,
+                    recording_path=recording_asset.path,
+                    output_path=output_path,
+                    edit_plan=edit_plan,
                 )
-            command.extend(["-movflags", "+faststart", str(output_path)])
         else:
-            if subtitle_is_placeholder:
+            if burn_subtitles and not (highlight_plan is not None and use_span_commands):
+                subtitle_filter_path = self._subtitle_render_path(
+                    subtitle_path,
+                    boundary=boundary,
+                )
+                if subtitle_filter_path is None:
+                    return None, False
+            if highlight_plan is not None:
+                highlight_burn_subtitles = burn_subtitles
+                if use_span_commands:
+                    if burn_subtitles:
+                        highlight_subtitle_path = self._highlight_plan_subtitle_render_path(
+                            subtitle_path,
+                            boundary=boundary,
+                            highlight_plan=highlight_plan,
+                        )
+                        if highlight_subtitle_path is None:
+                            highlight_burn_subtitles = False
+                        else:
+                            subtitle_filter_path = highlight_subtitle_path
+                    command = self._planned_span_ffmpeg_command(
+                        boundary=boundary,
+                        subtitle_path=subtitle_filter_path,
+                        burn_subtitles=highlight_burn_subtitles,
+                        recording_asset=recording_asset,
+                        output_path=output_path,
+                        highlight_plan=highlight_plan,
+                    )
+                else:
+                    command = self._planned_ffmpeg_command(
+                        boundary=boundary,
+                        subtitle_path=subtitle_filter_path,
+                        burn_subtitles=burn_subtitles,
+                        recording_path=recording_asset.path,
+                        output_path=output_path,
+                        highlight_plan=highlight_plan,
+                    )
+            elif not burn_subtitles and self._should_stream_copy_export():
                 log(
                     "exporter",
-                    "placeholder subtitle detected; transcoding without subtitle burn "
+                    "subtitle burn disabled; using quality-preserving stream copy "
                     f"session_id={boundary.session_id} match_index={boundary.match_index}",
                 )
-            command = [
-                "ffmpeg",
-                "-y",
-                "-nostdin",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-ss",
-                str(boundary.started_at_seconds),
-                "-to",
-                str(boundary.ended_at_seconds),
-                "-i",
-                recording_asset.path,
-            ]
-            if burn_subtitles:
-                command.extend(["-vf", self._subtitle_filter_arg(subtitle_filter_path)])
-            command.extend(self._video_encode_args())
-            command.extend(self._video_quality_args())
-            command.extend(
-                [
-                    "-c:a",
-                    "copy",
-                    str(output_path),
+                if use_span_commands and len(boundary_spans) > 1:
+                    command = self._span_concat_ffmpeg_command(
+                        spans=boundary_spans,
+                        subtitle_path=subtitle_filter_path,
+                        burn_subtitles=False,
+                        soft_subtitles=not subtitle_is_placeholder,
+                        output_path=output_path,
+                    )
+                else:
+                    span = boundary_spans[0]
+                    command = [
+                        "ffmpeg",
+                        "-y",
+                        "-nostdin",
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-ss",
+                        str(span.local_start_seconds),
+                        "-to",
+                        str(span.local_end_seconds),
+                        "-i",
+                        span.path,
+                    ]
+                    if subtitle_is_placeholder:
+                        command.extend(
+                            [
+                                "-map",
+                                "0",
+                                "-c",
+                                "copy",
+                            ]
+                        )
+                    else:
+                        command.extend(
+                            [
+                                "-i",
+                                str(subtitle_path),
+                                "-map",
+                                "0:v?",
+                                "-map",
+                                "0:a?",
+                                "-map",
+                                "1:0",
+                                "-c:v",
+                                "copy",
+                                "-c:a",
+                                "copy",
+                                "-c:s",
+                                "mov_text",
+                                "-metadata:s:s:0",
+                                "language=chi",
+                            ]
+                        )
+                    command.extend(["-movflags", "+faststart", str(output_path)])
+            elif use_span_commands:
+                if subtitle_is_placeholder:
+                    log(
+                        "exporter",
+                        "placeholder subtitle detected; transcoding without subtitle burn "
+                        f"session_id={boundary.session_id} match_index={boundary.match_index}",
+                    )
+                command = self._span_concat_ffmpeg_command(
+                    spans=boundary_spans,
+                    subtitle_path=subtitle_filter_path,
+                    burn_subtitles=burn_subtitles,
+                    soft_subtitles=False,
+                    output_path=output_path,
+                )
+            else:
+                if subtitle_is_placeholder:
+                    log(
+                        "exporter",
+                        "placeholder subtitle detected; transcoding without subtitle burn "
+                        f"session_id={boundary.session_id} match_index={boundary.match_index}",
+                    )
+                command = [
+                    "ffmpeg",
+                    "-y",
+                    "-nostdin",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-ss",
+                    str(boundary.started_at_seconds),
+                    "-to",
+                    str(boundary.ended_at_seconds),
+                    "-i",
+                    recording_asset.path,
                 ]
-            )
+                if burn_subtitles:
+                    command.extend(
+                        ["-vf", self._subtitle_filter_arg(subtitle_filter_path)]
+                    )
+                command.extend(self._video_encode_args())
+                command.extend(self._video_quality_args())
+                command.extend(
+                        [
+                            "-c:a",
+                            "copy",
+                            str(output_path),
+                        ]
+                    )
         attempts = self.settings.export.ffmpeg_max_retries + 1
         basename = f"{boundary.session_id}_match{boundary.match_index:02d}"
         last_failure_classification: FailureDecision | None = None
@@ -646,17 +725,10 @@ class ExporterService:
         main_indices = [
             index for index, segment in enumerate(plan.timeline) if segment.role == "main"
         ]
-        if len(main_indices) != 1:
+        if not main_indices:
             return None
         first_main_index = main_indices[0]
-        if first_main_index <= 0:
-            return None
-        first_main = plan.timeline[first_main_index]
         segment_tolerance_seconds = 0.001
-        if abs(first_main.source_start_seconds) > segment_tolerance_seconds:
-            return None
-        if abs(first_main.source_end_seconds - duration) > segment_tolerance_seconds:
-            return None
 
         for index, segment in enumerate(plan.timeline):
             if segment.role not in {"teaser", "main"}:
@@ -673,8 +745,34 @@ class ExporterService:
                 return None
             if index < first_main_index and segment.role != "teaser":
                 return None
-            if index > first_main_index:
+            if index >= first_main_index and segment.role != "main":
                 return None
+        main_segments = [plan.timeline[index] for index in main_indices]
+        if any(segment.reason == "full_validated_match" for segment in main_segments):
+            return None
+        if len(main_segments) == 1:
+            only_main = main_segments[0]
+            if (
+                abs(only_main.source_start_seconds) <= segment_tolerance_seconds
+                and abs(only_main.source_end_seconds - duration)
+                <= segment_tolerance_seconds
+            ):
+                return None
+        if not any(
+            abs(segment.source_start_seconds) <= segment_tolerance_seconds
+            for segment in main_segments
+        ):
+            return None
+        if not any(
+            abs(segment.source_end_seconds - duration) <= segment_tolerance_seconds
+            for segment in main_segments
+        ):
+            return None
+        previous_main_end = -segment_tolerance_seconds
+        for segment in main_segments:
+            if segment.source_start_seconds < previous_main_end - segment_tolerance_seconds:
+                return None
+            previous_main_end = segment.source_end_seconds
         rendered_duration = self._edit_plan_output_duration(plan)
         if not self._valid_edit_plan_audio(plan, boundary, rendered_duration):
             return None
@@ -881,6 +979,40 @@ class ExporterService:
         command.extend([str(output_path)])
         return command
 
+    def _planned_span_ffmpeg_command(
+        self,
+        *,
+        boundary: MatchBoundary,
+        subtitle_path: Path,
+        burn_subtitles: bool,
+        recording_asset: RecordingAsset,
+        output_path: Path,
+        highlight_plan: HighlightPlanAsset,
+    ) -> list[str]:
+        spans: list[MediaSpan] = []
+        for window in highlight_plan.windows:
+            spans.extend(
+                self._resolve_export_spans(
+                    recording_asset,
+                    start_seconds=boundary.started_at_seconds
+                    + window.started_at_seconds,
+                    end_seconds=boundary.started_at_seconds + window.ended_at_seconds,
+                )
+            )
+        log(
+            "exporter",
+            "highlight plan chunk export "
+            f"session_id={boundary.session_id} match_index={boundary.match_index} "
+            f"windows={len(highlight_plan.windows)} spans={len(spans)}",
+        )
+        return self._span_concat_ffmpeg_command(
+            spans=spans,
+            subtitle_path=subtitle_path,
+            burn_subtitles=burn_subtitles,
+            soft_subtitles=False,
+            output_path=output_path,
+        )
+
     def _edit_plan_ffmpeg_command(
         self,
         *,
@@ -898,11 +1030,7 @@ class ExporterService:
         for index, segment in enumerate(edit_plan.timeline):
             video_label = f"v{index}"
             audio_label = f"a{index}"
-            video_filters = self._timeline_video_filters(
-                segment,
-                subtitle_path=subtitle_path,
-                burn_subtitles=burn_subtitles,
-            )
+            video_filters = self._timeline_video_filters(segment)
             filter_parts.append(f"[0:v]{','.join(video_filters)}[{video_label}]")
             filter_parts.append(
                 "[0:a]"
@@ -917,6 +1045,12 @@ class ExporterService:
             f"{''.join(concat_inputs)}"
             f"concat=n={len(edit_plan.timeline)}:v=1:a=1[v][{concat_audio_label}]"
         )
+        video_output_label = "v"
+        if burn_subtitles:
+            video_output_label = "vsub"
+            filter_parts.append(
+                f"[v]{self._subtitle_filter_arg(subtitle_path)}[{video_output_label}]"
+            )
         if has_audio_mix:
             filter_parts.extend(self._edit_plan_audio_filters(edit_plan))
         log(
@@ -945,7 +1079,93 @@ class ExporterService:
                 "-filter_complex",
                 ";".join(filter_parts),
                 "-map",
-                "[v]",
+                f"[{video_output_label}]",
+                "-map",
+                "[a]",
+            ]
+        )
+        command.extend(self._video_encode_args())
+        command.extend(self._video_quality_args())
+        command.extend([str(output_path)])
+        return command
+
+    def _edit_plan_span_ffmpeg_command(
+        self,
+        *,
+        boundary: MatchBoundary,
+        subtitle_path: Path,
+        burn_subtitles: bool,
+        recording_asset: RecordingAsset,
+        output_path: Path,
+        edit_plan: EditPlanAsset,
+    ) -> list[str]:
+        expanded: list[tuple[MediaSpan, TimelineVideoTransform | None]] = []
+        for segment in edit_plan.timeline:
+            segment_spans = self._resolve_export_spans(
+                recording_asset,
+                start_seconds=boundary.started_at_seconds
+                + segment.source_start_seconds,
+                end_seconds=boundary.started_at_seconds + segment.source_end_seconds,
+            )
+            expanded.extend((span, segment.transform) for span in segment_spans)
+
+        has_audio_mix = bool(edit_plan.audio_beds or edit_plan.sound_effects)
+        filter_parts: list[str] = []
+        concat_inputs: list[str] = []
+        for index, (span, transform) in enumerate(expanded):
+            video_label = f"v{index}"
+            audio_label = f"a{index}"
+            video_filters = self._media_span_video_filters(span, transform)
+            filter_parts.append(f"[{index}:v]{','.join(video_filters)}[{video_label}]")
+            filter_parts.append(
+                f"[{index}:a]"
+                f"atrim=start={span.local_start_seconds:.3f}:"
+                f"end={span.local_end_seconds:.3f},"
+                f"asetpts=PTS-STARTPTS[{audio_label}]"
+            )
+            concat_inputs.extend([f"[{video_label}]", f"[{audio_label}]"])
+        concat_audio_label = "basea" if has_audio_mix else "a"
+        filter_parts.append(
+            ""
+            f"{''.join(concat_inputs)}"
+            f"concat=n={len(expanded)}:v=1:a=1[v][{concat_audio_label}]"
+        )
+        video_output_label = "v"
+        if burn_subtitles:
+            video_output_label = "vsub"
+            filter_parts.append(
+                f"[v]{self._subtitle_filter_arg(subtitle_path)}[{video_output_label}]"
+            )
+        if has_audio_mix:
+            filter_parts.extend(
+                self._edit_plan_audio_filters(
+                    edit_plan,
+                    first_audio_input_index=len(expanded),
+                )
+            )
+        log(
+            "exporter",
+            "edit plan chunk export "
+            f"session_id={boundary.session_id} match_index={boundary.match_index} "
+            f"segments={len(edit_plan.timeline)} spans={len(expanded)}",
+        )
+        command = [
+            "ffmpeg",
+            "-y",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+        ]
+        for span, _transform in expanded:
+            command.extend(["-i", span.path])
+        command.extend(self._edit_plan_audio_inputs(edit_plan))
+        command.extend(
+            [
+                "-filter_complex",
+                ";".join(filter_parts),
+                "-map",
+                f"[{video_output_label}]",
                 "-map",
                 "[a]",
             ]
@@ -965,11 +1185,16 @@ class ExporterService:
             args.extend(["-i", hit.source_path])
         return args
 
-    def _edit_plan_audio_filters(self, edit_plan: EditPlanAsset) -> list[str]:
+    def _edit_plan_audio_filters(
+        self,
+        edit_plan: EditPlanAsset,
+        *,
+        first_audio_input_index: int = 1,
+    ) -> list[str]:
         filter_parts: list[str] = []
         mix_inputs = ["[basea]"]
         rendered_duration = self._edit_plan_output_duration(edit_plan)
-        next_input_index = 1
+        next_input_index = first_audio_input_index
         for index, bed in enumerate(edit_plan.audio_beds):
             label = f"bgm{index}"
             filter_parts.append(
@@ -1016,10 +1241,24 @@ class ExporterService:
             "asetpts=PTS-STARTPTS",
             f"volume={self._linear_gain(bed.gain_db)}",
         ]
+        filters.extend(self._audio_bed_fade_filters(bed_duration))
         delay_ms = self._milliseconds(start)
         if delay_ms > 0:
             filters.append(f"adelay={delay_ms}|{delay_ms}")
         return f"[{input_index}:a]{','.join(filters)}[{label}]"
+
+    @staticmethod
+    def _audio_bed_fade_filters(duration_seconds: float) -> list[str]:
+        fade_seconds = min(_BGM_FADE_SECONDS, duration_seconds / 3.0)
+        if fade_seconds < 0.05:
+            return []
+        filters = [f"afade=t=in:st=0.000:d={fade_seconds:.3f}"]
+        if duration_seconds > fade_seconds * 2.0:
+            filters.append(
+                f"afade=t=out:st={duration_seconds - fade_seconds:.3f}:"
+                f"d={fade_seconds:.3f}"
+            )
+        return filters
 
     def _sound_effect_filter(
         self,
@@ -1052,25 +1291,109 @@ class ExporterService:
             for segment in edit_plan.timeline
         )
 
+    def _span_concat_ffmpeg_command(
+        self,
+        *,
+        spans: list[MediaSpan],
+        subtitle_path: Path,
+        burn_subtitles: bool,
+        soft_subtitles: bool,
+        output_path: Path,
+    ) -> list[str]:
+        filter_parts: list[str] = []
+        concat_inputs: list[str] = []
+        for index, span in enumerate(spans):
+            video_label = f"v{index}"
+            audio_label = f"a{index}"
+            video_filters = self._media_span_video_filters(span, None)
+            filter_parts.append(f"[{index}:v]{','.join(video_filters)}[{video_label}]")
+            filter_parts.append(
+                f"[{index}:a]"
+                f"atrim=start={span.local_start_seconds:.3f}:"
+                f"end={span.local_end_seconds:.3f},"
+                f"asetpts=PTS-STARTPTS[{audio_label}]"
+            )
+            concat_inputs.extend([f"[{video_label}]", f"[{audio_label}]"])
+        filter_parts.append(
+            f"{''.join(concat_inputs)}concat=n={len(spans)}:v=1:a=1[v][a]"
+        )
+        video_output_label = "v"
+        if burn_subtitles:
+            video_output_label = "vsub"
+            filter_parts.append(
+                f"[v]{self._subtitle_filter_arg(subtitle_path)}[{video_output_label}]"
+            )
+
+        command = [
+            "ffmpeg",
+            "-y",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+        ]
+        for span in spans:
+            command.extend(["-i", span.path])
+        subtitle_input_index = len(spans)
+        if soft_subtitles:
+            command.extend(["-i", str(subtitle_path)])
+        command.extend(
+            [
+                "-filter_complex",
+                ";".join(filter_parts),
+                "-map",
+                f"[{video_output_label}]",
+                "-map",
+                "[a]",
+            ]
+        )
+        if soft_subtitles:
+            command.extend(
+                [
+                    "-map",
+                    f"{subtitle_input_index}:0",
+                ]
+            )
+        command.extend(self._video_encode_args())
+        command.extend(self._video_quality_args())
+        if soft_subtitles:
+            command.extend(
+                [
+                    "-c:s",
+                    "mov_text",
+                    "-metadata:s:s:0",
+                    "language=chi",
+                ]
+            )
+        command.extend(["-movflags", "+faststart", str(output_path)])
+        return command
+
+    def _media_span_video_filters(
+        self,
+        span: MediaSpan,
+        transform: TimelineVideoTransform | None,
+    ) -> list[str]:
+        filters: list[str] = [
+            (
+                f"trim=start={span.local_start_seconds:.3f}:"
+                f"end={span.local_end_seconds:.3f}"
+            ),
+            "setpts=PTS-STARTPTS",
+        ]
+        filters.extend(self._timeline_transform_filters(transform))
+        return filters
+
     def _timeline_video_filters(
         self,
         segment: TimelineSegment,
-        *,
-        subtitle_path: Path,
-        burn_subtitles: bool,
     ) -> list[str]:
-        filters: list[str] = []
-        if burn_subtitles:
-            filters.append(self._subtitle_filter_arg(subtitle_path))
-        filters.extend(
-            [
-                (
-                    f"trim=start={segment.source_start_seconds:.3f}:"
-                    f"end={segment.source_end_seconds:.3f}"
-                ),
-                "setpts=PTS-STARTPTS",
-            ]
-        )
+        filters: list[str] = [
+            (
+                f"trim=start={segment.source_start_seconds:.3f}:"
+                f"end={segment.source_end_seconds:.3f}"
+            ),
+            "setpts=PTS-STARTPTS",
+        ]
         filters.extend(self._timeline_transform_filters(segment.transform))
         return filters
 
@@ -1248,6 +1571,56 @@ class ExporterService:
         )
         append_model(self.audit_path, event)
 
+    def _recording_asset_is_exportable(
+        self,
+        recording_asset: RecordingAsset,
+        boundary: MatchBoundary,
+    ) -> bool:
+        if not Path(recording_asset.path).exists():
+            return False
+        spans = self._resolve_export_spans(
+            recording_asset,
+            start_seconds=boundary.started_at_seconds,
+            end_seconds=boundary.ended_at_seconds,
+        )
+        if not spans:
+            return False
+        return all(
+            Path(span.path).exists() and self._looks_like_video(span.path)
+            for span in spans
+        )
+
+    def _resolve_export_spans(
+        self,
+        recording_asset: RecordingAsset,
+        *,
+        start_seconds: float,
+        end_seconds: float,
+    ) -> list[MediaSpan]:
+        return resolve_recording_window(
+            recording_asset,
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+        )
+
+    def _requires_span_command(
+        self,
+        recording_asset: RecordingAsset,
+        spans: list[MediaSpan],
+    ) -> bool:
+        if Path(recording_asset.path).suffix.lower() == ".json":
+            return True
+        if len(spans) != 1:
+            return True
+        return not self._same_path(spans[0].path, recording_asset.path)
+
+    @staticmethod
+    def _same_path(left: str, right: str) -> bool:
+        try:
+            return Path(left).resolve() == Path(right).resolve()
+        except OSError:
+            return Path(left) == Path(right)
+
     def _looks_like_video(self, path: str) -> bool:
         suffix = Path(path).suffix.lower()
         return suffix in {".mp4", ".mkv", ".flv", ".ts", ".mov"}
@@ -1308,6 +1681,8 @@ class ExporterService:
                     font_size=self.settings.export.ass_font_size,
                     margin_v=self.settings.export.ass_margin_v,
                     outline=self.settings.export.ass_outline,
+                    max_chars_per_line=self.settings.export.ass_max_chars_per_line,
+                    max_lines=self.settings.export.ass_max_lines,
                 ),
             )
         except (OSError, ValueError) as exc:
@@ -1325,6 +1700,202 @@ class ExporterService:
             f"session_id={boundary.session_id} match_index={boundary.match_index}",
         )
         return ass_path
+
+    def _edit_plan_subtitle_render_path(
+        self,
+        subtitle_path: Path,
+        *,
+        boundary: MatchBoundary,
+        edit_plan: EditPlanAsset,
+    ) -> Path | None:
+        retimed_srt_path = subtitle_path.with_name(
+            f"{subtitle_path.stem}-edit-plan.srt"
+        )
+        try:
+            source_cues = parse_srt_cues(subtitle_path.read_text(encoding="utf-8"))
+            retimed_cues = self._retime_srt_cues_for_edit_plan(source_cues, edit_plan)
+            if not retimed_cues:
+                log(
+                    "exporter",
+                    "edit-plan subtitle burn skipped reason=no_retimed_cues "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index}",
+                )
+                return None
+            self._write_srt_cues(retimed_srt_path, retimed_cues)
+        except OSError as exc:
+            log(
+                "exporter",
+                "edit-plan subtitle sidecar skipped "
+                f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                f"reason={exc}",
+            )
+            return None
+
+        if not self.settings.export.use_ass_subtitles:
+            return retimed_srt_path
+
+        ass_path = retimed_srt_path.with_suffix(".ass")
+        try:
+            write_ass_from_srt(
+                retimed_srt_path,
+                ass_path,
+                AssSubtitleStyle(
+                    font_name=self.settings.export.ass_font_name,
+                    font_size=self.settings.export.ass_font_size,
+                    margin_v=self.settings.export.ass_margin_v,
+                    outline=self.settings.export.ass_outline,
+                    max_chars_per_line=self.settings.export.ass_max_chars_per_line,
+                    max_lines=self.settings.export.ass_max_lines,
+                ),
+            )
+        except (OSError, ValueError) as exc:
+            log(
+                "exporter",
+                "edit-plan ass subtitle sidecar skipped "
+                f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                f"reason={exc}",
+            )
+            return None
+        return ass_path
+
+    def _highlight_plan_subtitle_render_path(
+        self,
+        subtitle_path: Path,
+        *,
+        boundary: MatchBoundary,
+        highlight_plan: HighlightPlanAsset,
+    ) -> Path | None:
+        retimed_srt_path = subtitle_path.with_name(
+            f"{subtitle_path.stem}-highlight-plan.srt"
+        )
+        try:
+            source_cues = parse_srt_cues(subtitle_path.read_text(encoding="utf-8"))
+            retimed_cues = self._retime_srt_cues_for_highlight_plan(
+                source_cues,
+                highlight_plan,
+            )
+            if not retimed_cues:
+                log(
+                    "exporter",
+                    "highlight-plan subtitle burn skipped reason=no_retimed_cues "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index}",
+                )
+                return None
+            self._write_srt_cues(retimed_srt_path, retimed_cues)
+        except OSError as exc:
+            log(
+                "exporter",
+                "highlight-plan subtitle sidecar skipped "
+                f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                f"reason={exc}",
+            )
+            return None
+
+        if not self.settings.export.use_ass_subtitles:
+            return retimed_srt_path
+
+        ass_path = retimed_srt_path.with_suffix(".ass")
+        try:
+            write_ass_from_srt(
+                retimed_srt_path,
+                ass_path,
+                AssSubtitleStyle(
+                    font_name=self.settings.export.ass_font_name,
+                    font_size=self.settings.export.ass_font_size,
+                    margin_v=self.settings.export.ass_margin_v,
+                    outline=self.settings.export.ass_outline,
+                    max_chars_per_line=self.settings.export.ass_max_chars_per_line,
+                    max_lines=self.settings.export.ass_max_lines,
+                ),
+            )
+        except (OSError, ValueError) as exc:
+            log(
+                "exporter",
+                "highlight-plan ass subtitle sidecar skipped "
+                f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                f"reason={exc}",
+            )
+            return None
+        return ass_path
+
+    @staticmethod
+    def _retime_srt_cues_for_edit_plan(
+        source_cues: list[SrtCue],
+        edit_plan: EditPlanAsset,
+    ) -> list[SrtCue]:
+        retimed: list[SrtCue] = []
+        output_cursor = 0.0
+        for segment in edit_plan.timeline:
+            segment_start = segment.source_start_seconds
+            segment_end = segment.source_end_seconds
+            for cue in source_cues:
+                overlap_start = max(cue.started_at_seconds, segment_start)
+                overlap_end = min(cue.ended_at_seconds, segment_end)
+                if overlap_end - overlap_start <= 0.05:
+                    continue
+                retimed.append(
+                    SrtCue(
+                        started_at_seconds=output_cursor
+                        + (overlap_start - segment_start),
+                        ended_at_seconds=output_cursor
+                        + (overlap_end - segment_start),
+                        text=cue.text,
+                    )
+                )
+            output_cursor += max(0.0, segment_end - segment_start)
+        return retimed
+
+    @staticmethod
+    def _retime_srt_cues_for_highlight_plan(
+        source_cues: list[SrtCue],
+        highlight_plan: HighlightPlanAsset,
+    ) -> list[SrtCue]:
+        retimed: list[SrtCue] = []
+        output_cursor = 0.0
+        for window in highlight_plan.windows:
+            window_start = window.started_at_seconds
+            window_end = window.ended_at_seconds
+            for cue in source_cues:
+                overlap_start = max(cue.started_at_seconds, window_start)
+                overlap_end = min(cue.ended_at_seconds, window_end)
+                if overlap_end - overlap_start <= 0.05:
+                    continue
+                retimed.append(
+                    SrtCue(
+                        started_at_seconds=output_cursor
+                        + (overlap_start - window_start),
+                        ended_at_seconds=output_cursor
+                        + (overlap_end - window_start),
+                        text=cue.text,
+                    )
+                )
+            output_cursor += max(0.0, window_end - window_start)
+        return retimed
+
+    def _write_srt_cues(self, path: Path, cues: list[SrtCue]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rows: list[str] = []
+        for index, cue in enumerate(cues, start=1):
+            rows.extend(
+                [
+                    str(index),
+                    (
+                        f"{self._format_srt_timestamp(cue.started_at_seconds)} --> "
+                        f"{self._format_srt_timestamp(cue.ended_at_seconds)}"
+                    ),
+                    cue.text,
+                    "",
+                ]
+            )
+        path.write_text("\n".join(rows).rstrip() + "\n", encoding="utf-8")
+
+    @staticmethod
+    def _format_srt_timestamp(seconds: float) -> str:
+        milliseconds = max(0, int(round(seconds * 1000)))
+        hours, remainder = divmod(milliseconds, 3_600_000)
+        minutes, remainder = divmod(remainder, 60_000)
+        secs, millis = divmod(remainder, 1000)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
     def _video_codec_args(self) -> list[str]:
         codec = self.settings.export.ffmpeg_video_codec

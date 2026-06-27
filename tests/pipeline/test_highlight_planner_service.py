@@ -14,6 +14,8 @@ from arl.shared.contracts import (
     HighlightPlanAsset,
     MatchBoundary,
     RecordingAsset,
+    RecordingChunk,
+    RecordingChunkManifest,
     SourceType,
     SubtitleAsset,
 )
@@ -314,14 +316,113 @@ class HighlightPlannerServiceTest(unittest.TestCase):
             )
         )
 
+    def test_kda_event_detection_samples_chunked_recording_spans(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        session_id = "session-condensed-kda-chunked"
+        raw_dir = self.settings.storage.raw_dir / session_id
+        chunk_dir = raw_dir / "chunks"
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+        first_chunk = chunk_dir / "recording-00000.mp4"
+        second_chunk = chunk_dir / "recording-00001.mp4"
+        first_chunk.write_bytes(b"chunk-0")
+        second_chunk.write_bytes(b"chunk-1")
+        manifest_path = raw_dir / "recording-chunks.json"
+        manifest = RecordingChunkManifest(
+            session_id=session_id,
+            source_type=SourceType.DIRECT_STREAM,
+            path=str(manifest_path),
+            started_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            chunks=[
+                RecordingChunk(
+                    path="chunks/recording-00000.mp4",
+                    started_at_seconds=0.0,
+                    ended_at_seconds=10.0,
+                    duration_seconds=10.0,
+                    index=0,
+                ),
+                RecordingChunk(
+                    path="chunks/recording-00001.mp4",
+                    started_at_seconds=10.0,
+                    ended_at_seconds=20.0,
+                    duration_seconds=10.0,
+                    index=1,
+                ),
+            ],
+            created_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        )
+        manifest_path.write_text(
+            manifest.model_dump_json(indent=2) + "\n",
+            encoding="utf-8",
+        )
+        recording = RecordingAsset(
+            session_id=session_id,
+            source_type=SourceType.DIRECT_STREAM,
+            path=str(manifest_path),
+            started_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        )
+        boundary = MatchBoundary(
+            session_id=session_id,
+            match_index=1,
+            started_at_seconds=8.0,
+            ended_at_seconds=12.0,
+            confidence=0.9,
+        )
+        sample_calls: list[tuple[Path, float, float]] = []
+        read_timestamps: list[float] = []
+
+        def _sample_frame_window(path, start_seconds, end_seconds, *, interval_seconds):
+            sample_calls.append((Path(path), start_seconds, end_seconds))
+            if Path(path) == first_chunk:
+                return [(9.0, object())]
+            return [(1.0, object())]
+
+        def _read_kda(frame, timestamp_seconds, *, crop_region):
+            read_timestamps.append(timestamp_seconds)
+            if timestamp_seconds < 10.0:
+                return KdaReading(timestamp_seconds, 0, 0, 0, 0.9)
+            return KdaReading(timestamp_seconds, 1, 0, 0, 0.9)
+
+        with (
+            patch(
+                "arl.vision.frame_sampler.sample_frame_window",
+                side_effect=_sample_frame_window,
+            ),
+            patch("arl.vision.kda_ocr.read_kda", side_effect=_read_kda),
+        ):
+            cues = service._detect_kda_event_cues(
+                recording=recording,
+                boundary=boundary,
+                duration=4.0,
+            )
+
+        self.assertEqual(
+            sample_calls,
+            [
+                (first_chunk, 8.0, 10.0),
+                (second_chunk, 0.0, 2.0),
+            ],
+        )
+        self.assertEqual(read_timestamps, [9.0, 11.0])
+        self.assertEqual(len(cues), 1)
+        self.assertIn("current_at=3.000", cues[0].text)
+
     def test_kda_event_detection_preserves_long_gap_kill_death_change(self) -> None:
         service = HighlightPlannerService(self.settings)
+        video_path = self.temp_root / "recording-source.mp4"
+        video_path.parent.mkdir(parents=True, exist_ok=True)
+        video_path.write_bytes(b"fake-mp4")
         boundary = MatchBoundary(
             session_id="session-condensed-kda-long-gap",
             match_index=1,
             started_at_seconds=0.0,
             ended_at_seconds=300.0,
             confidence=0.8,
+        )
+        recording = RecordingAsset(
+            session_id=boundary.session_id,
+            source_type=SourceType.DIRECT_STREAM,
+            path=str(video_path),
+            started_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
         )
         readings = [
             KdaReading(95.0, 2, 0, 1, 0.9),
@@ -337,7 +438,7 @@ class HighlightPlannerServiceTest(unittest.TestCase):
             patch("arl.vision.kda_ocr.read_kda", side_effect=readings),
         ):
             cues = service._detect_kda_event_cues(
-                video_path=Path("recording-source.mp4"),
+                recording=recording,
                 boundary=boundary,
                 duration=300.0,
             )
@@ -351,12 +452,21 @@ class HighlightPlannerServiceTest(unittest.TestCase):
 
     def test_kda_event_detection_preserves_post_death_kill_changes(self) -> None:
         service = HighlightPlannerService(self.settings)
+        video_path = self.temp_root / "recording-source.mp4"
+        video_path.parent.mkdir(parents=True, exist_ok=True)
+        video_path.write_bytes(b"fake-mp4")
         boundary = MatchBoundary(
             session_id="session-condensed-kda-post-death",
             match_index=1,
             started_at_seconds=0.0,
             ended_at_seconds=300.0,
             confidence=0.8,
+        )
+        recording = RecordingAsset(
+            session_id=boundary.session_id,
+            source_type=SourceType.DIRECT_STREAM,
+            path=str(video_path),
+            started_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
         )
         readings = [
             KdaReading(90.0, 6, 1, 2, 0.9),
@@ -378,7 +488,7 @@ class HighlightPlannerServiceTest(unittest.TestCase):
             patch("arl.vision.kda_ocr.read_kda", side_effect=readings),
         ):
             cues = service._detect_kda_event_cues(
-                video_path=Path("recording-source.mp4"),
+                recording=recording,
                 boundary=boundary,
                 duration=300.0,
             )

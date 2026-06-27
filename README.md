@@ -10,7 +10,7 @@ windows-agent -> orchestrator -> recorder -> postprocess -> recovery
 
 - `windows-agent`：探测直播状态，写 `data/tmp/windows-agent-events.jsonl`
 - `orchestrator`：把直播事件变成 session / recording job
-- `recorder`：调用 ffmpeg 录制到 `data/raw/<session>/recording-source.mp4`
+- `recorder`：调用 ffmpeg 录制到 `data/raw/<session>/recording-source.mp4`；分片录制模式会写 `data/raw/<session>/recording-chunks.json` 和 `data/raw/<session>/chunks/recording-*.mp4`
 - `postprocess`：分段、字幕、导出、标题文案
 - `recovery`：分发需要人工处理的恢复动作
 
@@ -158,7 +158,11 @@ Windows launcher 会自动准备 `.venv` 并安装 `.[subtitles]`。`ARL_WIN_INS
 常驻模式会由 `windows-postprocess-loop.ps1` 定期跑自动编排剪辑。录制完成后想手动触发一轮，执行：
 
 ```powershell
+# 常规后处理
 .\.venv\Scripts\python.exe -m arl.cli postprocess --once
+
+# 发布版剪辑预设
+.\.venv\Scripts\python.exe -m arl.cli postprocess --once --publish
 ```
 
 如果只想处理刚录完的一个或几个 session，不要跑全量扫描，直接加 session 过滤：
@@ -173,7 +177,7 @@ Windows launcher 会自动准备 `.venv` 并安装 `.[subtitles]`。`ARL_WIN_INS
 这条命令会按下面顺序处理当前还没处理过的录制资产：
 
 ```text
-stage-hints-semantic -> segmenter -> subtitles -> exporter -> copywriter
+stage-hints-semantic -> segmenter -> subtitles -> highlight-planner -> edit-planner -> exporter -> copywriter
 ```
 
 `stage-hints-semantic` 只会在已有字幕或手工信号能识别出 `in_game` 时生成语义切点。没有可用信号时，默认不会再按 `ARL_RECORDING_SEGMENT_MINUTES` 硬切 30 分钟；如果确实想保留固定周期模板切片，需要显式设置：
@@ -194,7 +198,7 @@ $env:ARL_SEGMENTER_TEMPLATE_FALLBACK_ENABLED = "1"
 .\.venv\Scripts\python.exe -m arl.cli copywriter
 ```
 
-如果 `postprocess --once` 每个阶段都显示 `processed=0`，但 `data/raw/session-*/recording-source.mp4` 里确实有录制文件，先修复录制资产清单，再重新后处理：
+如果 `postprocess --once` 每个阶段都显示 `processed=0`，但 `data/raw/session-*/recording-source.mp4` 或 `data/raw/session-*/recording-chunks.json` 里确实有录制文件，先修复录制资产清单，再重新后处理：
 
 ```powershell
 .\.venv\Scripts\python.exe -m arl.cli repair-recording-assets

@@ -10,9 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from arl.config import Settings
-from arl.segmenter.durations import recording_duration_seconds
+from arl.media.recording_resolver import (
+    recording_duration_seconds,
+    resolve_recording_window,
+)
 from arl.segmenter.signals_from_subtitles import StageSignalFromSubtitlesService
-from arl.shared.contracts import MatchBoundary, RecordingAsset, SubtitleAsset
+from arl.shared.contracts import MatchBoundary, MediaSpan, RecordingAsset, SubtitleAsset
 from arl.shared.jsonl_store import append_model, load_models
 from arl.shared.logging import log
 from arl.subtitles.models import SubtitleAuditEvent, SubtitleStateFile
@@ -128,10 +131,10 @@ class SubtitleService:
             )
 
         recording_assets = load_models(self.recording_assets_path, RecordingAsset)
-        latest_recording_path_by_session: dict[str, str] = {}
+        latest_recording_by_session: dict[str, RecordingAsset] = {}
         latest_recording_duration_by_session: dict[str, float] = {}
         for recording_asset in recording_assets:
-            latest_recording_path_by_session[recording_asset.session_id] = recording_asset.path
+            latest_recording_by_session[recording_asset.session_id] = recording_asset
             latest_recording_duration_by_session[recording_asset.session_id] = (
                 recording_duration_seconds(recording_asset)
             )
@@ -174,11 +177,11 @@ class SubtitleService:
                     f"session_id={boundary.session_id} match_index={boundary.match_index}",
                 )
 
-            recording_path = latest_recording_path_by_session.get(boundary.session_id)
+            recording_asset = latest_recording_by_session.get(boundary.session_id)
             recording_duration = latest_recording_duration_by_session.get(boundary.session_id)
             subtitle_path, outcome = self._write_subtitle(
                 boundary,
-                recording_path,
+                recording_asset,
                 recording_duration,
             )
             subtitle_asset = SubtitleAsset(
@@ -236,7 +239,7 @@ class SubtitleService:
     def _write_subtitle(
         self,
         boundary: MatchBoundary,
-        recording_path: str | None,
+        recording_asset: RecordingAsset | None,
         recording_duration_seconds: float | None = None,
     ) -> tuple[Path, TranscribeOutcome]:
         output_dir = self.settings.storage.processed_dir / boundary.session_id
@@ -244,7 +247,7 @@ class SubtitleService:
         subtitle_path = output_dir / f"match-{boundary.match_index:02d}.srt"
         outcome = self._transcribe_boundary(
             boundary,
-            recording_path,
+            recording_asset,
             recording_duration_seconds=recording_duration_seconds,
         )
         if outcome.entries:
@@ -256,7 +259,7 @@ class SubtitleService:
     def _transcribe_boundary(
         self,
         boundary: MatchBoundary,
-        recording_path: str | None,
+        recording_asset: RecordingAsset | None,
         *,
         recording_duration_seconds: float | None = None,
     ) -> TranscribeOutcome:
@@ -266,7 +269,7 @@ class SubtitleService:
                 reason="model_unavailable",
                 reason_detail=f"unsupported_provider:{self.settings.subtitles.provider}",
             )
-        if recording_path is None:
+        if recording_asset is None:
             log(
                 "subtitles",
                 (
@@ -281,7 +284,6 @@ class SubtitleService:
                 reason_detail=f"no_recording_asset_for_session={boundary.session_id}",
             )
 
-        source_path = Path(recording_path)
         if self._should_skip_full_recording_fallback_asr(
             boundary,
             recording_duration_seconds,
@@ -304,8 +306,31 @@ class SubtitleService:
                 reason="low_confidence_full_recording",
                 reason_detail=reason_detail,
             )
-        if not source_path.exists():
-            reason_detail = f"recording_path_not_found:{source_path}"
+        spans = resolve_recording_window(
+            recording_asset,
+            start_seconds=boundary.started_at_seconds,
+            end_seconds=boundary.ended_at_seconds,
+        )
+        span_error = self._validate_transcription_spans(spans)
+        if span_error is not None:
+            reason, reason_detail = span_error
+            log(
+                "subtitles",
+                (
+                    "fallback to placeholder "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    f"reason={reason_detail}"
+                ),
+            )
+            return TranscribeOutcome(
+                entries=[],
+                reason=reason,
+                reason_detail=reason_detail,
+            )
+
+        transcription_input = self._prepare_transcription_input(boundary, spans)
+        if transcription_input is None:
+            reason_detail = "chunk_audio_preprocess_unavailable"
             log(
                 "subtitles",
                 (
@@ -319,23 +344,6 @@ class SubtitleService:
                 reason="missing_recording",
                 reason_detail=reason_detail,
             )
-        if source_path.suffix.lower() not in self._TRANSCRIBE_SUFFIXES:
-            reason_detail = f"unsupported_suffix:{source_path.suffix.lower()}"
-            log(
-                "subtitles",
-                (
-                    "fallback to placeholder "
-                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
-                    f"reason={reason_detail}"
-                ),
-            )
-            return TranscribeOutcome(
-                entries=[],
-                reason="unsupported_suffix",
-                reason_detail=reason_detail,
-            )
-
-        transcription_input = self._prepare_transcription_input(boundary, source_path)
         last_failure: TranscribeOutcome | None = None
         attempted_devices: list[str] = []
         for model_config in self._whisper_model_candidates():
@@ -633,18 +641,38 @@ class SubtitleService:
         except (TypeError, ValueError):
             return None
 
+    def _validate_transcription_spans(
+        self,
+        spans: list[MediaSpan],
+    ) -> tuple[str, str] | None:
+        if not spans:
+            return "missing_recording", "recording_window_unavailable"
+        for span in spans:
+            span_path = Path(span.path)
+            if not span_path.exists():
+                return "missing_recording", f"recording_path_not_found:{span_path}"
+            suffix = span_path.suffix.lower()
+            if suffix not in self._TRANSCRIBE_SUFFIXES:
+                return "unsupported_suffix", f"unsupported_suffix:{suffix}"
+        return None
+
     def _prepare_transcription_input(
         self,
         boundary: MatchBoundary,
-        source_path: Path,
-    ) -> TranscriptionInput:
+        spans: list[MediaSpan],
+    ) -> TranscriptionInput | None:
+        if len(spans) > 1:
+            return self._prepare_chunked_transcription_input(boundary, spans)
+
+        span = spans[0]
+        source_path = Path(span.path)
         original_input = TranscriptionInput(
             path=source_path,
-            boundary_start_seconds=boundary.started_at_seconds,
-            boundary_end_seconds=boundary.ended_at_seconds,
+            boundary_start_seconds=span.local_start_seconds,
+            boundary_end_seconds=span.local_end_seconds,
             clip_timestamps=[
-                boundary.started_at_seconds,
-                boundary.ended_at_seconds,
+                span.local_start_seconds,
+                span.local_end_seconds,
             ],
         )
         if not self.settings.subtitles.preprocess_audio:
@@ -662,7 +690,7 @@ class SubtitleService:
             )
             return original_input
 
-        duration = boundary.ended_at_seconds - boundary.started_at_seconds
+        duration = span.local_end_seconds - span.local_start_seconds
         if duration <= 0:
             log(
                 "subtitles",
@@ -686,7 +714,7 @@ class SubtitleService:
             "-hide_banner",
             "-nostdin",
             "-ss",
-            f"{boundary.started_at_seconds:.3f}",
+            f"{span.local_start_seconds:.3f}",
             "-t",
             f"{duration:.3f}",
             "-i",
@@ -737,6 +765,131 @@ class SubtitleService:
             (
                 "audio preprocess written "
                 f"session_id={boundary.session_id} match_index={boundary.match_index}"
+            ),
+        )
+        return TranscriptionInput(
+            path=output_path,
+            boundary_start_seconds=0.0,
+            boundary_end_seconds=duration,
+            clip_timestamps=None,
+            preprocessed=True,
+        )
+
+    def _prepare_chunked_transcription_input(
+        self,
+        boundary: MatchBoundary,
+        spans: list[MediaSpan],
+    ) -> TranscriptionInput | None:
+        ffmpeg_path = shutil.which("ffmpeg")
+        if ffmpeg_path is None:
+            log(
+                "subtitles",
+                (
+                    "chunk audio preprocess skipped "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    "reason=missing_ffmpeg"
+                ),
+            )
+            return None
+
+        duration = sum(
+            max(0.0, span.local_end_seconds - span.local_start_seconds)
+            for span in spans
+        )
+        if duration <= 0:
+            log(
+                "subtitles",
+                (
+                    "chunk audio preprocess skipped "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    "reason=invalid_span_duration"
+                ),
+            )
+            return None
+
+        output_path = (
+            self.asr_audio_dir
+            / boundary.session_id
+            / f"match-{boundary.match_index:02d}.wav"
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        command = [
+            ffmpeg_path,
+            "-y",
+            "-hide_banner",
+            "-nostdin",
+        ]
+        for span in spans:
+            command.extend(["-i", span.path])
+        filter_parts: list[str] = []
+        concat_inputs: list[str] = []
+        for index, span in enumerate(spans):
+            label = f"a{index}"
+            filter_parts.append(
+                f"[{index}:a]"
+                f"atrim=start={span.local_start_seconds:.3f}:"
+                f"end={span.local_end_seconds:.3f},"
+                f"asetpts=PTS-STARTPTS[{label}]"
+            )
+            concat_inputs.append(f"[{label}]")
+        filter_parts.append(
+            f"{''.join(concat_inputs)}concat=n={len(spans)}:v=0:a=1[aconcat]"
+        )
+        filter_parts.append(
+            f"[aconcat]{self.settings.subtitles.preprocess_audio_filter}[aout]"
+        )
+        command.extend(
+            [
+                "-filter_complex",
+                ";".join(filter_parts),
+                "-map",
+                "[aout]",
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-c:a",
+                "pcm_s16le",
+                str(output_path),
+            ]
+        )
+        try:
+            subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=self.settings.subtitles.preprocess_timeout_seconds,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            log(
+                "subtitles",
+                (
+                    "chunk audio preprocess skipped "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    f"reason={self._format_preprocess_failure(exc)}"
+                ),
+            )
+            return None
+
+        if not output_path.exists() or output_path.stat().st_size <= 0:
+            log(
+                "subtitles",
+                (
+                    "chunk audio preprocess skipped "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    "reason=output_missing_or_empty"
+                ),
+            )
+            return None
+
+        log(
+            "subtitles",
+            (
+                "chunk audio preprocess written "
+                f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                f"spans={len(spans)}"
             ),
         )
         return TranscriptionInput(

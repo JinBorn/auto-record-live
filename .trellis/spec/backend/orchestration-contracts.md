@@ -698,6 +698,29 @@ class RecordingAsset(BaseModel):
     started_at: datetime
     ended_at: datetime | None = None
 
+class RecordingChunk(BaseModel):
+    path: str
+    started_at_seconds: float
+    ended_at_seconds: float
+    duration_seconds: float
+    index: int
+
+class RecordingChunkManifest(BaseModel):
+    session_id: str
+    source_type: SourceType
+    path: str
+    started_at: datetime
+    ended_at: datetime | None = None
+    chunks: list[RecordingChunk]
+    created_at: datetime
+
+class MediaSpan(BaseModel):
+    path: str
+    source_start_seconds: float
+    source_end_seconds: float
+    local_start_seconds: float
+    local_end_seconds: float
+
 class MatchBoundary(BaseModel):
     session_id: str
     match_index: int
@@ -746,6 +769,7 @@ class PublishingPackage(BaseModel):
     session_id: str
     match_index: int
     path: str | None = None
+    streamer_name: str | None = None
     source_subtitle_path: str
     source_export_path: str | None = None
     source_recording_path: str | None = None
@@ -757,12 +781,18 @@ class PublishingPackage(BaseModel):
     cover_lines: list[str]
     tags: list[str]
     cover_path: str | None = None
+    published_package_dir: str | None = None
+    published_video_path: str | None = None
+    published_cover_path: str | None = None
+    published_metadata_path: str | None = None
     status: str
     created_at: datetime
 ```
 
 - Current file-backed manifests:
   - Recorder assets: `data/tmp/recording-assets.jsonl`
+  - Chunked recording index: `data/tmp/recording-chunk-assets.jsonl` (future opt-in)
+  - Per-session chunk manifest: `data/raw/<session_id>/recording-chunks.json`
   - Recorder audit events: `data/tmp/recorder-events.jsonl`
   - Recorder recovery actions: `data/tmp/recorder-recovery-actions.jsonl`
   - Recovery dispatch events: `data/tmp/recovery-events.jsonl`
@@ -792,6 +822,8 @@ class PublishingPackage(BaseModel):
 - Environment keys for ffmpeg-enabled paths:
   - `ARL_RECORDING_ENABLE_FFMPEG` (`0`/`1`, default `0`)
   - `ARL_DIRECT_STREAM_TIMEOUT_SECONDS` (int seconds, default `20`)
+  - `ARL_RECORDING_SEGMENTED_ENABLED` (`0`/`1`, default `0`) opts direct-stream recording into one-process FFmpeg segment muxing. Default must stay disabled until downstream chunk-aware stages are fully enabled.
+  - `ARL_RECORDING_SEGMENTED_CHUNK_SECONDS` (int seconds >= 1, default `900`) controls target segment duration for segmented direct-stream recording. Actual chunk durations may differ because stream-copy segmenting cuts near muxer/keyframe boundaries.
   - `ARL_RECORDING_FINALIZE_HEADROOM_SECONDS` (int seconds >= 0, default `60`) — for long direct-stream recordings, recorder subtracts this from the ffmpeg `-t` capture duration when the configured timeout is more than twice the headroom. This reserves process time for success audit/asset/state persistence and optional remux when an external unattended wrapper stops at the configured timeout boundary.
   - `ARL_RECORDER_MAX_CONCURRENT_JOBS` (int >= 1, default `1`) — upper bound for how many recording jobs a single recorder run may execute in parallel. The recorder still applies state and asset writes on the main thread as each job completes.
   - `ARL_RECORDING_FFMPEG_MAX_RETRIES` (int >= 0, default `1`)
@@ -860,6 +892,41 @@ class PublishingPackage(BaseModel):
 
 - `RecordingAsset.path` must point to the actual stored media file relative to project runtime paths or be an absolute local path; do not store opaque labels.
 - `RecordingAsset.started_at` / `ended_at` must describe the recorded media window. When the live session is already stopped, the asset may reuse session start/stop timestamps; when the session is still live during a bounded recorder run, recorder must stamp the actual attempt start/end so downstream segment durations do not default to an unrelated live-session estimate.
+- Segmented recording is additive. Existing single-file `RecordingAsset.path`
+  rows remain valid. New segmented sessions must write a typed
+  `RecordingChunkManifest` under `data/raw/<session_id>/recording-chunks.json`,
+  and downstream stages must resolve source-time windows through the shared
+  media resolver before assuming one physical file.
+- `RecordingChunk.started_at_seconds` / `ended_at_seconds` use the same
+  recording-relative source timeline as `MatchBoundary`, highlight windows, and
+  edit-plan timeline segments. Chunk boundaries are storage boundaries only;
+  they must never be treated as match boundaries.
+- The media resolver must map a requested source-time window to one or more
+  `MediaSpan` rows with chunk-local times. Missing or invalid sidecar manifests
+  beside a valid single-file `RecordingAsset.path` must fall back to the
+  existing single-file resolution behavior.
+- Subtitle ASR must resolve the match boundary before transcription. A single
+  span may use the existing `clip_timestamps` path with chunk-local timestamps;
+  multiple spans must be preprocessed into one match-local WAV with chunk-local
+  `atrim` filters and audio `concat`, then transcribed with no
+  `clip_timestamps`.
+- Edit-planner source-music detection must resolve the match boundary before
+  sampling audio. Single-span recordings use the detector's existing local
+  `start_seconds` / `end_seconds`; multi-span recordings must sample concrete
+  chunk paths and never pass `recording-chunks.json` to FFmpeg.
+- Highlight KDA event detection must resolve the match boundary before frame
+  sampling. Chunk-local sample timestamps must be translated back to the
+  recording-relative source timeline before OCR readings are compared and KDA
+  event windows are emitted.
+- `repair-recording-assets` must scan both
+  `data/raw/session-*/recording-source.mp4` and
+  `data/raw/session-*/recording-chunks.json`. For chunk manifests, it must
+  validate referenced chunk files, derive duration from chunk timeline metadata,
+  and append a `RecordingAsset` whose `path` is the manifest path.
+- `arl status` must use the same repair discovery path for unregistered raw
+  diagnostics. A registered `recording-chunks.json` must not be reported as a
+  missing single-file recording; an old unregistered manifest should surface
+  under `postprocess.unregistered_recordings`.
 - `MatchBoundary` timestamps are relative to the beginning of the referenced recording asset, in seconds.
 - `match_index` is 1-based within a session and must remain stable for downstream subtitle and export naming.
 - Segmenter stage-hint contract:
@@ -949,7 +1016,7 @@ class PublishingPackage(BaseModel):
   - command removes target-session rows from `match-stage-hints.jsonl`, `match-boundaries.jsonl`, `subtitle-assets.jsonl`, `highlight-plans.jsonl`, `export-assets.jsonl`, `copy-assets.jsonl`, and `publishing-packages.jsonl`; stage hints do not currently carry source metadata, so reset cannot preserve manual hints.
   - command removes only `source="subtitles_srt"` rows from `match-stage-signals.jsonl` so manual signal inputs remain available.
   - command removes target-session processed keys from `segmenter-state.json`, `subtitles-state.json`, `highlight-planner-state.json`, `exporter-state.json`, `copywriter-state.json`, and subtitle-signal ingest state.
-  - by default, command deletes generated subtitle/export/copy/publishing files referenced by removed manifest rows only when the resolved path is under `storage.processed_dir` or `storage.export_dir`; `PublishingPackage.path` and `PublishingPackage.cover_path` are both generated artifact paths. Paths outside those generated roots are reported as skipped. It also removes orphan generated files for the target session under `storage.processed_dir/<session_id>/` and export files named `<session_id>_match*` under `storage.export_dir`.
+  - by default, command deletes generated subtitle/export/copy/publishing files referenced by removed manifest rows only when the resolved path is under `storage.processed_dir` or `storage.export_dir`; `PublishingPackage.path`, `PublishingPackage.cover_path`, `PublishingPackage.published_video_path`, `PublishingPackage.published_cover_path`, and `PublishingPackage.published_metadata_path` are generated artifact paths. Paths outside those generated roots are reported as skipped. It also removes orphan generated files for the target session under `storage.processed_dir/<session_id>/` and export files named `<session_id>_match*` under `storage.export_dir`.
   - `--keep-files` resets manifests/state without deleting generated files.
   - command must not delete raw recordings under `data/raw/`, remove `recording-assets.jsonl`, or mutate recorder/orchestrator state.
 - CLI `repair-recording-assets` contract:
@@ -1004,9 +1071,12 @@ class PublishingPackage(BaseModel):
   - Default subtitle mode is soft subtitles (`ARL_EXPORT_BURN_SUBTITLES=0`). With `ffmpeg_video_codec in {"auto", "copy"}` and a real SRT, exporter must clip the video/audio with stream copy and mux the SRT as `mov_text` (`-map 0:v? -map 0:a? -map 1:0 -c:v copy -c:a copy -c:s mov_text -movflags +faststart`).
   - Placeholder SRTs still use plain stream-copy clipping (`-map 0 -c copy -movflags +faststart`) and do not add a subtitle track.
   - Hard subtitle burn-in (`ARL_EXPORT_BURN_SUBTITLES=1`) is an explicit quality tradeoff because it requires video re-encoding. The default encode fallback is near-transparent (`ARL_EXPORT_FFMPEG_CRF=18`, `ARL_EXPORT_FFMPEG_PRESET=slow`) and should copy audio when no audio filter is applied.
+  - When `RecordingAsset.path` points to `recording-chunks.json` or a sidecar chunk manifest exists beside the recording path, exporter must resolve the requested source window through the shared media resolver. One resolved span may use a normal local `-ss` / `-to` command; multiple spans must be rendered as concrete chunk inputs with local `trim` / `atrim` filters followed by `concat`.
 - `arl exporter --session-id/--session-ids --match-index/--match-indices --force-reprocess` must support scoped recovery runs. Filters use intersection semantics; `--force-reprocess` bypasses exporter processed-state/output idempotency for matched boundaries only.
 - Exporter subtitle burn-in must build ffmpeg's `subtitles` filter path from the resolved subtitle path using forward slashes, escape any drive colon, and wrap the path in single quotes (for example `subtitles='D\:/code/auto-record-live/data/processed/session/match-01.srt'`). Windows backslash paths or unquoted `D:/...` filter values can be parsed by ffmpeg as filter options instead of a subtitle filename.
-- When `ARL_EXPORT_USE_HIGHLIGHT_PLANS=1` and a valid `HighlightPlanAsset` exists for `(session_id, match_index)`, exporter may treat it as an optional edit plan: seek to the original match boundary, burn subtitles before cutting when subtitles are real and burn-in is enabled, keep only planned windows with `select` / `aselect`, and reset timestamps with `setpts` / `asetpts`.
+- When `ARL_EXPORT_USE_HIGHLIGHT_PLANS=1` and a valid `HighlightPlanAsset` exists for `(session_id, match_index)`, exporter may treat it as an optional edit plan: seek to the original match boundary, keep only planned windows with `select` / `aselect`, and reset timestamps with `setpts` / `asetpts`. Highlight-plan burn-in may keep source-timeline subtitle rendering because no punch-in transforms are applied in this path.
+- When `ARL_EXPORT_USE_EDIT_PLANS=1` and subtitle burn-in is enabled, exporter must not burn subtitles before per-segment transforms. It must retime the SRT into an edit-plan subtitle sidecar matching the post-concat output timeline, then apply `subtitles=` after video `concat` so punch-in transforms do not scale subtitle text or push it off-screen.
+- Chunked edit-plan exports must expand each timeline segment into one or more `MediaSpan` pieces while preserving the segment transform on every piece. BGM/SFX inputs must start after all resolved media inputs, not at hard-coded input index `1`.
 - Exporter must ignore stale or invalid highlight plans whose recorded source boundary differs from the current `MatchBoundary`, whose windows are empty, reversed, negative, or outside the boundary duration. Ignored plans fall back to the no-plan export path.
 - When highlight plans are disabled, missing, stale, or invalid, exporter command construction must use the complete boundary export path.
 - Copywriter generation contract:
@@ -1014,13 +1084,19 @@ class PublishingPackage(BaseModel):
   - for each subtitle asset with an existing SRT file, it writes `data/processed/<session_id>/match-<idx>-copy.json` and appends one `CopyAsset` row to `data/tmp/copy-assets.jsonl`.
   - copy JSON must include `transcript_excerpt`, `title_candidates`, `recommended_title`, `description`, `tags`, source subtitle/export paths, `status`, and `created_at`.
   - copywriter also writes `data/processed/<session_id>/match-<idx>-publishing.json` and appends one `PublishingPackage` row to `data/tmp/publishing-packages.jsonl`; this artifact is additive and must not change the `CopyAsset` field contract.
-  - publishing package JSON must include `summary`, `cover_lines`, `evidence`, title candidates, recommended title, tags, transcript excerpt, source subtitle/export/recording paths, optional `cover_path`, `status`, and `created_at`.
+  - publishing package JSON must include `summary`, `cover_lines`, `evidence`, title candidates, recommended title, tags, transcript excerpt, source subtitle/export/recording paths, optional `streamer_name`, optional `cover_path`, optional `published_package_dir`, optional published video/cover/metadata paths, `status`, and `created_at`.
+  - `cover_lines` must preserve multiple high-signal summary points when the subtitle excerpt supports them. It may reuse the recommended title, but it must not merely mirror a shortened title when `_summary_headline` can produce richer cover copy; keep the output to at most four short display lines.
+  - copywriter streamer lookup must read both the normal orchestrator state and selected-run state files under `data/tmp/selected-recordings/*/orchestrator-state.json`; selected recording sessions otherwise lose the streamer name and publish as `unknown-streamer`.
+  - when `source_export_path` exists, copywriter creates a title-rich publish package directory beside the exported video using the sanitized stem `{streamer_name or unknown-streamer} - {recommended_title} - {session timestamp or id hint}_matchNN`, records it as `published_package_dir`, and writes the publishable video alias inside that directory as `video.<source suffix>`. It should hardlink the MP4 when the filesystem supports it and fall back to copying; the original exporter output and `ExportAsset` row remain unchanged.
+  - when `cover_path` exists, copywriter copies the generated cover image inside the package directory as `cover.<source suffix>` and records it as `published_cover_path`. This gives operators a named folder containing the video plus cover without needing to inspect `data/processed`, while avoiding repeated long filenames inside the folder.
+  - when the publishable video alias is created, copywriter also writes `upload.txt` inside the package directory, records it as `published_metadata_path`, and keeps upload fields first: `Title`, `Description` (from summary), and `Hashtags`, followed by streamer/session/match, cover lines, evidence, and source paths. This keeps upload copy visible in the export directory without opening the processed JSON.
+  - after writing the title-rich package directory, copywriter must best-effort remove legacy flat publish aliases beside the original export that use the same sanitized stem (`<stem><video suffix>`, `<stem>.jpg`, and `<stem>.txt`). Cleanup must never remove the original exporter output or generated source cover path, must skip directories/non-files, and must log cleanup failures instead of failing the stage. If those legacy flat aliases are present while manifest/state rows otherwise look processed, output completeness must return false so the next run regenerates/synchronizes the package row and cleans the old files.
   - when a valid highlight plan matches the current boundary snapshot, title/cover/evidence generation should prefer subtitle cues overlapping the plan windows; stale or boundary-mismatched highlight plans are ignored, and the full subtitle transcript is used as fallback.
   - when several subtitle cues overlap plan windows, copywriter metadata selection must sort candidates by highlight reason priority before cue timestamp: `highlight_keyword` and `condensed_key_event`, then `condensed_tactical`, `narration`, `match_start_context`, `match_end_context`, and `condensed_context`. This prevents ordinary edge/context windows from hiding the actual publishable moment.
-  - optional cover rendering may use ffmpeg to extract a source frame and Pillow to render a `1920x1080` image under `data/processed/<session_id>/match-<idx>-cover.jpg`; missing recording files, missing ffmpeg, missing Pillow, or rendering errors must skip cover output while still writing publishing metadata.
+  - optional cover rendering may use ffmpeg to extract a source frame and Pillow to render a `1920x1080` image under `data/processed/<session_id>/match-<idx>-cover.jpg`; it should prefer the raw `RecordingAsset` as the frame source and use source-timeline offsets there, but when the recording asset/file is unavailable and `source_export_path` exists it must fall back to the exported MP4 at export time `0.0`. Rendered cover text should use cover-line hierarchy: the first line is the larger yellow punch headline, later lines are white supporting summary points, all over a high-contrast title panel so the cover remains readable on busy gameplay frames. Missing recording/export files, missing ffmpeg, missing Pillow, or rendering errors must skip cover output while still writing publishing metadata.
   - placeholder or empty subtitles produce `status="placeholder_input"` with deterministic fallback metadata instead of crashing or blocking copy generation.
   - `copywriter-state.json` owns idempotency via the same `<session_id>:<match_index>` key shape used by subtitle/export stages; repeated runs must not append duplicate `CopyAsset` or `PublishingPackage` rows for already processed matches.
-  - a processed state key is only a skip when both the copy JSON and publishing JSON still exist. If either generated JSON is missing while manifest/state rows remain, copywriter must rebuild the missing file without appending a duplicate manifest row.
+  - a processed state key is only a skip when the copy JSON, publishing JSON, generated cover file (when recorded), publish package directory (when recorded), package video alias, package cover alias (when a cover exists), and `upload.txt` sidecar (when an export exists) still exist, and no same-stem legacy flat publish aliases remain beside the export. If generated publishing artifacts are missing while manifest/state rows remain, copywriter must rebuild them and keep the latest `PublishingPackage` manifest row synchronized instead of appending a duplicate row.
   - missing subtitle files are skipped without marking the key processed, so later reruns can generate copy after the SRT arrives.
   - the current provider is deterministic local template generation. Future LLM-backed copy must keep the same `CopyAsset` manifest contract and make fallback status explicit rather than blocking downstream status checks.
 - ffmpeg failure audit rows must include the canonical `decision` / `failure_category` / `is_retryable` / `reason_code` / `reason_detail` tuple and, when stderr is available, also `stderr_excerpt` (first 5 + last 15 lines, each <=240 chars, total <=4 KB) and `stderr_log_path` (relative path of the full stderr dump at `data/tmp/recorder-stderr/<job_id>-<attempt>.log` for recorder rows, `data/tmp/exporter-stderr/<session_id>_match<idx>-<attempt>.log` for exporter rows).
@@ -1099,7 +1175,7 @@ class PublishingPackage(BaseModel):
 - Exporter `ffmpeg` path activation requires all of:
   - `export.enable_ffmpeg == True`
   - matching `RecordingAsset` exists for the session
-  - recording path has video-like extension and file exists
+  - recording path exists and either is a video-like file or resolves through a chunk manifest to existing video-like chunk paths
   - `ffmpeg` available on PATH
 
 ### 4. Validation & Error Matrix
@@ -1165,11 +1241,13 @@ class PublishingPackage(BaseModel):
 | `arl highlight-planner` sees weak data, missing subtitles, a low-confidence fallback boundary, or no meaningful reduction | Write no plan; missing subtitle paths must not mark the key processed |
 | Exporter sees a valid highlight plan while `ARL_EXPORT_USE_HIGHLIGHT_PLANS=0` | Ignore the plan and export the full `MatchBoundary` interval |
 | Exporter sees a valid highlight plan while `ARL_EXPORT_USE_HIGHLIGHT_PLANS=1` | Use `select` / `aselect` with `setpts` / `asetpts` and append the normal `ExportAsset` on success |
+| Exporter sees a valid highlight plan on chunked media while `ARL_EXPORT_USE_HIGHLIGHT_PLANS=1` | Resolve every highlight window to concrete chunk-local spans, add those chunk files as inputs, render them with `trim` / `atrim` / `concat` instead of passing the manifest JSON to ffmpeg, and retime burned subtitles to the post-concat highlight output |
 | Exporter sees no highlight plan or an invalid/stale highlight plan | Use the complete boundary export path |
 | Exporter sees real SRT and default `auto/copy` codec with burn-in disabled | Stream-copy video/audio and mux SRT as `mov_text` soft subtitles |
+| Exporter sees a valid edit plan on chunked media while `ARL_EXPORT_USE_EDIT_PLANS=1` | Expand timeline segments across chunks, preserve transforms per expanded span, keep subtitle burn-in after concat, and offset BGM/SFX input indexes by the number of media inputs |
 | Exporter sees `boundary.is_complete=false` | Skip subtitles/highlights/export for that boundary and do not report missing outputs for it in status |
 | `arl postprocess-reset --session-id <id>` runs after bad generated boundaries/subtitles/exports | Remove only that session's generated postprocess rows/state and generated files; keep raw recording assets intact for a later rerun |
-| `arl postprocess-reset --session-id <id>` sees publishing package rows for that session | Remove target-session `PublishingPackage` rows and delete both package JSON and cover files when they are under generated roots |
+| `arl postprocess-reset --session-id <id>` sees publishing package rows for that session | Remove target-session `PublishingPackage` rows and delete package JSON, cover files, published aliases, and published metadata sidecars when they are under generated roots |
 | `arl postprocess-reset --session-id <id>` sees orphan generated files not present in manifests | Remove target-session files under `storage.processed_dir/<session_id>/` and export files named `<session_id>_match*` under `storage.export_dir` |
 | `arl postprocess-reset` sees a removed artifact path outside `storage.processed_dir` / `storage.export_dir` | Remove the manifest row but skip file deletion and report the skipped path reason |
 | A stage receives an unknown asset format or status | Reject or audit explicitly; do not guess |
@@ -1177,6 +1255,7 @@ class PublishingPackage(BaseModel):
 | `ARL_RECORDING_ENABLE_FFMPEG=1`, source is `browser_capture`, and resolved capture input is empty/unavailable | Recorder logs skip reason and writes placeholder recording artifact |
 | Recorder invokes ffmpeg for an HLS direct-stream URL (`.m3u8`) | Initial recording command includes `-bsf:a aac_adtstoasc` before MP4 output so ADTS AAC can be copied into MP4 |
 | Recorder invokes ffmpeg for a long direct-stream MP4 with `ARL_DIRECT_STREAM_TIMEOUT_SECONDS=7200` and default `ARL_RECORDING_FINALIZE_HEADROOM_SECONDS=60` | Initial recording command uses `-t 7140` and includes `-c copy -movflags +frag_keyframe+empty_moov+default_base_moof <output.mp4>` so ffmpeg can exit before an external 7200s wrapper deadline and the in-progress file remains probeable/playable if the supervisor still terminates near the boundary |
+| Recorder invokes ffmpeg for a direct-stream URL with `ARL_RECORDING_SEGMENTED_ENABLED=1` | Initial recording command uses one process with `-f segment -segment_time <seconds> -reset_timestamps 1 ... chunks/recording-%05d.mp4`, writes `recording-chunks.json`, and appends a `RecordingAsset` whose path points to the manifest; it must not stop/restart ffmpeg per chunk |
 | Recorder invokes ffmpeg with timeout <= twice the finalize headroom, or `ARL_RECORDING_FINALIZE_HEADROOM_SECONDS=0` | Initial recording command uses the full configured `ARL_DIRECT_STREAM_TIMEOUT_SECONDS` as `-t` |
 | Recorder has multiple runnable jobs and `ARL_RECORDER_MAX_CONCURRENT_JOBS=N` where `N > 1` | Recorder starts up to N ffmpeg recording jobs concurrently, appends recorder audit rows with thread-safe JSONL writes, and applies recording assets/state transitions on the main thread as jobs finish |
 | Direct-stream ffmpeg exits successfully and actual-resolution validation passes | Recorder emits `ffmpeg_record_succeeded`, appends the recording asset, saves `recorder-state.json` with the job id in `processed_job_ids`, then attempts a second copy-only remux command `-i <output.mp4> -map 0 -c copy -movflags +faststart <output.remux.mp4>` and atomically replaces `<output.mp4>` with the remuxed file when it exists |
@@ -1293,6 +1372,7 @@ class PublishingPackage(BaseModel):
 - Unit test: exporter refuses to burn subtitles when the declared subtitle file is missing.
 - Unit test: exporter with a valid highlight plan builds a command containing `select`, `aselect`, `setpts`, and `asetpts`.
 - Unit test: exporter ffmpeg command escapes Windows subtitle filter paths with forward slashes, escaped drive colon, and single quotes.
+- Unit test: exporter edit-plan burn-in retimes subtitles and applies the subtitle filter after concat, not before punch-in transforms.
 - Unit test: exporter writes final artifacts under the orchestrator platform subdirectory so same-streamer multi-platform outputs remain distinguishable.
 - Unit test: exporter reads selected-recording orchestrator state files when resolving a session platform.
 - Unit test: exporter removes partial MP4 output before deferring a failed export.
@@ -1307,6 +1387,14 @@ class PublishingPackage(BaseModel):
 - Unit test: exporter treats zero-exit MP4 outputs with no video stream as failed and defers the match instead of emitting `ffmpeg_export_succeeded`.
 - Unit test: copywriter emits deterministic title/copy JSON plus one `CopyAsset` from an existing subtitle asset and optional export asset.
 - Unit test: copywriter emits one `PublishingPackage` with summary, cover lines, evidence, and source paths while preserving the existing `CopyAsset` contract.
+- Unit test: copywriter cover lines expand a shortened recommended title with additional high-signal summary points from the subtitle excerpt.
+- Unit test: copywriter creates a streamer/title/session named published video path beside the export and a same-stem cover image when source export and cover assets exist.
+- Unit test: copywriter places `video.<ext>`, `cover.<ext>`, and `upload.txt` inside a title-rich `published_package_dir` beside the original export.
+- Unit test: copywriter writes an upload-oriented `upload.txt` metadata sidecar beside the published video and cover.
+- Unit test: copywriter regenerates missing published video/cover/metadata aliases for an already processed match without duplicating the publishing package manifest row.
+- Unit test: copywriter removes same-stem legacy flat published video/cover/metadata aliases on rerun without deleting the original exporter output or duplicating manifest rows.
+- Unit test: copywriter renders and publishes a same-stem cover from the exported MP4 when the raw recording asset/file is unavailable.
+- Unit test: copywriter reads selected-recording orchestrator state files when resolving streamer names.
 - Unit test: copywriter prefers highlight-window subtitle cues for publishing metadata when the highlight plan matches the current boundary.
 - Unit/integration test: copywriter highlight cue selection prefers `highlight_keyword` or `condensed_key_event` evidence over earlier `match_start_context` evidence in `recommended_title`, `cover_lines`, and `PublishingPackage.evidence`.
 - Unit test: copywriter skips optional cover rendering when recording/ffmpeg/Pillow is unavailable and still writes publishing metadata.
@@ -1315,7 +1403,7 @@ class PublishingPackage(BaseModel):
 - Unit test: postprocess invokes `highlight-planner` after `subtitles` and before `exporter`, then invokes `copywriter` after `exporter`.
 - Unit test: postprocess accepts `--session-id/--session-ids` and passes the session scope to filter-aware stages.
 - Unit test: `postprocess-reset` removes only the target session's generated rows/state/files while preserving other sessions and raw recording assets.
-- Unit test: `postprocess-reset` removes target-session `publishing-packages.jsonl` rows and deletes package JSON plus cover assets under generated roots.
+- Unit test: `postprocess-reset` removes target-session `publishing-packages.jsonl` rows and deletes package JSON, cover assets, published video/cover aliases, and published metadata sidecars under generated roots.
 - Unit test: `postprocess-reset` removes orphan generated files for the target session even when manifest rows are already missing.
 - Unit test: `postprocess-reset` skips deleting manifest artifact paths outside generated roots.
 - Unit test: status reports unregistered raw MP4 files as degraded diagnostics without mutating state.

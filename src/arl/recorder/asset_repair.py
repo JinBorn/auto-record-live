@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 
 from arl.config import Settings
-from arl.shared.contracts import RecordingAsset, SourceType
+from arl.shared.contracts import RecordingAsset, RecordingChunkManifest, SourceType
 from arl.shared.jsonl_store import append_model, load_models
 from arl.shared.logging import log
 
@@ -120,19 +120,16 @@ class RecordingAssetRepairService:
                 skipped_unreadable += 1
                 continue
 
-            duration_seconds = self._probe_duration_seconds(path)
+            duration_seconds, started_at, ended_at, source_type = (
+                self._recording_metadata(path, session_id, modified_at)
+            )
             if duration_seconds is None or duration_seconds <= 0:
                 skipped_unreadable += 1
                 continue
 
-            started_at = self._started_at_from_session_id(session_id)
-            if started_at is None:
-                started_at = modified_at - timedelta(seconds=duration_seconds)
-            ended_at = started_at + timedelta(seconds=duration_seconds)
-
             asset = RecordingAsset(
                 session_id=session_id,
-                source_type=SourceType.DIRECT_STREAM,
+                source_type=source_type,
                 path=str(path),
                 started_at=started_at,
                 ended_at=ended_at,
@@ -166,7 +163,57 @@ class RecordingAssetRepairService:
         raw_dir = self.settings.storage.raw_dir
         if not raw_dir.exists():
             return []
-        return sorted(raw_dir.glob("session-*/recording-source.mp4"))
+        return sorted(
+            [
+                *raw_dir.glob("session-*/recording-source.mp4"),
+                *raw_dir.glob("session-*/recording-chunks.json"),
+            ]
+        )
+
+    def _recording_metadata(
+        self,
+        path: Path,
+        session_id: str,
+        modified_at: datetime,
+    ) -> tuple[float | None, datetime, datetime, SourceType]:
+        if path.name == "recording-chunks.json":
+            manifest = self._load_chunk_manifest(path)
+            if manifest is None or not manifest.chunks:
+                return None, modified_at, modified_at, SourceType.DIRECT_STREAM
+            manifest_base = path.parent
+            for chunk in manifest.chunks:
+                chunk_path = Path(chunk.path)
+                if not chunk_path.is_absolute():
+                    chunk_path = manifest_base / chunk_path
+                try:
+                    if chunk_path.stat().st_size <= 0:
+                        return None, modified_at, modified_at, manifest.source_type
+                except OSError:
+                    return None, modified_at, modified_at, manifest.source_type
+            duration_seconds = max(chunk.ended_at_seconds for chunk in manifest.chunks)
+            started_at = manifest.started_at
+            ended_at = manifest.ended_at or started_at + timedelta(
+                seconds=duration_seconds
+            )
+            return duration_seconds, started_at, ended_at, manifest.source_type
+
+        duration_seconds = self._probe_duration_seconds(path)
+        if duration_seconds is None or duration_seconds <= 0:
+            return None, modified_at, modified_at, SourceType.DIRECT_STREAM
+        started_at = self._started_at_from_session_id(session_id)
+        if started_at is None:
+            started_at = modified_at - timedelta(seconds=duration_seconds)
+        ended_at = started_at + timedelta(seconds=duration_seconds)
+        return duration_seconds, started_at, ended_at, SourceType.DIRECT_STREAM
+
+    @staticmethod
+    def _load_chunk_manifest(path: Path) -> RecordingChunkManifest | None:
+        try:
+            return RecordingChunkManifest.model_validate_json(
+                path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            return None
 
     def _probe_duration_seconds(self, path: Path) -> float | None:
         ffprobe_path = shutil.which("ffprobe")

@@ -7,6 +7,10 @@ from pathlib import Path
 
 from arl.config import Settings
 from arl.highlights.models import ClassifiedCue, HighlightPlannerStateFile
+from arl.media.recording_resolver import (
+    recording_primary_video_path,
+    resolve_recording_window,
+)
 from arl.shared.contracts import (
     HighlightClipWindow,
     HighlightPlanAsset,
@@ -583,29 +587,37 @@ class HighlightPlannerService:
             filtered.append(boundary)
         return filtered
 
-    def _find_recording_video_path(self, boundary: MatchBoundary) -> Path | None:
+    def _find_recording_asset(self, boundary: MatchBoundary) -> RecordingAsset | None:
         recording_assets_path = self.settings.storage.temp_dir / "recording-assets.jsonl"
         if not recording_assets_path.exists():
             return None
 
         recordings = load_models(recording_assets_path, RecordingAsset)
+        latest: RecordingAsset | None = None
         for rec in recordings:
             if rec.session_id != boundary.session_id:
                 continue
-            recording_path = Path(rec.path)
-            if recording_path.exists() and recording_path.suffix.lower() == ".mp4":
-                return recording_path
+            latest = rec
+        return latest
+
+    def _find_recording_video_path(self, boundary: MatchBoundary) -> Path | None:
+        recording = self._find_recording_asset(boundary)
+        if recording is None:
+            return None
+        primary_path = recording_primary_video_path(recording)
+        if primary_path is not None and primary_path.exists():
+            return primary_path
         return None
 
     def _detect_kda_event_cues(
         self,
         *,
-        video_path: Path | None,
+        recording: RecordingAsset | None,
         boundary: MatchBoundary,
         duration: float,
     ) -> list[ClassifiedCue]:
         if (
-            video_path is None
+            recording is None
             or not self.settings.highlights.condensed_kda_event_detection_enabled
         ):
             return []
@@ -614,13 +626,10 @@ class HighlightPlannerService:
         from arl.vision.kda_ocr import read_kda
 
         try:
-            samples = sample_frame_window(
-                video_path,
-                boundary.started_at_seconds,
-                boundary.ended_at_seconds,
-                interval_seconds=(
-                    self.settings.highlights.condensed_kda_sample_interval_seconds
-                ),
+            samples = self._sample_kda_frames(
+                recording,
+                boundary=boundary,
+                sample_frame_window=sample_frame_window,
             )
         except RuntimeError as exc:
             log(
@@ -740,6 +749,54 @@ class HighlightPlannerService:
             previous = current
 
         return events
+
+    def _sample_kda_frames(
+        self,
+        recording: RecordingAsset,
+        *,
+        boundary: MatchBoundary,
+        sample_frame_window,
+    ) -> list[tuple[float, object]]:
+        spans = resolve_recording_window(
+            recording,
+            start_seconds=boundary.started_at_seconds,
+            end_seconds=boundary.ended_at_seconds,
+        )
+        if not spans:
+            log(
+                "highlights",
+                "skip KDA event detection "
+                f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                "reason=recording_window_unavailable",
+            )
+            return []
+
+        samples: list[tuple[float, object]] = []
+        for span in spans:
+            span_path = Path(span.path)
+            if not span_path.exists():
+                log(
+                    "highlights",
+                    "skip KDA span sampling "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    f"reason=missing_span path={span_path}",
+                )
+                continue
+            span_samples = sample_frame_window(
+                span_path,
+                span.local_start_seconds,
+                span.local_end_seconds,
+                interval_seconds=(
+                    self.settings.highlights.condensed_kda_sample_interval_seconds
+                ),
+            )
+            for local_timestamp_seconds, frame in span_samples:
+                source_timestamp_seconds = span.source_start_seconds + (
+                    local_timestamp_seconds - span.local_start_seconds
+                )
+                samples.append((source_timestamp_seconds, frame))
+        samples.sort(key=lambda item: item[0])
+        return samples
 
     def _trim_silent_kda_death_waits(
         self,
@@ -1211,7 +1268,12 @@ class HighlightPlannerService:
             )
             return None
 
-        video_path = self._find_recording_video_path(boundary)
+        recording = self._find_recording_asset(boundary)
+        video_path = (
+            recording_primary_video_path(recording) if recording is not None else None
+        )
+        if video_path is not None and not video_path.exists():
+            video_path = None
 
         # 1. 字幕分类
         all_tactical_keywords = _TACTICAL_KEYWORDS + tuple(
@@ -1226,7 +1288,7 @@ class HighlightPlannerService:
             low_value_repeat_window_seconds=self.settings.highlights.condensed_low_value_repeat_window_seconds,
         )
         kda_event_cues = self._detect_kda_event_cues(
-            video_path=video_path,
+            recording=recording,
             boundary=boundary,
             duration=duration,
         )
