@@ -50,7 +50,8 @@ def render_cover(
         try:
             image = Image.open(frame_path).convert("RGB")
             image = ImageOps.fit(image, (1920, 1080))
-            image = ImageEnhance.Brightness(image).enhance(0.72)
+            image = ImageEnhance.Brightness(image).enhance(0.70)
+            image = ImageEnhance.Contrast(image).enhance(1.08)
             draw = ImageDraw.Draw(image)
             _draw_cover_text(draw, image.size, cover_lines, ImageFont)
             image.save(output_path, quality=92)
@@ -62,15 +63,16 @@ def render_cover(
 
 def _draw_cover_text(draw: object, image_size: tuple[int, int], cover_lines: Sequence[str], image_font: object) -> None:
     width, height = image_size
-    max_text_width = int(width * 0.78)
-    font_size = 112 if len(cover_lines) <= 3 else 92
-    fonts = [_load_font(image_font, font_size)]
+    max_text_width = int(width * 0.68)
     line_metrics: list[tuple[str, object, int, int]] = []
-    for raw_line in cover_lines[:4]:
+    for index, raw_line in enumerate(cover_lines[:4]):
         line = raw_line.strip()
         if not line:
             continue
-        font = fonts[0]
+        font_size = 126 if index == 0 else 96
+        if len(cover_lines) >= 4 and index > 0:
+            font_size = 88
+        font = _load_font(image_font, font_size)
         bbox = draw.textbbox((0, 0), line, font=font, stroke_width=5)
         while bbox[2] - bbox[0] > max_text_width and font_size > 48:
             font_size -= 6
@@ -81,18 +83,39 @@ def _draw_cover_text(draw: object, image_size: tuple[int, int], cover_lines: Seq
     if not line_metrics:
         return
 
-    gap = 18
+    gap = 20
     total_height = sum(item[3] for item in line_metrics) + gap * (len(line_metrics) - 1)
-    y = max(80, int(height * 0.50) - total_height // 2)
-    x = int(width * 0.12)
-    for line, font, _, line_height in line_metrics:
+    x = int(width * 0.08)
+    y = max(72, int(height * 0.52) - total_height // 2)
+    text_width = max(item[2] for item in line_metrics)
+    padding_x = 42
+    padding_y = 34
+    panel_box = (
+        max(0, x - padding_x),
+        max(0, y - padding_y),
+        min(width, x + text_width + padding_x),
+        min(height, y + total_height + padding_y),
+    )
+    try:
+        draw.rounded_rectangle(
+            panel_box,
+            radius=28,
+            fill=(20, 20, 20),
+            outline=(255, 238, 0),
+            width=5,
+        )
+    except AttributeError:
+        draw.rectangle(panel_box, fill=(20, 20, 20), outline=(255, 238, 0), width=5)
+
+    for index, (line, font, _, line_height) in enumerate(line_metrics):
+        fill = (255, 238, 0) if index == 0 else (255, 255, 255)
         try:
             draw.text(
                 (x, y),
                 line,
                 font=font,
-                fill=(255, 238, 0),
-                stroke_width=6,
+                fill=fill,
+                stroke_width=7 if index == 0 else 5,
                 stroke_fill=(18, 18, 18),
             )
         except UnicodeEncodeError:

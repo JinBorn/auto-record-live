@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import textwrap
 from dataclasses import dataclass
 from html import unescape
 from pathlib import Path
@@ -23,9 +24,11 @@ class SrtCue:
 @dataclass(frozen=True)
 class AssSubtitleStyle:
     font_name: str = "SimHei"
-    font_size: int = 36
-    margin_v: int = 20
+    font_size: int = 32
+    margin_v: int = 110
     outline: int = 2
+    max_chars_per_line: int = 18
+    max_lines: int = 2
     play_res_x: int = 1280
     play_res_y: int = 720
     margin_l: int = 20
@@ -124,12 +127,7 @@ def _build_ass_document(cues: list[SrtCue], style: AssSubtitleStyle) -> str:
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     for cue in cues:
-        lines.append(
-            "Dialogue: 0,"
-            f"{_format_ass_timestamp(cue.started_at_seconds)},"
-            f"{_format_ass_timestamp(cue.ended_at_seconds)},"
-            f"Default,,0,0,0,,{_escape_ass_text(cue.text)}"
-        )
+        lines.extend(_dialogue_lines_for_cue(cue, normalized_style))
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -139,6 +137,8 @@ def _normalize_style(style: AssSubtitleStyle) -> AssSubtitleStyle:
         font_size=max(1, int(style.font_size)),
         margin_v=max(0, int(style.margin_v)),
         outline=max(0, int(style.outline)),
+        max_chars_per_line=max(1, int(style.max_chars_per_line)),
+        max_lines=max(1, int(style.max_lines)),
         play_res_x=max(1, int(style.play_res_x)),
         play_res_y=max(1, int(style.play_res_y)),
         margin_l=max(0, int(style.margin_l)),
@@ -175,8 +175,71 @@ def _clean_srt_text_row(row: str) -> str:
     return unescape(_SRT_HTML_TAG_RE.sub("", row.strip()))
 
 
-def _escape_ass_text(text: str) -> str:
-    return text.replace("{", r"\{").replace("}", r"\}").replace("\n", r"\N")
+def _dialogue_lines_for_cue(cue: SrtCue, style: AssSubtitleStyle) -> list[str]:
+    wrapped_lines = _wrap_subtitle_text(cue.text, style.max_chars_per_line)
+    chunks = _chunk_lines(wrapped_lines, style.max_lines)
+    if len(chunks) == 1:
+        return [
+            _format_dialogue_line(
+                cue.started_at_seconds,
+                cue.ended_at_seconds,
+                chunks[0],
+            )
+        ]
+
+    duration = cue.ended_at_seconds - cue.started_at_seconds
+    dialogue_lines: list[str] = []
+    for index, chunk in enumerate(chunks):
+        start = cue.started_at_seconds + duration * index / len(chunks)
+        end = cue.started_at_seconds + duration * (index + 1) / len(chunks)
+        dialogue_lines.append(_format_dialogue_line(start, end, chunk))
+    return dialogue_lines
+
+
+def _format_dialogue_line(
+    started_at_seconds: float,
+    ended_at_seconds: float,
+    text_lines: list[str],
+) -> str:
+    return (
+        "Dialogue: 0,"
+        f"{_format_ass_timestamp(started_at_seconds)},"
+        f"{_format_ass_timestamp(ended_at_seconds)},"
+        f"Default,,0,0,0,,{_escape_ass_text_lines(text_lines)}"
+    )
+
+
+def _escape_ass_text_lines(lines: list[str]) -> str:
+    escaped_lines = [
+        line.replace("{", r"\{").replace("}", r"\}") for line in lines
+    ]
+    return r"\N".join(escaped_lines)
+
+
+def _wrap_subtitle_text(text: str, max_chars_per_line: int) -> list[str]:
+    rows: list[str] = []
+    for raw_line in text.splitlines() or [text]:
+        line = raw_line.strip()
+        if not line:
+            continue
+        rows.extend(
+            textwrap.wrap(
+                line,
+                width=max(1, max_chars_per_line),
+                break_long_words=True,
+                replace_whitespace=False,
+                drop_whitespace=True,
+            )
+            or [line]
+        )
+    return rows or [""]
+
+
+def _chunk_lines(lines: list[str], max_lines: int) -> list[list[str]]:
+    return [
+        lines[index : index + max_lines]
+        for index in range(0, len(lines), max_lines)
+    ]
 
 
 def _ass_field(value: str) -> str:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
-from arl.cli import build_parser
+from arl.cli import build_parser, main
+from arl.config import Settings
 
 
 class CliUnattendedTest(unittest.TestCase):
@@ -11,6 +13,41 @@ class CliUnattendedTest(unittest.TestCase):
 
         self.assertEqual(args.command, "postprocess")
         self.assertTrue(args.once)
+        self.assertFalse(args.publish)
+
+    def test_postprocess_command_parses_publish_preset(self) -> None:
+        args = build_parser().parse_args(["postprocess", "--once", "--publish"])
+
+        self.assertEqual(args.command, "postprocess")
+        self.assertTrue(args.once)
+        self.assertTrue(args.publish)
+
+    def test_postprocess_publish_preset_reaches_service_settings(self) -> None:
+        captured: dict[str, Settings] = {}
+
+        class _PostprocessStub:
+            def __init__(self, settings: Settings) -> None:
+                captured["settings"] = settings
+
+            def run_once(self, *, session_ids=None) -> None:
+                return None
+
+        with patch("sys.argv", ["arl", "postprocess", "--once", "--publish"]), patch(
+            "arl.cli.load_settings",
+            return_value=Settings(),
+        ), patch("arl.cli.PostProcessService", _PostprocessStub):
+            self.assertEqual(main(), 0)
+
+        settings = captured["settings"]
+        self.assertEqual(settings.highlights.mode, "condensed")
+        self.assertTrue(settings.editing.enabled)
+        self.assertTrue(settings.editing.zoom_enabled)
+        self.assertTrue(settings.editing.audio_mixing_enabled)
+        self.assertTrue(settings.export.enable_ffmpeg)
+        self.assertTrue(settings.export.burn_subtitles)
+        self.assertTrue(settings.export.use_ass_subtitles)
+        self.assertTrue(settings.export.use_edit_plans)
+        self.assertTrue(settings.export.use_highlight_plans)
 
     def test_postprocess_command_parses_session_filters(self) -> None:
         args = build_parser().parse_args(
@@ -67,6 +104,7 @@ class CliUnattendedTest(unittest.TestCase):
                 "2",
                 "--match-indices",
                 "3,4",
+                "--force-reprocess",
             ]
         )
 
@@ -75,6 +113,7 @@ class CliUnattendedTest(unittest.TestCase):
         self.assertEqual(args.session_ids, "session-b,session-c")
         self.assertEqual(args.match_index, 2)
         self.assertEqual(args.match_indices, [3, 4])
+        self.assertTrue(args.force_reprocess)
 
     def test_maintenance_command_parses(self) -> None:
         args = build_parser().parse_args(["maintenance", "--once"])
@@ -218,7 +257,6 @@ class CliUnattendedTest(unittest.TestCase):
         self.assertEqual(args.session_ids, "session-b,session-c")
         self.assertEqual(args.match_index, 2)
         self.assertEqual(args.match_indices, [3, 4])
-        self.assertTrue(args.force_reprocess)
 
 
 if __name__ == "__main__":

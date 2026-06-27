@@ -143,10 +143,10 @@ class ReferenceValidationTest(unittest.TestCase):
         self.assertEqual(len(edit_plans), 1)
         plan = edit_plans[0]
         self.assertEqual([segment.role for segment in plan.timeline][-1], "main")
-        self.assertEqual(
-            sum(1 for segment in plan.timeline if segment.role == "main"),
-            1,
-        )
+        main_segments = [segment for segment in plan.timeline if segment.role == "main"]
+        self.assertGreater(len(main_segments), 1)
+        self.assertTrue(any(segment.source_start_seconds == 0.0 for segment in main_segments))
+        self.assertTrue(any(segment.source_end_seconds == 720.0 for segment in main_segments))
         self.assertTrue(any(segment.role == "teaser" for segment in plan.timeline))
         self.assertTrue(
             any(segment.reason == "highlight_keyword" for segment in plan.timeline)
@@ -204,8 +204,14 @@ class ReferenceValidationTest(unittest.TestCase):
                     TimelineSegment(
                         role="main",
                         source_start_seconds=0.0,
+                        source_end_seconds=30.0,
+                        reason="condensed_match_context",
+                    ),
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=90.0,
                         source_end_seconds=120.0,
-                        reason="full_validated_match",
+                        reason="condensed_key_event",
                     ),
                 ],
                 audio_beds=[
@@ -260,12 +266,22 @@ class ReferenceValidationTest(unittest.TestCase):
             filter_complex,
         )
         self.assertIn(
-            "trim=start=0.000:end=120.000,setpts=PTS-STARTPTS[v1]",
+            "trim=start=0.000:end=30.000,setpts=PTS-STARTPTS[v1]",
             filter_complex,
         )
-        self.assertIn("[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][basea]", filter_complex)
-        self.assertIn("[1:a]atrim=start=0.000:duration=135.000", filter_complex)
-        self.assertIn("volume=0.063096[bgm0]", filter_complex)
+        self.assertIn(
+            "trim=start=90.000:end=120.000,setpts=PTS-STARTPTS[v2]",
+            filter_complex,
+        )
+        self.assertIn("[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[v][basea]", filter_complex)
+        self.assertIn("[v]subtitles=", filter_complex)
+        self.assertIn("[vsub]", filter_complex)
+        self.assertIn("[1:a]atrim=start=0.000:duration=75.000", filter_complex)
+        self.assertIn(
+            "volume=0.063096,afade=t=in:st=0.000:d=2.000,"
+            "afade=t=out:st=73.000:d=2.000[bgm0]",
+            filter_complex,
+        )
         self.assertIn(
             "[2:a]asetpts=PTS-STARTPTS,volume=0.251189,adelay=15000|15000[sfx0]",
             filter_complex,
@@ -276,7 +292,7 @@ class ReferenceValidationTest(unittest.TestCase):
         )
         self.assertNotIn("select=", filter_complex)
         self.assertTrue(
-            (self.processed_root / session_id / "match-01.ass").exists()
+            (self.processed_root / session_id / "match-01-edit-plan.ass").exists()
         )
 
     def _seed_boundary(self, session_id: str, *, duration: float) -> None:

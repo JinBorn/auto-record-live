@@ -7,10 +7,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from arl.config import Settings, StorageSettings
-from arl.copywriter.cover import render_cover
+from arl.config import OrchestratorSettings, Settings, StorageSettings
+from arl.copywriter.cover import _draw_cover_text, render_cover
 from arl.copywriter.models import CopywriterStateFile, PublishingPackage
 from arl.copywriter.service import CopywriterService
+from arl.orchestrator.models import (
+    OrchestratorStateFile,
+    SessionRecord,
+    SessionStatus,
+)
 from arl.shared.contracts import (
     CopyAsset,
     ExportAsset,
@@ -37,7 +42,10 @@ class CopywriterServiceTest(unittest.TestCase):
                 processed_dir=self.processed_root,
                 export_dir=self.export_root,
                 temp_dir=self.temp_root,
-            )
+            ),
+            orchestrator=OrchestratorSettings(
+                state_file=self.temp_root / "orchestrator-state.json",
+            ),
         )
 
     def tearDown(self) -> None:
@@ -98,6 +106,18 @@ class CopywriterServiceTest(unittest.TestCase):
         self.assertEqual(package.recommended_title, asset.title)
         self.assertIn("summary", json.loads(Path(package.path or "").read_text(encoding="utf-8")))
         self.assertEqual(package.cover_path, None)
+        self._assert_no_mojibake(
+            " ".join(
+                [
+                    asset.title,
+                    asset.description,
+                    " ".join(asset.tags),
+                    package.recommended_title,
+                    package.summary,
+                    " ".join(package.cover_lines),
+                ]
+            )
+        )
 
         state = CopywriterStateFile.model_validate_json(
             (self.temp_root / "copywriter-state.json").read_text(encoding="utf-8")
@@ -121,6 +141,44 @@ class CopywriterServiceTest(unittest.TestCase):
         self.assertEqual(
             len(load_models(self.temp_root / "publishing-packages.jsonl", PublishingPackage)),
             1,
+        )
+
+    def test_force_reprocess_appends_fresh_copy_and_package_rows(self) -> None:
+        session_id = "session-copywriter-force"
+        subtitle_path = self._write_subtitle(
+            session_id,
+            "1\n00:00:00,000 --> 00:00:02,000\n第一版普通装备选择\n",
+        )
+        append_model(
+            self.temp_root / "subtitle-assets.jsonl",
+            SubtitleAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(subtitle_path),
+                format="srt",
+            ),
+        )
+
+        service = CopywriterService(self.settings)
+        service.run()
+        self._write_subtitle(
+            session_id,
+            "1\n00:00:00,000 --> 00:00:02,000\n第二版电刀AP机器人套路\n",
+        )
+        service.run(force_reprocess=True)
+
+        copy_assets = load_models(self.temp_root / "copy-assets.jsonl", CopyAsset)
+        self.assertEqual(len(copy_assets), 2)
+        self.assertEqual(copy_assets[-1].title, "电刀AP机器人")
+        packages = load_models(self.temp_root / "publishing-packages.jsonl", PublishingPackage)
+        self.assertEqual(len(packages), 2)
+        self.assertEqual(packages[-1].recommended_title, "电刀AP机器人")
+        state = CopywriterStateFile.model_validate_json(
+            (self.temp_root / "copywriter-state.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(state.processed_match_keys, [f"{session_id}:1"])
+        self._assert_no_mojibake(
+            " ".join([copy_assets[-1].title, packages[-1].recommended_title])
         )
 
     def test_missing_subtitle_is_skipped_without_processing_key(self) -> None:
@@ -222,6 +280,65 @@ class CopywriterServiceTest(unittest.TestCase):
         self.assertIn("电刀AP机器人", package.recommended_title)
         self.assertIn("电刀", "".join(package.cover_lines))
         self.assertEqual(package.evidence[0], "01:00 上单电刀AP机器人 清线快伤害高")
+        self._assert_no_mojibake(
+            " ".join([package.recommended_title, package.summary, *package.cover_lines])
+        )
+
+    def test_title_uses_secondary_summary_instead_of_raw_first_subtitle(self) -> None:
+        session_id = "session-copywriter-summary"
+        subtitle_path = self._write_subtitle(
+            session_id,
+            "1\n00:00:00,000 --> 00:00:02,000\n不是,很多人就比如说,我跟你们不一样\n\n"
+            "2\n00:01:00,000 --> 00:01:04,000\n一定要装没钱,他这种人设,不能装有钱\n\n"
+            "3\n00:02:00,000 --> 00:02:04,000\n如果到那时候我是不是就变成炒股博主了\n\n"
+            "4\n00:03:00,000 --> 00:03:04,000\n被粉丝认出来了这把有点尴尬\n",
+        )
+        append_model(
+            self.temp_root / "subtitle-assets.jsonl",
+            SubtitleAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(subtitle_path),
+                format="srt",
+            ),
+        )
+
+        CopywriterService(self.settings).run()
+
+        packages = load_models(self.temp_root / "publishing-packages.jsonl", PublishingPackage)
+        self.assertEqual(len(packages), 1)
+        package = packages[0]
+        self.assertIn("装没钱人设", package.recommended_title)
+        self.assertIn("炒股经济学", package.recommended_title)
+        self.assertIn("被粉丝认出来", package.recommended_title)
+        self.assertNotIn("不是,很多人", package.recommended_title)
+        cover_text = "".join(package.cover_lines)
+        self.assertIn("装没钱人设", cover_text)
+        self.assertIn("炒股经济学", cover_text)
+        self.assertIn("被粉丝认出来", cover_text)
+        self._assert_no_mojibake(
+            " ".join([package.recommended_title, package.summary, *package.cover_lines])
+        )
+
+    def test_cover_lines_expand_short_title_with_summary_points(self) -> None:
+        service = CopywriterService(self.settings)
+
+        cover_lines = service._cover_lines(
+            excerpt=[
+                "上单电刀AP机器人这个清线快伤害高",
+                "骗路人是韩服千分套路",
+                "最后还是被粉丝认出来了",
+            ],
+            title="上单电刀AP机器人",
+            match_index=1,
+        )
+
+        cover_text = "".join(cover_lines)
+        self.assertLessEqual(len(cover_lines), 4)
+        self.assertIn("上单电刀AP机器人", cover_text)
+        self.assertIn("清线快伤害高", cover_text)
+        self.assertIn("韩服千分套路", cover_text)
+        self.assertIn("被粉丝认出来", cover_text)
 
     def test_cover_renderer_is_optional_and_records_cover_path(self) -> None:
         session_id = "session-copywriter-cover"
@@ -229,6 +346,7 @@ class CopywriterServiceTest(unittest.TestCase):
             session_id,
             "1\n00:00:02,000 --> 00:00:04,000\n上单电刀AP机器人 清线快伤害高\n",
         )
+        export_path = self._write_export(session_id)
         recording_path = self._write_recording(session_id)
         append_model(
             self.temp_root / "subtitle-assets.jsonl",
@@ -237,6 +355,16 @@ class CopywriterServiceTest(unittest.TestCase):
                 match_index=1,
                 path=str(subtitle_path),
                 format="srt",
+            ),
+        )
+        append_model(
+            self.temp_root / "export-assets.jsonl",
+            ExportAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(export_path),
+                subtitle_path=str(subtitle_path),
+                created_at=self._now(),
             ),
         )
         append_model(
@@ -259,6 +387,7 @@ class CopywriterServiceTest(unittest.TestCase):
                 confidence=0.95,
             ),
         )
+        self._write_orchestrator_state(session_id, streamer_name="midu958")
         seen: dict[str, object] = {}
 
         def _cover_renderer(
@@ -287,6 +416,330 @@ class CopywriterServiceTest(unittest.TestCase):
         seen_cover_lines = seen["cover_lines"]
         self.assertIsInstance(seen_cover_lines, list)
         self.assertIn("电刀", "".join(str(item) for item in seen_cover_lines))
+        self.assertEqual(package.streamer_name, "midu958")
+        self.assertIsNotNone(package.published_package_dir)
+        self.assertIsNotNone(package.published_video_path)
+        self.assertIsNotNone(package.published_cover_path)
+        self.assertIsNotNone(package.published_metadata_path)
+        published_package_dir = Path(package.published_package_dir or "")
+        published_video = Path(package.published_video_path or "")
+        published_cover = Path(package.published_cover_path or "")
+        published_metadata = Path(package.published_metadata_path or "")
+        self.assertTrue(published_package_dir.is_dir())
+        self.assertTrue(published_video.exists())
+        self.assertTrue(published_cover.exists())
+        self.assertTrue(published_metadata.exists())
+        self.assertEqual(published_package_dir.parent, export_path.parent)
+        self.assertEqual(published_video.parent, published_package_dir)
+        self.assertEqual(published_cover.parent, published_package_dir)
+        self.assertEqual(published_metadata.parent, published_package_dir)
+        self.assertIn("midu958", published_package_dir.name)
+        self.assertIn("电刀AP机器人", published_package_dir.name)
+        self.assertEqual(published_video.name, "video.mp4")
+        self.assertEqual(published_cover.name, "cover.jpg")
+        self.assertEqual(published_metadata.name, "upload.txt")
+        metadata_text = published_metadata.read_text(encoding="utf-8")
+        self.assertIn("Title:", metadata_text)
+        self.assertIn("Description:", metadata_text)
+        self.assertIn("Hashtags:", metadata_text)
+        self.assertIn("Evidence:", metadata_text)
+
+    def test_cover_renderer_uses_export_when_recording_is_unavailable(self) -> None:
+        session_id = "session-copywriter-cover-export-fallback"
+        subtitle_path = self._write_subtitle(
+            session_id,
+            "1\n00:00:02,000 --> 00:00:04,000\nexport fallback cover subtitle\n",
+        )
+        export_path = self._write_export(session_id)
+        append_model(
+            self.temp_root / "subtitle-assets.jsonl",
+            SubtitleAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(subtitle_path),
+                format="srt",
+            ),
+        )
+        append_model(
+            self.temp_root / "export-assets.jsonl",
+            ExportAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(export_path),
+                subtitle_path=str(subtitle_path),
+                created_at=self._now(),
+            ),
+        )
+        append_model(
+            self.temp_root / "match-boundaries.jsonl",
+            MatchBoundary(
+                session_id=session_id,
+                match_index=1,
+                started_at_seconds=10.0,
+                ended_at_seconds=100.0,
+                confidence=0.95,
+            ),
+        )
+        seen: dict[str, object] = {}
+
+        def _cover_renderer(
+            source: Path,
+            output: Path,
+            cover_lines: list[str],
+            *,
+            at_seconds: float,
+        ) -> bool:
+            seen["source"] = source
+            seen["cover_lines"] = cover_lines
+            seen["at_seconds"] = at_seconds
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text("cover", encoding="utf-8")
+            return True
+
+        CopywriterService(self.settings, cover_renderer=_cover_renderer).run()
+
+        packages = load_models(self.temp_root / "publishing-packages.jsonl", PublishingPackage)
+        self.assertEqual(len(packages), 1)
+        package = packages[0]
+        self.assertEqual(package.source_recording_path, None)
+        self.assertEqual(seen["source"], export_path)
+        self.assertEqual(seen["at_seconds"], 0.0)
+        self.assertIsNotNone(package.cover_path)
+        self.assertTrue(Path(package.cover_path or "").exists())
+        self.assertIsNotNone(package.published_package_dir)
+        self.assertIsNotNone(package.published_video_path)
+        self.assertIsNotNone(package.published_cover_path)
+        self.assertIsNotNone(package.published_metadata_path)
+        published_package_dir = Path(package.published_package_dir or "")
+        published_video = Path(package.published_video_path or "")
+        published_cover = Path(package.published_cover_path or "")
+        published_metadata = Path(package.published_metadata_path or "")
+        self.assertTrue(published_package_dir.is_dir())
+        self.assertTrue(published_video.exists())
+        self.assertTrue(published_cover.exists())
+        self.assertTrue(published_metadata.exists())
+        self.assertEqual(published_package_dir.parent, export_path.parent)
+        self.assertEqual(published_video.parent, published_package_dir)
+        self.assertEqual(published_cover.parent, published_package_dir)
+        self.assertEqual(published_metadata.parent, published_package_dir)
+        self.assertEqual(published_video.name, "video.mp4")
+        self.assertEqual(published_cover.name, "cover.jpg")
+        self.assertEqual(published_metadata.name, "upload.txt")
+
+    def test_missing_published_aliases_are_regenerated(self) -> None:
+        session_id = "session-copywriter-publish-repair"
+        subtitle_path = self._write_subtitle(
+            session_id,
+            "1\n00:00:02,000 --> 00:00:04,000\n"
+            "publish repair subtitle\n",
+        )
+        export_path = self._write_export(session_id)
+        append_model(
+            self.temp_root / "subtitle-assets.jsonl",
+            SubtitleAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(subtitle_path),
+                format="srt",
+            ),
+        )
+        append_model(
+            self.temp_root / "export-assets.jsonl",
+            ExportAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(export_path),
+                subtitle_path=str(subtitle_path),
+                created_at=self._now(),
+            ),
+        )
+
+        def _cover_renderer(
+            source: Path,
+            output: Path,
+            cover_lines: list[str],
+            *,
+            at_seconds: float,
+        ) -> bool:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text("cover", encoding="utf-8")
+            return True
+
+        service = CopywriterService(self.settings, cover_renderer=_cover_renderer)
+        service.run()
+
+        packages = load_models(self.temp_root / "publishing-packages.jsonl", PublishingPackage)
+        self.assertEqual(len(packages), 1)
+        original = packages[0]
+        published_package_dir = Path(original.published_package_dir or "")
+        published_video = Path(original.published_video_path or "")
+        published_cover = Path(original.published_cover_path or "")
+        published_metadata = Path(original.published_metadata_path or "")
+        self.assertTrue(published_package_dir.is_dir())
+        self.assertTrue(published_video.exists())
+        self.assertTrue(published_cover.exists())
+        self.assertTrue(published_metadata.exists())
+        published_video.unlink()
+        published_cover.unlink()
+        published_metadata.unlink()
+
+        service.run()
+
+        packages = load_models(self.temp_root / "publishing-packages.jsonl", PublishingPackage)
+        self.assertEqual(len(packages), 1)
+        repaired = packages[0]
+        repaired_package_dir = Path(repaired.published_package_dir or "")
+        repaired_video = Path(repaired.published_video_path or "")
+        repaired_cover = Path(repaired.published_cover_path or "")
+        repaired_metadata = Path(repaired.published_metadata_path or "")
+        self.assertTrue(repaired_package_dir.is_dir())
+        self.assertTrue(repaired_video.exists())
+        self.assertTrue(repaired_cover.exists())
+        self.assertTrue(repaired_metadata.exists())
+        self.assertEqual(repaired_video.parent, repaired_package_dir)
+        self.assertEqual(repaired_cover.parent, repaired_package_dir)
+        self.assertEqual(repaired_metadata.parent, repaired_package_dir)
+        package_payload = json.loads(Path(repaired.path or "").read_text(encoding="utf-8"))
+        self.assertEqual(package_payload["published_package_dir"], repaired.published_package_dir)
+        self.assertEqual(repaired_video.name, "video.mp4")
+        self.assertEqual(repaired_cover.name, "cover.jpg")
+        self.assertEqual(repaired_metadata.name, "upload.txt")
+        self.assertEqual(package_payload["published_cover_path"], repaired.published_cover_path)
+        self.assertEqual(
+            package_payload["published_metadata_path"],
+            repaired.published_metadata_path,
+        )
+        self.assertEqual(len(load_models(self.temp_root / "copy-assets.jsonl", CopyAsset)), 1)
+
+    def test_legacy_flat_published_aliases_are_removed_on_rerun(self) -> None:
+        session_id = "session-copywriter-legacy-publish-aliases"
+        subtitle_path = self._write_subtitle(
+            session_id,
+            "1\n00:00:02,000 --> 00:00:04,000\n"
+            "legacy publish alias cleanup subtitle\n",
+        )
+        export_path = self._write_export(session_id)
+        append_model(
+            self.temp_root / "subtitle-assets.jsonl",
+            SubtitleAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(subtitle_path),
+                format="srt",
+            ),
+        )
+        append_model(
+            self.temp_root / "export-assets.jsonl",
+            ExportAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(export_path),
+                subtitle_path=str(subtitle_path),
+                created_at=self._now(),
+            ),
+        )
+
+        def _cover_renderer(
+            source: Path,
+            output: Path,
+            cover_lines: list[str],
+            *,
+            at_seconds: float,
+        ) -> bool:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text("cover", encoding="utf-8")
+            return True
+
+        service = CopywriterService(self.settings, cover_renderer=_cover_renderer)
+        service.run()
+        packages = load_models(self.temp_root / "publishing-packages.jsonl", PublishingPackage)
+        self.assertEqual(len(packages), 1)
+        package = packages[0]
+        published_package_dir = Path(package.published_package_dir or "")
+        published_video = Path(package.published_video_path or "")
+        published_cover = Path(package.published_cover_path or "")
+        published_metadata = Path(package.published_metadata_path or "")
+        self.assertTrue(published_package_dir.is_dir())
+        self.assertTrue(published_video.exists())
+        self.assertTrue(published_cover.exists())
+        self.assertTrue(published_metadata.exists())
+
+        legacy_stem = published_package_dir.name
+        legacy_video = export_path.parent / f"{legacy_stem}{export_path.suffix}"
+        legacy_cover = export_path.parent / f"{legacy_stem}.jpg"
+        legacy_metadata = export_path.parent / f"{legacy_stem}.txt"
+        legacy_video.write_text("old video alias", encoding="utf-8")
+        legacy_cover.write_text("old cover alias", encoding="utf-8")
+        legacy_metadata.write_text("old upload alias", encoding="utf-8")
+
+        service.run()
+
+        repaired_packages = load_models(
+            self.temp_root / "publishing-packages.jsonl",
+            PublishingPackage,
+        )
+        self.assertEqual(len(repaired_packages), 1)
+        repaired = repaired_packages[0]
+        self.assertTrue(export_path.exists())
+        self.assertFalse(legacy_video.exists())
+        self.assertFalse(legacy_cover.exists())
+        self.assertFalse(legacy_metadata.exists())
+        self.assertTrue(Path(repaired.published_video_path or "").exists())
+        self.assertTrue(Path(repaired.published_cover_path or "").exists())
+        self.assertTrue(Path(repaired.published_metadata_path or "").exists())
+        self.assertEqual(len(load_models(self.temp_root / "copy-assets.jsonl", CopyAsset)), 1)
+
+    def test_streamer_name_can_come_from_selected_recording_state(self) -> None:
+        session_id = "session-20260617073649-4b5ec478"
+        subtitle_path = self._write_subtitle(
+            session_id,
+            "1\n00:00:02,000 --> 00:00:04,000\n上单电刀AP机器人 清线快伤害高\n",
+        )
+        export_path = self._write_export(session_id)
+        append_model(
+            self.temp_root / "subtitle-assets.jsonl",
+            SubtitleAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(subtitle_path),
+                format="srt",
+            ),
+        )
+        append_model(
+            self.temp_root / "export-assets.jsonl",
+            ExportAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(export_path),
+                subtitle_path=str(subtitle_path),
+                created_at=self._now(),
+            ),
+        )
+        self._write_orchestrator_state(
+            session_id,
+            streamer_name="觅渡Dzg",
+            state_path=(
+                self.temp_root
+                / "selected-recordings"
+                / "20260617-073649-fixture"
+                / "orchestrator-state.json"
+            ),
+        )
+
+        CopywriterService(self.settings).run()
+
+        packages = load_models(self.temp_root / "publishing-packages.jsonl", PublishingPackage)
+        self.assertEqual(len(packages), 1)
+        package = packages[0]
+        self.assertEqual(package.streamer_name, "觅渡Dzg")
+        published_package_dir = Path(package.published_package_dir or "")
+        published_video = Path(package.published_video_path or "")
+        self.assertTrue(published_package_dir.is_dir())
+        self.assertTrue(published_video.exists())
+        self.assertEqual(published_video.parent, published_package_dir)
+        self.assertIn("觅渡Dzg", published_package_dir.name)
+        self.assertIn("电刀AP机器人", published_package_dir.name)
+        self.assertEqual(published_video.name, "video.mp4")
 
     def test_render_cover_skips_when_ffmpeg_is_missing(self) -> None:
         recording_path = self._write_recording("session-copywriter-no-ffmpeg")
@@ -297,6 +750,34 @@ class CopywriterServiceTest(unittest.TestCase):
 
         self.assertFalse(rendered)
         self.assertFalse(output_path.exists())
+
+    def test_cover_text_renderer_uses_title_panel_and_preserves_secondary_size(self) -> None:
+        draw = _FakeCoverDraw()
+
+        _draw_cover_text(
+            draw,
+            (1920, 1080),
+            [
+                "Very long explosive headline that has to shrink to fit the cover panel",
+                "Fast clear",
+                "Ladder trick",
+            ],
+            _FakeCoverFontFactory,
+        )
+
+        self.assertEqual(len(draw.panels), 1)
+        panel = draw.panels[0]
+        self.assertGreaterEqual(panel[0], 0)
+        self.assertLessEqual(panel[2], 1920)
+        self.assertEqual(len(draw.text_calls), 3)
+        self.assertEqual(draw.text_calls[0]["fill"], (255, 238, 0))
+        self.assertEqual(draw.text_calls[1]["fill"], (255, 255, 255))
+        self.assertLess(draw.text_calls[0]["font"].size, 126)
+        self.assertEqual(draw.text_calls[1]["font"].size, 96)
+        self.assertGreater(
+            draw.text_calls[0]["stroke_width"],
+            draw.text_calls[1]["stroke_width"],
+        )
 
     def _write_subtitle(self, session_id: str, content: str) -> Path:
         path = self.processed_root / session_id / "match-01.srt"
@@ -316,8 +797,118 @@ class CopywriterServiceTest(unittest.TestCase):
         path.write_text("fixture", encoding="utf-8")
         return path
 
+    def _write_orchestrator_state(
+        self,
+        session_id: str,
+        *,
+        streamer_name: str,
+        state_path: Path | None = None,
+    ) -> None:
+        target_path = state_path or self.settings.orchestrator.state_file
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(
+            OrchestratorStateFile(
+                sessions=[
+                    SessionRecord(
+                        session_id=session_id,
+                        streamer_name=streamer_name,
+                        room_url="https://live.example/room",
+                        platform="bilibili",
+                        source_type=SourceType.DIRECT_STREAM,
+                        status=SessionStatus.STOPPED,
+                        started_at=self._now(),
+                        ended_at=self._now(),
+                    )
+                ]
+            ).model_dump_json(indent=2)
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def _assert_no_mojibake(self, text: str) -> None:
+        bad_tokens = ["鐢", "瑁", "鑻", "绗", "锝", "銆", "浣犳", "涓€"]
+        for token in bad_tokens:
+            self.assertNotIn(token, text)
+
     def _now(self) -> datetime:
         return datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+
+
+class _FakeCoverFont:
+    def __init__(self, size: int) -> None:
+        self.size = size
+
+
+class _FakeCoverFontFactory:
+    @staticmethod
+    def truetype(path: str, *, size: int) -> _FakeCoverFont:
+        return _FakeCoverFont(size)
+
+    @staticmethod
+    def load_default() -> _FakeCoverFont:
+        return _FakeCoverFont(96)
+
+
+class _FakeCoverDraw:
+    def __init__(self) -> None:
+        self.panels: list[tuple[int, int, int, int]] = []
+        self.text_calls: list[dict[str, object]] = []
+
+    def textbbox(
+        self,
+        xy: tuple[int, int],
+        text: str,
+        *,
+        font: _FakeCoverFont,
+        stroke_width: int,
+    ) -> tuple[int, int, int, int]:
+        return (
+            xy[0],
+            xy[1],
+            xy[0] + int(len(text) * font.size * 0.62) + stroke_width * 2,
+            xy[1] + font.size + stroke_width * 2,
+        )
+
+    def rounded_rectangle(
+        self,
+        box: tuple[int, int, int, int],
+        *,
+        radius: int,
+        fill: tuple[int, int, int],
+        outline: tuple[int, int, int],
+        width: int,
+    ) -> None:
+        self.panels.append(box)
+
+    def rectangle(
+        self,
+        box: tuple[int, int, int, int],
+        *,
+        fill: tuple[int, int, int],
+        outline: tuple[int, int, int],
+        width: int,
+    ) -> None:
+        self.panels.append(box)
+
+    def text(
+        self,
+        xy: tuple[int, int],
+        text: str,
+        *,
+        font: _FakeCoverFont,
+        fill: tuple[int, int, int],
+        stroke_width: int,
+        stroke_fill: tuple[int, int, int],
+    ) -> None:
+        self.text_calls.append(
+            {
+                "xy": xy,
+                "text": text,
+                "font": font,
+                "fill": fill,
+                "stroke_width": stroke_width,
+            }
+        )
 
 
 if __name__ == "__main__":

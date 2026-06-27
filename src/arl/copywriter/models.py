@@ -27,6 +27,7 @@ class PublishingPackage(BaseModel):
     session_id: str
     match_index: int
     path: str | None = None
+    streamer_name: str | None = None
     source_subtitle_path: str
     source_export_path: str | None = None
     source_recording_path: str | None = None
@@ -38,5 +39,9 @@ class PublishingPackage(BaseModel):
     cover_lines: list[str]
     tags: list[str]
     cover_path: str | None = None
+    published_package_dir: str | None = None
+    published_video_path: str | None = None
+    published_cover_path: str | None = None
+    published_metadata_path: str | None = None
     status: str
     created_at: datetime

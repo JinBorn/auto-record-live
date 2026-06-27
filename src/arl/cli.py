@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from arl.config import load_settings
+from arl.config import apply_publish_preset, load_settings
 from arl.copywriter.service import CopywriterService
 from arl.editing.service import EditingPlannerService
 from arl.exporter.service import ExporterService
@@ -117,16 +117,18 @@ def _resolve_settings(
 ):
     settings = load_settings()
     stage_keywords_path = getattr(args, "stage_keywords_path", None)
-    if stage_keywords_path is None:
-        return settings
-    return settings.model_copy(
-        deep=True,
-        update={
-            "segmenter": settings.segmenter.model_copy(
-                update={"stage_keywords_path": stage_keywords_path}
-            )
-        },
-    )
+    if stage_keywords_path is not None:
+        settings = settings.model_copy(
+            deep=True,
+            update={
+                "segmenter": settings.segmenter.model_copy(
+                    update={"stage_keywords_path": stage_keywords_path}
+                )
+            },
+        )
+    if getattr(args, "publish", False):
+        settings = apply_publish_preset(settings)
+    return settings
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -340,6 +342,14 @@ def build_parser() -> argparse.ArgumentParser:
     postprocess.add_argument(
         "--session-ids",
         help="Only run postprocess stages for comma-separated session ids.",
+    )
+    postprocess.add_argument(
+        "--publish",
+        action="store_true",
+        help=(
+            "Use the publish-edit preset: condensed highlights, edit plans, "
+            "burned ASS subtitles, zoom, and low-volume BGM/SFX."
+        ),
     )
     postprocess_reset = subparsers.add_parser(
         "postprocess-reset",
@@ -601,6 +611,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--match-indices",
         type=_parse_csv_int_values,
         help="Only generate copy for comma-separated match indices.",
+    )
+    copywriter.add_argument(
+        "--force-reprocess",
+        action="store_true",
+        help="Regenerate copy and publishing package rows even when outputs already exist.",
     )
 
     return parser
@@ -967,6 +982,7 @@ def main() -> int:
         CopywriterService(settings).run(
             session_ids=copywriter_session_ids,
             match_indices=copywriter_match_indices,
+            force_reprocess=args.force_reprocess,
         )
         return 0
 

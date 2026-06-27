@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -10,6 +12,7 @@ from pathlib import Path
 from arl.config import Settings
 from arl.copywriter.cover import render_cover
 from arl.copywriter.models import CopyDraft, CopywriterStateFile, PublishingPackage
+from arl.orchestrator.models import OrchestratorStateFile
 from arl.shared.contracts import (
     CopyAsset,
     ExportAsset,
@@ -63,6 +66,7 @@ class CopywriterService:
         *,
         session_ids: set[str] | None = None,
         match_indices: set[int] | None = None,
+        force_reprocess: bool = False,
     ) -> None:
         log("copywriter", "starting")
         all_subtitles = load_models(self.subtitle_assets_path, SubtitleAsset)
@@ -99,6 +103,7 @@ class CopywriterService:
             (item.session_id, item.match_index): item
             for item in load_models(self.highlight_plans_path, HighlightPlanAsset)
         }
+        streamer_names = self._streamer_names_by_session()
         state = self._load_state()
         processed_keys = set(state.processed_match_keys)
         copy_assets = load_models(self.copy_assets_path, CopyAsset)
@@ -111,25 +116,34 @@ class CopywriterService:
             for asset in copy_assets
             if Path(asset.path).exists()
         }
-        existing_package_row_keys = {
-            self._key(asset.session_id, asset.match_index) for asset in package_assets
-        }
-        existing_package_output_keys = {
-            self._key(asset.session_id, asset.match_index)
+        latest_package_by_key = {
+            self._key(asset.session_id, asset.match_index): asset
             for asset in package_assets
-            if asset.path is not None and Path(asset.path).exists()
+        }
+        existing_package_row_keys = set(latest_package_by_key)
+        existing_package_output_keys = {
+            key
+            for key, asset in latest_package_by_key.items()
+            if self._publishing_package_outputs_exist(asset)
         }
 
         processed = 0
         for subtitle in subtitles:
             key = self._key(subtitle.session_id, subtitle.match_index)
             if (
-                key in processed_keys
+                not force_reprocess
+                and key in processed_keys
                 and key in existing_copy_output_keys
                 and key in existing_package_output_keys
             ):
                 continue
-            if key in processed_keys and key not in existing_copy_output_keys:
+            if force_reprocess and key in processed_keys:
+                log(
+                    "copywriter",
+                    "force reprocessing copy output "
+                    f"session_id={subtitle.session_id} match_index={subtitle.match_index}",
+                )
+            elif key in processed_keys and key not in existing_copy_output_keys:
                 log(
                     "copywriter",
                     "reprocessing missing copy output "
@@ -138,7 +152,7 @@ class CopywriterService:
             elif key in processed_keys and key not in existing_package_output_keys:
                 log(
                     "copywriter",
-                    "reprocessing missing publishing package "
+                    "reprocessing missing publishing package artifacts "
                     f"session_id={subtitle.session_id} match_index={subtitle.match_index}",
                 )
 
@@ -163,9 +177,10 @@ class CopywriterService:
                 export=export,
                 recording=recording,
                 highlight_plan=highlight_plan,
+                streamer_name=streamer_names.get(subtitle.session_id),
             )
             output_path = self._write_draft(draft)
-            if key not in existing_copy_row_keys:
+            if force_reprocess or key not in existing_copy_row_keys:
                 append_model(
                     self.copy_assets_path,
                     CopyAsset(
@@ -184,6 +199,7 @@ class CopywriterService:
             existing_copy_output_keys.add(key)
             package = self._render_cover_if_possible(
                 package,
+                export=export,
                 recording=recording,
                 boundary=boundary,
                 highlight_plan=highlight_plan,
@@ -193,10 +209,13 @@ class CopywriterService:
                 package.match_index,
             )
             package = package.model_copy(update={"path": str(package_output_path)})
+            package = self._publish_export_files(package)
             self._write_package(package, package_output_path)
-            if key not in existing_package_row_keys:
+            if force_reprocess or key not in existing_package_row_keys:
                 append_model(self.publishing_packages_path, package)
                 existing_package_row_keys.add(key)
+            else:
+                self._replace_latest_package_row(package)
             existing_package_output_keys.add(key)
             if key not in processed_keys:
                 state.processed_match_keys.append(key)
@@ -235,10 +254,16 @@ class CopywriterService:
         export: ExportAsset | None,
         recording: RecordingAsset | None,
         highlight_plan: HighlightPlanAsset | None,
+        streamer_name: str | None,
     ) -> tuple[CopyDraft, PublishingPackage]:
         cues = self._parse_subtitle_cues(Path(subtitle.path))
         signal_cues = self._select_signal_cues(cues, highlight_plan)
-        excerpt = [cue.text for cue in signal_cues[:3]]
+        headline_cues = self._select_headline_cues(
+            cues,
+            signal_cues,
+            highlight_plan,
+        )
+        excerpt = [cue.text for cue in headline_cues[:3]]
         title_candidates = self._title_candidates(
             excerpt=excerpt,
             match_index=subtitle.match_index,
@@ -267,11 +292,12 @@ class CopywriterService:
         package = PublishingPackage(
             session_id=subtitle.session_id,
             match_index=subtitle.match_index,
+            streamer_name=streamer_name,
             source_subtitle_path=subtitle.path,
             source_export_path=export.path if export is not None else None,
             source_recording_path=recording.path if recording is not None else None,
             transcript_excerpt=excerpt,
-            evidence=self._evidence(signal_cues),
+            evidence=self._evidence(headline_cues or signal_cues),
             title_candidates=title_candidates,
             recommended_title=recommended_title,
             summary=self._summary(excerpt, match_index=subtitle.match_index),
@@ -285,6 +311,256 @@ class CopywriterService:
             created_at=created_at,
         )
         return draft, package
+
+    def _publish_export_files(self, package: PublishingPackage) -> PublishingPackage:
+        if not package.source_export_path:
+            return package
+        source_video = Path(package.source_export_path)
+        if not source_video.exists():
+            return package
+
+        stem = self._published_stem(package)
+        package_dir = source_video.parent / stem
+        target_video = package_dir / f"video{source_video.suffix}"
+        published_video_path = self._link_or_copy_file(source_video, target_video)
+
+        published_cover_path: Path | None = None
+        source_cover: Path | None = None
+        if package.cover_path:
+            source_cover = Path(package.cover_path)
+            if source_cover.exists():
+                target_cover = package_dir / f"cover{source_cover.suffix or '.jpg'}"
+                published_cover_path = self._copy_file(source_cover, target_cover)
+        published_metadata_path: Path | None = None
+        if published_video_path is not None:
+            published_metadata_path = self._write_published_metadata(
+                package,
+                package_dir / "upload.txt",
+            )
+
+        self._cleanup_legacy_flat_publish_aliases(
+            stem=stem,
+            source_video=source_video,
+            source_cover=source_cover,
+        )
+
+        return package.model_copy(
+            update={
+                "published_package_dir": str(package_dir),
+                "published_video_path": (
+                    str(published_video_path) if published_video_path is not None else None
+                ),
+                "published_cover_path": (
+                    str(published_cover_path) if published_cover_path is not None else None
+                ),
+                "published_metadata_path": (
+                    str(published_metadata_path)
+                    if published_metadata_path is not None
+                    else None
+                ),
+            }
+        )
+
+    def _published_stem(self, package: PublishingPackage) -> str:
+        streamer = self._safe_filename_part(package.streamer_name or "unknown-streamer")
+        title = self._safe_filename_part(package.recommended_title or "untitled")
+        session_hint = self._session_filename_hint(package.session_id)
+        base = f"{streamer} - {title} - {session_hint}_match{package.match_index:02d}"
+        return self._limit_filename_stem(base, max_chars=96)
+
+    @staticmethod
+    def _session_filename_hint(session_id: str) -> str:
+        match = re.match(r"^session-(\d{14})", session_id)
+        if match is not None:
+            return match.group(1)
+        return session_id[-8:] if len(session_id) > 8 else session_id
+
+    @staticmethod
+    def _safe_filename_part(value: str) -> str:
+        cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', " ", value)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+        return cleaned or "untitled"
+
+    @staticmethod
+    def _limit_filename_stem(stem: str, *, max_chars: int) -> str:
+        if len(stem) <= max_chars:
+            return stem
+        return stem[:max_chars].rstrip(" .")
+
+    @staticmethod
+    def _write_published_metadata(
+        package: PublishingPackage,
+        target: Path,
+    ) -> Path | None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        hashtags = " ".join(f"#{tag}" for tag in package.tags)
+        rows = [
+            f"Title: {package.recommended_title}",
+            "",
+            "Description:",
+            package.summary,
+            "",
+            "Hashtags:",
+            hashtags,
+            "",
+            f"Streamer: {package.streamer_name or 'unknown-streamer'}",
+            f"Session: {package.session_id}",
+            f"Match: {package.match_index:02d}",
+            "",
+            "Cover Lines:",
+            *[f"- {line}" for line in package.cover_lines],
+        ]
+        if package.evidence:
+            rows.extend(
+                [
+                    "",
+                    "Evidence:",
+                    *[f"- {item}" for item in package.evidence],
+                ]
+            )
+        rows.extend(
+            [
+                "",
+                "Sources:",
+                f"- subtitle: {package.source_subtitle_path}",
+                f"- export: {package.source_export_path or '-'}",
+                f"- recording: {package.source_recording_path or '-'}",
+            ]
+        )
+        try:
+            target.write_text("\n".join(rows).rstrip() + "\n", encoding="utf-8")
+        except OSError as exc:
+            log(
+                "copywriter",
+                "publish metadata write skipped "
+                f"target={target} reason={exc.__class__.__name__}",
+            )
+            return None
+        return target
+
+    def _cleanup_legacy_flat_publish_aliases(
+        self,
+        *,
+        stem: str,
+        source_video: Path,
+        source_cover: Path | None,
+    ) -> None:
+        protected_paths = {self._resolved_path(source_video)}
+        if source_cover is not None:
+            protected_paths.add(self._resolved_path(source_cover))
+
+        for candidate in self._legacy_flat_publish_alias_candidates(
+            stem=stem,
+            source_video=source_video,
+            source_cover=source_cover,
+        ):
+            self._remove_legacy_flat_publish_alias(candidate, protected_paths)
+
+    def _legacy_flat_publish_aliases_present(self, package: PublishingPackage) -> bool:
+        if not package.source_export_path:
+            return False
+        source_video = Path(package.source_export_path)
+        if not source_video.exists():
+            return False
+        source_cover = Path(package.cover_path) if package.cover_path else None
+        protected_paths = {self._resolved_path(source_video)}
+        if source_cover is not None:
+            protected_paths.add(self._resolved_path(source_cover))
+        return any(
+            self._is_legacy_flat_publish_alias(candidate, protected_paths)
+            for candidate in self._legacy_flat_publish_alias_candidates(
+                stem=self._published_stem(package),
+                source_video=source_video,
+                source_cover=source_cover,
+            )
+        )
+
+    @staticmethod
+    def _legacy_flat_publish_alias_candidates(
+        *,
+        stem: str,
+        source_video: Path,
+        source_cover: Path | None,
+    ) -> list[Path]:
+        candidates = [
+            source_video.parent / f"{stem}{source_video.suffix}",
+            source_video.parent / f"{stem}.txt",
+        ]
+        cover_suffixes = {".jpg"}
+        if source_cover is not None:
+            cover_suffixes.add(source_cover.suffix or ".jpg")
+        candidates.extend(
+            source_video.parent / f"{stem}{suffix}" for suffix in sorted(cover_suffixes)
+        )
+        return list(dict.fromkeys(candidates))
+
+    @classmethod
+    def _remove_legacy_flat_publish_alias(
+        cls,
+        candidate: Path,
+        protected_paths: set[Path],
+    ) -> None:
+        if not cls._is_legacy_flat_publish_alias(candidate, protected_paths):
+            return
+        try:
+            candidate.unlink()
+            log("copywriter", f"removed legacy published alias path={candidate}")
+        except OSError as exc:
+            log(
+                "copywriter",
+                "legacy published alias cleanup skipped "
+                f"path={candidate} reason={exc.__class__.__name__}",
+            )
+
+    @classmethod
+    def _is_legacy_flat_publish_alias(
+        cls,
+        candidate: Path,
+        protected_paths: set[Path],
+    ) -> bool:
+        return (
+            cls._resolved_path(candidate) not in protected_paths
+            and candidate.exists()
+            and candidate.is_file()
+        )
+
+    @staticmethod
+    def _resolved_path(path: Path) -> Path:
+        try:
+            return path.resolve(strict=False)
+        except OSError:
+            return path.absolute()
+
+    @staticmethod
+    def _link_or_copy_file(source: Path, target: Path) -> Path | None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if target.exists():
+                if target.samefile(source):
+                    return target
+                target.unlink()
+            os.link(source, target)
+            return target
+        except OSError:
+            return CopywriterService._copy_file(source, target)
+
+    @staticmethod
+    def _copy_file(source: Path, target: Path) -> Path | None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if target.exists():
+                if target.samefile(source):
+                    return target
+                target.unlink()
+            shutil.copy2(source, target)
+            return target
+        except OSError as exc:
+            log(
+                "copywriter",
+                "publish file copy skipped "
+                f"source={source} target={target} reason={exc.__class__.__name__}",
+            )
+            return None
 
     def _valid_highlight_plan(
         self,
@@ -371,6 +647,87 @@ class CopywriterService:
         ]
         return selected or cues
 
+    def _select_headline_cues(
+        self,
+        cues: list[_SubtitleCue],
+        signal_cues: list[_SubtitleCue],
+        highlight_plan: HighlightPlanAsset | None,
+    ) -> list[_SubtitleCue]:
+        if not cues:
+            return []
+
+        signal_keys = {
+            (cue.started_at_seconds, cue.ended_at_seconds, cue.text)
+            for cue in signal_cues
+        }
+        scored: list[tuple[int, float, _SubtitleCue]] = []
+        for cue in cues:
+            score = self._headline_score(cue.text)
+            if (cue.started_at_seconds, cue.ended_at_seconds, cue.text) in signal_keys:
+                score += 3
+            if self._overlaps_highlight_keyword(cue, highlight_plan):
+                score += 5
+            if score <= 0:
+                continue
+            scored.append((-score, cue.started_at_seconds, cue))
+
+        if not scored:
+            return signal_cues or cues
+
+        selected: list[_SubtitleCue] = []
+        seen: set[tuple[float, float, str]] = set()
+        for _, _, cue in sorted(scored, key=lambda item: (item[0], item[1], item[2].ended_at_seconds)):
+            key = (cue.started_at_seconds, cue.ended_at_seconds, cue.text)
+            if key in seen:
+                continue
+            selected.append(cue)
+            seen.add(key)
+            if len(selected) >= 5:
+                break
+        return selected
+
+    @staticmethod
+    def _overlaps_highlight_keyword(
+        cue: _SubtitleCue,
+        highlight_plan: HighlightPlanAsset | None,
+    ) -> bool:
+        if highlight_plan is None:
+            return False
+        return any(
+            window.reason == "highlight_keyword"
+            and min(cue.ended_at_seconds, window.ended_at_seconds)
+            > max(cue.started_at_seconds, window.started_at_seconds)
+            for window in highlight_plan.windows
+        )
+
+    def _headline_score(self, text: str) -> int:
+        score = 0
+        if self._contains_all(text, ["电刀", "AP", "机器人"]):
+            score += 24
+        elif self._contains_any(text, ["电刀", "机器人"]):
+            score += 10
+        if self._contains_any(text, ["上单", "韩服", "千分", "套路"]):
+            score += 5
+        if self._contains_any(text, ["清线", "伤害高", "伤害这么高", "什么伤害"]):
+            score += 6
+        if self._contains_all(text, ["装", "没钱"]):
+            score += 14
+        if self._contains_any(text, ["人设", "有钱", "小康"]):
+            score += 5
+        if self._contains_any(text, ["炒股", "股票"]):
+            score += 7
+        if self._contains_any(text, ["粉丝", "认出来", "认出", "认识"]):
+            score += 6
+        if self._contains_any(text, ["教学", "续费", "为师", "师的名号", "坑了"]):
+            score += 7
+        if self._contains_any(text, ["击杀", "杀你", "杀一波", "单杀"]):
+            score += 5
+        if self._contains_any(text, ["小龙", "打团", "团战", "胜利"]):
+            score += 4
+        if len(text) <= 4:
+            score -= 3
+        return score
+
     def _parse_srt_timestamp(self, raw: str) -> float | None:
         try:
             timestamp = raw.strip()
@@ -396,13 +753,50 @@ class CopywriterService:
             ]
 
         first = self._truncate(excerpt[0], 28)
-        candidates = [first]
+        headline = self._summary_headline(excerpt)
+        candidates = [headline or first]
         if not first.endswith(("?", "？", "!", "！")):
-            candidates[0] = f"{first}｜对局高光"
+            candidates.append(f"{first}｜对局高光")
         joined = self._truncate(" ".join(excerpt[:2]), 24)
         candidates.append(f"这一波聊到重点：{joined}")
         candidates.append(f"第{match_index:02d}局高光：{self._truncate(excerpt[0], 18)}")
         return self._dedupe(candidates)
+
+    def _summary_headline(self, excerpt: list[str]) -> str:
+        text = " ".join(excerpt)
+        phrases: list[str] = []
+        if self._contains_all(text, ["电刀", "AP", "机器人"]):
+            phrases.append("电刀AP机器人")
+        elif "机器人" in text:
+            phrases.append("机器人套路")
+        elif "电刀" in text:
+            phrases.append("电刀出装")
+        if self._contains_any(text, ["上单", "韩服", "千分"]):
+            if "上单" in text and phrases:
+                phrases[0] = f"上单{phrases[0]}"
+            elif "上单" in text:
+                phrases.append("上单套路")
+            if self._contains_any(text, ["韩服", "千分"]):
+                phrases.append("韩服千分套路")
+        if self._contains_any(text, ["清线", "伤害高", "伤害这么高", "什么伤害"]):
+            phrases.append("清线快伤害高")
+        if self._contains_all(text, ["装", "没钱"]):
+            phrases.append("装没钱人设")
+        if self._contains_any(text, ["炒股", "股票"]):
+            phrases.append("炒股经济学")
+        if self._contains_any(text, ["粉丝", "认出来", "认出", "认识"]):
+            phrases.append("被粉丝认出来")
+        if self._contains_any(text, ["教学", "续费", "为师", "师的名号"]):
+            phrases.append("在线教学不收续费")
+        if self._contains_any(text, ["坑了", "坑"]):
+            phrases.append("坑了别爆师门")
+        if self._contains_any(text, ["击杀", "杀你", "杀一波", "单杀"]):
+            phrases.append("一波击杀打开局面")
+        if self._contains_any(text, ["小龙", "打团", "团战"]):
+            phrases.append("小龙团战节奏")
+
+        headline = " ".join(self._dedupe(phrases)[:4])
+        return self._truncate(headline, 42) if headline else ""
 
     def _description(self, *, excerpt: list[str], match_index: int) -> str:
         if not excerpt:
@@ -425,8 +819,28 @@ class CopywriterService:
         if not excerpt:
             return [f"第{match_index:02d}局高光", "直播切片"]
         title_text = title.split("｜", 1)[0].strip()
-        text = title_text or self._truncate(" ".join(excerpt[:2]), 56)
+        headline = self._summary_headline(excerpt)
+        text = self._cover_text(title_text=title_text, headline=headline)
+        if not text:
+            text = self._truncate(" ".join(excerpt[:2]), 56)
         return self._split_cover_lines(text, max_chars=12, max_lines=4)
+
+    def _cover_text(self, *, title_text: str, headline: str) -> str:
+        if not headline:
+            return title_text
+        if not title_text:
+            return headline
+
+        title_phrases = self._cover_phrases(title_text)
+        headline_phrases = self._cover_phrases(headline)
+        if len(headline_phrases) > len(title_phrases):
+            return headline
+        return title_text
+
+    @staticmethod
+    def _cover_phrases(text: str) -> list[str]:
+        normalized = re.sub(r"[，。！？、；;:：|｜]+", " ", text).strip()
+        return [item for item in normalized.split() if item]
 
     def _evidence(self, cues: list[_SubtitleCue]) -> list[str]:
         return [
@@ -454,6 +868,14 @@ class CopywriterService:
                 tags.append(tag)
         return self._dedupe(tags)
 
+    @staticmethod
+    def _contains_any(text: str, keywords: list[str]) -> bool:
+        return any(keyword in text for keyword in keywords)
+
+    @staticmethod
+    def _contains_all(text: str, keywords: list[str]) -> bool:
+        return all(keyword in text for keyword in keywords)
+
     def _write_draft(self, draft: CopyDraft) -> Path:
         output_dir = self.settings.storage.processed_dir / draft.session_id
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -472,6 +894,89 @@ class CopywriterService:
         )
         return output_path
 
+    def _replace_latest_package_row(self, package: PublishingPackage) -> None:
+        if not self.publishing_packages_path.exists():
+            append_model(self.publishing_packages_path, package)
+            return
+
+        target_key = self._key(package.session_id, package.match_index)
+        lines: list[str] = []
+        replace_indexes: list[int] = []
+        for raw_line in self.publishing_packages_path.read_text(
+            encoding="utf-8"
+        ).splitlines():
+            if not raw_line.strip():
+                continue
+            line_index = len(lines)
+            try:
+                existing = PublishingPackage.model_validate(json.loads(raw_line))
+            except (json.JSONDecodeError, ValueError):
+                lines.append(raw_line)
+                continue
+            if self._key(existing.session_id, existing.match_index) == target_key:
+                replace_indexes.append(line_index)
+            lines.append(raw_line)
+
+        if not replace_indexes:
+            append_model(self.publishing_packages_path, package)
+            return
+
+        lines[replace_indexes[-1]] = json.dumps(
+            package.model_dump(mode="json"),
+            ensure_ascii=False,
+        )
+        self.publishing_packages_path.write_text(
+            "\n".join(lines).rstrip() + "\n",
+            encoding="utf-8",
+        )
+
+    def _publishing_package_outputs_exist(self, package: PublishingPackage) -> bool:
+        if package.path is None or not Path(package.path).exists():
+            return False
+        if package.cover_path is not None and not Path(package.cover_path).exists():
+            return False
+        if (
+            package.published_package_dir is not None
+            and not Path(package.published_package_dir).is_dir()
+        ):
+            return False
+
+        source_export_exists = (
+            package.source_export_path is not None
+            and Path(package.source_export_path).exists()
+        )
+        if source_export_exists and package.published_package_dir is None:
+            return False
+        if self._legacy_flat_publish_aliases_present(package):
+            return False
+        has_published_aliases = any(
+            path is not None
+            for path in (
+                package.published_video_path,
+                package.published_cover_path,
+                package.published_metadata_path,
+            )
+        )
+        if not source_export_exists and not has_published_aliases:
+            return True
+
+        if (
+            package.published_video_path is None
+            or not Path(package.published_video_path).exists()
+        ):
+            return False
+        if (
+            package.published_metadata_path is None
+            or not Path(package.published_metadata_path).exists()
+        ):
+            return False
+        if package.cover_path is not None and (
+            package.published_cover_path is None
+            or not Path(package.published_cover_path).exists()
+        ):
+            return False
+        return True
+
     def _package_output_path(self, session_id: str, match_index: int) -> Path:
         return (
             self.settings.storage.processed_dir
@@ -483,26 +988,42 @@ class CopywriterService:
         self,
         package: PublishingPackage,
         *,
+        export: ExportAsset | None,
         recording: RecordingAsset | None,
         boundary: MatchBoundary | None,
         highlight_plan: HighlightPlanAsset | None,
     ) -> PublishingPackage:
-        if recording is None:
-            return package
-        recording_path = Path(recording.path)
-        if not recording_path.exists():
+        source_path: Path | None = None
+        use_source_timeline = False
+        if recording is not None:
+            recording_path = Path(recording.path)
+            if recording_path.exists():
+                source_path = recording_path
+                use_source_timeline = True
+        if source_path is None:
+            export_path_raw = export.path if export is not None else package.source_export_path
+            if export_path_raw is not None:
+                export_path = Path(export_path_raw)
+                if export_path.exists():
+                    source_path = export_path
+        if source_path is None:
             return package
         cover_path = (
             self.settings.storage.processed_dir
             / package.session_id
             / f"match-{package.match_index:02d}-cover.jpg"
         )
+        at_seconds = (
+            self._cover_source_time(package, boundary, highlight_plan)
+            if use_source_timeline
+            else 0.0
+        )
         try:
             rendered = self.cover_renderer(
-                recording_path,
+                source_path,
                 cover_path,
                 package.cover_lines,
-                at_seconds=self._cover_source_time(package, boundary, highlight_plan),
+                at_seconds=at_seconds,
             )
         except Exception as exc:
             log(
@@ -541,6 +1062,37 @@ class CopywriterService:
         for recording in recordings:
             latest[recording.session_id] = recording
         return latest
+
+    def _streamer_names_by_session(self) -> dict[str, str]:
+        names: dict[str, str] = {}
+        for path in self._orchestrator_state_paths():
+            if not path.exists():
+                continue
+            try:
+                state = OrchestratorStateFile.model_validate_json(
+                    path.read_text(encoding="utf-8")
+                )
+            except Exception as exc:
+                log(
+                    "copywriter",
+                    "streamer metadata unavailable "
+                    f"path={path} reason={exc.__class__.__name__}",
+                )
+                continue
+            for session in state.sessions:
+                if session.streamer_name.strip():
+                    names[session.session_id] = session.streamer_name
+        return names
+
+    def _orchestrator_state_paths(self) -> list[Path]:
+        paths = [self.settings.orchestrator.state_file]
+        selected_root = self.settings.storage.temp_dir / "selected-recordings"
+        if selected_root.exists():
+            try:
+                paths.extend(sorted(selected_root.glob("*/orchestrator-state.json")))
+            except OSError:
+                return paths
+        return paths
 
     def _load_state(self) -> CopywriterStateFile:
         if not self.state_path.exists():
