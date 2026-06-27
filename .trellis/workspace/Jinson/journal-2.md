@@ -270,3 +270,37 @@ Marked the parent demo editing upgrades acceptance criteria complete and archive
 ### Next Steps
 
 - None - task complete
+
+
+## Session 56: Segmented long recording pipeline
+
+**Date**: 2026-06-27
+**Task**: Segmented long recording pipeline
+**Branch**: `main`
+
+### Summary
+
+Added segmented recording manifests, chunk-aware resolver/export/subtitles/analysis/status repair support, plus export packaging and copywriting asset improvements.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ac308d8` | (see git log) |
+| `7056d45` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
