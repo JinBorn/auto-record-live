@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 57
+- **Total Sessions**: 58
 - **Last Active**: 2026-06-30
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~339 | Active |
+| `journal-2.md` | ~370 | Active |
 | `journal-1.md` | ~1986 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 58 | 2026-06-30 | Full quality check | - | `main` |
 | 57 | 2026-06-30 | Finalize publish editing refinements | `a0d5ae0` | `main` |
 | 56 | 2026-06-27 | Segmented long recording pipeline | `ac308d8`, `7056d45` | `main` |
 | 55 | 2026-06-26 | Demo editing upgrades parent wrap-up | `f6f106c` | `main` |
