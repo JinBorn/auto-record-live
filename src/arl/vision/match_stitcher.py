@@ -99,6 +99,7 @@ def stitch_scene_readings(
     current_start_from_loading = False
     pending_loading_start: float | None = None
     pending_other_start: float | None = None
+    pending_abrupt_loading_end: float | None = None
 
     for reading in sorted_readings:
         if reading.scene == "loading":
@@ -114,6 +115,8 @@ def stitch_scene_readings(
                 last_in_game = current_span[-1].timestamp_seconds
                 direct_gap = reading.timestamp_seconds - last_in_game
                 if pending_other_start is None and direct_gap <= 90.0:
+                    if pending_abrupt_loading_end is None:
+                        pending_abrupt_loading_end = reading.timestamp_seconds
                     # Likely death/respawn — skip to avoid false split.
                     continue
                 end_seconds = (
@@ -135,10 +138,12 @@ def stitch_scene_readings(
                 current_start = None
                 current_start_from_loading = False
                 pending_other_start = None
+                pending_abrupt_loading_end = None
             pending_loading_start = reading.timestamp_seconds
             continue
 
         if reading.scene == "in_game":
+            pending_abrupt_loading_end = None
             if current_span and pending_other_start is not None:
                 last_in_game_time = current_span[-1].timestamp_seconds
                 gap = reading.timestamp_seconds - last_in_game_time
@@ -172,7 +177,12 @@ def stitch_scene_readings(
         # "other" scene: check if it's a short gap within a match
         if current_span:
             if pending_other_start is None:
-                pending_other_start = reading.timestamp_seconds
+                pending_other_start = (
+                    pending_abrupt_loading_end
+                    if pending_abrupt_loading_end is not None
+                    else reading.timestamp_seconds
+                )
+                pending_abrupt_loading_end = None
 
             # Allow longer gaps (up to 300s/5min) within a match to handle:
             # - Observer perspective switches
@@ -200,6 +210,7 @@ def stitch_scene_readings(
             current_start = None
             current_start_from_loading = False
             pending_other_start = None
+            pending_abrupt_loading_end = None
         pending_loading_start = None
 
     if current_span:

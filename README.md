@@ -1,24 +1,81 @@
 # auto-record-live
 
-本地 Windows 直播录制工具。它会按配置监控抖音 / B 站直播间，开播后录制，离线切分对局，生成字幕，并导出每局视频。
+本项目是在本地 Windows 机器上长期监测直播间、开播后自动录制、下播后自动切局/字幕/剪辑/导出的工具。当前主要支持抖音和 B 站直播间。
 
-运行链路很简单：
+核心链路：
 
 ```text
 windows-agent -> orchestrator -> recorder -> postprocess -> recovery
 ```
 
-- `windows-agent`：探测直播状态，写 `data/tmp/windows-agent-events.jsonl`
-- `orchestrator`：把直播事件变成 session / recording job
-- `recorder`：调用 ffmpeg 录制到 `data/raw/<session>/recording-source.mp4`；分片录制模式会写 `data/raw/<session>/recording-chunks.json` 和 `data/raw/<session>/chunks/recording-*.mp4`
-- `postprocess`：分段、字幕、导出、标题文案
-- `recovery`：分发需要人工处理的恢复动作
+| 阶段 | 作用 | 主要产物 |
+| --- | --- | --- |
+| `windows-agent` | 定时探测直播间是否开播，并写入直播事件 | `data/tmp/windows-agent-events.jsonl` |
+| `orchestrator` | 把开播/下播事件整理成 session 和录制任务 | `data/tmp/orchestrator-state.json` |
+| `recorder` | 调用 ffmpeg 录制直播流 | `data/raw/<session>/recording-source.mp4` |
+| `postprocess` | 自动分段、字幕、精彩剪辑、导出、标题文案 | `data/processed/`、`data/exports/` |
+| `recovery` | 分发需要人工处理的恢复动作 | `data/tmp/recovery-*` |
+
+## 快速开始：长期自动监测和录制
+
+最省心的无人值守方式是配置 `.env`，然后启动 supervisor：
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+
+.\scripts\windows-supervisor.ps1
+```
+
+`windows-supervisor.ps1` 会隐藏启动并守护五个后台循环：agent、orchestrator、recorder、postprocess、recovery。子进程退出后会自动重启，日志写到：
+
+```text
+data/tmp/launcher-logs/
+```
+
+如果想让它在 Windows 登录后自动启动：
+
+```powershell
+.\scripts\windows-autostart.ps1 -Action Install
+.\scripts\windows-autostart.ps1 -Action Status
+```
+
+取消自启：
+
+```powershell
+.\scripts\windows-autostart.ps1 -Action Uninstall
+```
+
+长期录制建议在 `.env` 里至少确认这些项：
+
+```env
+ARL_PLATFORMS=douyin
+ARL_DOUYIN_ROOM_URL=https://live.douyin.com/<room_id>
+ARL_STREAMER_NAME=<streamer_name>
+
+ARL_AGENT_POLL_INTERVAL_SECONDS=90
+ARL_RECORDER_MAX_CONCURRENT_JOBS=1
+ARL_RECORDING_ENABLE_FFMPEG=1
+ARL_DIRECT_STREAM_TIMEOUT_SECONDS=7200
+
+ARL_SUBTITLES_ENABLED=1
+ARL_EXPORT_ENABLE_FFMPEG=1
+ARL_POSTPROCESS_PRESET=publish
+ARL_EDIT_BGM_LIBRARY_PATH=data/bgm/library.json
+```
+
+说明：
+
+- `windows-recorder-loop.ps1` 默认会把真实 ffmpeg 录制打开；但在 `.env` 显式写 `ARL_RECORDING_ENABLE_FFMPEG=1` 更直观。
+- 普通电脑建议先把 `ARL_RECORDER_MAX_CONCURRENT_JOBS` 保持为 `1`，多直播间同时开播时再按机器能力调整。
+- `ARL_DIRECT_STREAM_TIMEOUT_SECONDS` 是单次直链录制预算。长期录制应设置得比预期直播时长更长，例如 `7200` 表示约 2 小时。
+- `ARL_POSTPROCESS_PRESET=publish` 会启用发布版剪辑预设，包括浓缩剪辑、ASS 字幕、缩放、较低音量 BGM/SFX、响度处理和更适合发布的导出参数。
 
 ## 安装
 
 建议把项目放在本地 NTFS 目录，例如 `D:\code\auto-record-live`。不要放在 OneDrive 同步目录。
 
-先安装基础依赖：
+安装基础依赖：
 
 ```powershell
 winget install Python.Python.3.12
@@ -41,99 +98,62 @@ npx playwright install chromium
 .\.venv\Scripts\python.exe -m arl.cli --help
 ```
 
-## 配置
+Windows launcher 也会自动准备 `.venv` 和 Python 依赖。默认 `ARL_WIN_INSTALL_MODE=if-missing`，依赖安装成功后会写 `.venv\.deps-ready`，之后不会每次重复安装。
 
-复制示例配置：
+## 配置直播间
+
+复制配置模板：
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-然后只填你实际需要的项。`.env` 已被 `.gitignore` 忽略，可以放直播间 URL、Cookie、SESSDATA。
-
-常用项：
+常用配置：
 
 | 配置 | 说明 |
 | --- | --- |
 | `ARL_PLATFORMS` | `douyin`、`bilibili` 或 `douyin,bilibili` |
 | `ARL_DOUYIN_ROOM_URL` / `ARL_STREAMER_NAME` | 单个抖音直播间 |
 | `ARL_BILIBILI_ROOM_URL` / `ARL_BILIBILI_STREAMER_NAME` | 单个 B 站直播间 |
-| `ARL_*_ROOM_URLS` / `ARL_*_STREAMER_NAMES` | 多直播间，英文逗号分隔 |
-| `ARL_DOUYIN_COOKIE` | 抖音完整 Cookie header 值 |
-| `ARL_BILIBILI_SESSDATA` | B 站 SESSDATA 值，不带 `SESSDATA=` 前缀 |
-| `ARL_AGENT_POLL_INTERVAL_SECONDS` | 探测间隔；调大可降低压力 |
-| `ARL_ORCHESTRATOR_POLL_INTERVAL_SECONDS` | 编排轮询间隔 |
-| `ARL_RECORDER_MAX_CONCURRENT_JOBS` | 同时录制任务数；普通电脑建议 `1` |
-| `ARL_DIRECT_STREAM_TIMEOUT_SECONDS` | 单次直链录制预算，单位秒 |
-| `ARL_SUBTITLES_ENABLED` / `ARL_WHISPER_MODEL_SIZE` | 字幕开关与模型大小 |
-| `ARL_EXPORT_ENABLE_FFMPEG` | 是否导出真实带字幕视频 |
+| `ARL_DOUYIN_ROOM_URLS` / `ARL_DOUYIN_STREAMER_NAMES` | 多个抖音直播间，英文逗号分隔 |
+| `ARL_BILIBILI_ROOM_URLS` / `ARL_BILIBILI_STREAMER_NAMES` | 多个 B 站直播间，英文逗号分隔 |
+| `ARL_DOUYIN_COOKIE` | 抖音完整 `Cookie` header 值 |
+| `ARL_BILIBILI_SESSDATA` | B 站 `SESSDATA` 值，不带 `SESSDATA=` 前缀 |
+| `ARL_COOKIE_HEALTH_GATE` | `warning`、`fatal` 或 `skip`，控制 launcher 启动时的 Cookie 健康检查 |
 
-`.env.example` 只列常用项。所有支持的高级环境变量仍在 [src/arl/config.py](src/arl/config.py) 中有默认值。
+多直播间示例：
 
-## 先看状态，再按编号录制
+```env
+ARL_PLATFORMS=douyin,bilibili
 
-先查看 `.env` 里配置的这批直播间状态：
+ARL_DOUYIN_ROOM_URLS=https://live.douyin.com/111,https://live.douyin.com/222
+ARL_DOUYIN_STREAMER_NAMES=douyin-a,douyin-b
 
-```powershell
-.\.venv\Scripts\python.exe -m arl.cli live-status
+ARL_BILIBILI_ROOM_URLS=https://live.bilibili.com/333,https://live.bilibili.com/444
+ARL_BILIBILI_STREAMER_NAMES=bili-a,bili-b
 ```
 
-`live-status` 会按配置顺序输出 `index=1`、`index=2` 这类编号，以及每个直播间是否在播。看到要录的编号后，直接执行下面的录制命令，不需要改 `.env`。
+`.env` 已被 `.gitignore` 忽略，可以放直播间 URL、Cookie、SESSDATA 等本地私密信息。全部高级环境变量的默认值在 `src/arl/config.py`。
 
-常用录制命令：
+## 运行方式
 
-```powershell
-# 录制第 1 个直播间
-.\.venv\Scripts\python.exe -m arl.cli record-rooms --room-index 1
-
-# 同时选择第 1、3 个直播间；最多同时跑 2 个 ffmpeg
-.\.venv\Scripts\python.exe -m arl.cli record-rooms --room-indices 1,3 --max-concurrent-jobs 2
-
-# 自动录制当前所有在播直播间
-.\.venv\Scripts\python.exe -m arl.cli record-rooms --all-live
-```
-
-需要单独检查 Cookie 是否有效时运行：
-
-```powershell
-.\.venv\Scripts\python.exe -m arl.cli cookie-health
-```
-
-`record-rooms` 只会录本次选择的编号，并使用 `data/tmp/selected-recordings/...` 下的临时 agent/orchestrator 状态文件，避免把未选择直播间的旧 queued job 一起录掉。命令默认强制开启真实 ffmpeg 录制；只想测试流程时加 `--placeholder`。
-
-如果常驻 `windows-supervisor.ps1` / `windows-recorder-loop.ps1` 正在运行，它们仍会按 `.env` 的全量直播间工作。手动选择录制时，建议先停掉常驻 recorder/supervisor，再执行 `record-rooms`。
-
-跑一轮最小链路：
-
-```powershell
-.\.venv\Scripts\python.exe -m arl.cli windows-agent --once
-.\.venv\Scripts\python.exe -m arl.cli orchestrator --once
-.\.venv\Scripts\python.exe -m arl.cli recorder
-.\.venv\Scripts\python.exe -m arl.cli status
-```
-
-注意：手动单次 `arl recorder` 默认遵守 `.env` 里的 `ARL_RECORDING_ENABLE_FFMPEG`。要真实录制，可以在当前 PowerShell 临时打开：
-
-```powershell
-$env:ARL_RECORDING_ENABLE_FFMPEG = "1"
-.\.venv\Scripts\python.exe -m arl.cli recorder
-```
-
-## 常驻运行
-
-最省事的方式是启动 supervisor。它会隐藏启动五个 launcher，并在子进程退出时重启：
+### 方式一：后台无人值守
 
 ```powershell
 .\scripts\windows-supervisor.ps1
 ```
 
-日志在：
+查看后台日志：
 
-```text
-data/tmp/launcher-logs/
+```powershell
+Get-Content data/tmp/launcher-logs/agent.out.log -Tail 100 -Wait
+Get-Content data/tmp/launcher-logs/recorder.out.log -Tail 100 -Wait
+Get-Content data/tmp/launcher-logs/postprocess.out.log -Tail 100 -Wait
 ```
 
-如果你想看每个窗口的实时输出，也可以打开五个 PowerShell 分别运行：
+### 方式二：分窗口观察
+
+如果想看每个环节的实时输出，可以开五个 PowerShell 窗口分别运行：
 
 ```powershell
 .\scripts\windows-agent-loop.ps1
@@ -143,19 +163,60 @@ data/tmp/launcher-logs/
 .\scripts\windows-recovery-loop.ps1
 ```
 
-Windows launcher 会自动准备 `.venv` 并安装 `.[subtitles]`。`ARL_WIN_INSTALL_MODE=if-missing` 时，依赖准备好后不会每次重装。
+各循环间隔可通过 `.env` 调整：
 
-需要开机/登录自动启动时：
-
-```powershell
-.\scripts\windows-autostart.ps1 -Action Install
-.\scripts\windows-autostart.ps1 -Action Status
-.\scripts\windows-autostart.ps1 -Action Uninstall
+```env
+ARL_AGENT_POLL_INTERVAL_SECONDS=90
+ARL_ORCHESTRATOR_POLL_INTERVAL_SECONDS=10
+ARL_RECORDER_INTERVAL_SECONDS=5
+ARL_POSTPROCESS_INTERVAL_SECONDS=30
+ARL_RECOVERY_INTERVAL_SECONDS=30
 ```
 
-## 自动编排剪辑（后处理）
+### 方式三：手动选直播间录制
 
-常驻模式会由 `windows-postprocess-loop.ps1` 定期跑自动编排剪辑。录制完成后想手动触发一轮，执行：
+先查看 `.env` 中配置的直播间状态和编号：
+
+```powershell
+.\.venv\Scripts\python.exe -m arl.cli live-status
+```
+
+按编号录制：
+
+```powershell
+# 录制第 1 个直播间
+.\.venv\Scripts\python.exe -m arl.cli record-rooms --room-index 1
+
+# 录制第 1、3 个直播间，最多同时跑 2 个 ffmpeg
+.\.venv\Scripts\python.exe -m arl.cli record-rooms --room-indices 1,3 --max-concurrent-jobs 2
+
+# 录制当前所有正在直播的直播间
+.\.venv\Scripts\python.exe -m arl.cli record-rooms --all-live
+```
+
+`record-rooms` 会使用独立的临时状态目录，避免把未选择直播间的旧 queued job 一起录掉。若常驻 supervisor 正在运行，手动选房录制前建议先停掉常驻 recorder/supervisor。
+
+### 方式四：手动跑最小链路
+
+```powershell
+.\.venv\Scripts\python.exe -m arl.cli windows-agent --once
+.\.venv\Scripts\python.exe -m arl.cli orchestrator --once
+
+$env:ARL_RECORDING_ENABLE_FFMPEG = "1"
+.\.venv\Scripts\python.exe -m arl.cli recorder
+
+.\.venv\Scripts\python.exe -m arl.cli status
+```
+
+## 后处理和发布版导出
+
+无人值守时，`windows-postprocess-loop.ps1` 会定期执行：
+
+```powershell
+.\.venv\Scripts\python.exe -m arl.cli postprocess --once
+```
+
+手动触发一次：
 
 ```powershell
 # 常规后处理
@@ -163,90 +224,127 @@ Windows launcher 会自动准备 `.venv` 并安装 `.[subtitles]`。`ARL_WIN_INS
 
 # 发布版剪辑预设
 .\.venv\Scripts\python.exe -m arl.cli postprocess --once --publish
+
+# 只处理指定 session
+.\.venv\Scripts\python.exe -m arl.cli postprocess --once --session-id session-20260617073651-cf11bf9e
 ```
 
-如果只想处理刚录完的一个或几个 session，不要跑全量扫描，直接加 session 过滤：
-
-```powershell
-.\.venv\Scripts\python.exe -m arl.cli postprocess --once --session-id session-20260608095022-03694add
-.\.venv\Scripts\python.exe -m arl.cli postprocess --once --session-ids session-20260608095022-03694add,session-20260608095024-e8c86f82
-```
-
-未带 `--session-id` / `--session-ids` 时，`postprocess --once` 会扫描 `data/tmp/recording-assets.jsonl` 里的历史录制资产；如果历史 session 以前缺导出，它也会尝试补齐这些旧产物。
-
-这条命令会按下面顺序处理当前还没处理过的录制资产：
+默认后处理顺序：
 
 ```text
 stage-hints-semantic -> segmenter -> subtitles -> highlight-planner -> edit-planner -> exporter -> copywriter
 ```
 
-`stage-hints-semantic` 只会在已有字幕或手工信号能识别出 `in_game` 时生成语义切点。没有可用信号时，默认不会再按 `ARL_RECORDING_SEGMENT_MINUTES` 硬切 30 分钟；如果确实想保留固定周期模板切片，需要显式设置：
+输出位置：
 
-```powershell
-$env:ARL_SEGMENTER_TEMPLATE_FALLBACK_ENABLED = "1"
+```text
+data/raw/<session>/                 原始录制
+data/processed/<session>/           字幕、ASS、阶段中间产物
+data/exports/<platform>/            最终导出视频和文案
+data/tmp/*.jsonl                    各阶段状态、事件和资产索引
 ```
 
-也就是自动生成阶段提示、切分对局、生成字幕、导出每局视频，并生成标题文案。
-
-也可以单独执行其中某一步：
+如果已经生成过错误结果，先重置该 session 的后处理产物，再重跑：
 
 ```powershell
-.\.venv\Scripts\python.exe -m arl.cli stage-hints-semantic
-.\.venv\Scripts\python.exe -m arl.cli segmenter
-.\.venv\Scripts\python.exe -m arl.cli subtitles
-.\.venv\Scripts\python.exe -m arl.cli exporter
-.\.venv\Scripts\python.exe -m arl.cli copywriter
+.\.venv\Scripts\python.exe -m arl.cli postprocess-reset --session-id <session>
+.\.venv\Scripts\python.exe -m arl.cli postprocess --once --session-id <session>
 ```
 
-如果 `postprocess --once` 每个阶段都显示 `processed=0`，但 `data/raw/session-*/recording-source.mp4` 或 `data/raw/session-*/recording-chunks.json` 里确实有录制文件，先修复录制资产清单，再重新后处理：
+如果只想强制重跑某几个阶段：
+
+```powershell
+.\.venv\Scripts\python.exe -m arl.cli highlight-planner --session-id <session> --match-indices 2,3,4 --force-reprocess
+.\.venv\Scripts\python.exe -m arl.cli edit-planner --session-id <session> --match-indices 2,3,4 --force-reprocess
+.\.venv\Scripts\python.exe -m arl.cli exporter --session-id <session> --match-indices 2,3,4 --force-reprocess
+.\.venv\Scripts\python.exe -m arl.cli copywriter --session-id <session> --match-indices 2,3,4 --force-reprocess
+```
+
+如果 `postprocess --once` 每个阶段都显示 `processed=0`，但 `data/raw/session-*/recording-source.mp4` 或 `recording-chunks.json` 确实存在，先修复录制资产索引：
 
 ```powershell
 .\.venv\Scripts\python.exe -m arl.cli repair-recording-assets
 .\.venv\Scripts\python.exe -m arl.cli postprocess --once
 ```
 
-如果只想重新导出某一次录制，或者之前已经生成过 `.txt` 回退文件，需要强制重导出：
+## 发布版剪辑规则
 
-```powershell
-.\.venv\Scripts\python.exe -m arl.cli exporter --session-id session-20260606101149-9fe32958 --force-reprocess
+最近的发布版剪辑重点规则：
+
+- 精彩片头不是必选项。只有明确识别为 `highlight_keyword` 的片段才会前置为 teaser；普通浓缩窗口不会硬凑片头。
+- 如果存在 teaser，BGM 会从正片开始后再进入，不会盖在片头精彩片段上。
+- BGM 会按视频内容、标签、片段原因和 session 信息从 `data/bgm/library.json` 里自动选择；同分候选会做稳定轮换，避免每个视频总是同两首。
+- BGM 默认低音量，并在导出时对原视频声音做 sidechain ducking；验证音量时应按当前视频的语音密集片段抽样，不把某个视频的固定时间点当成全局规则。
+- 浓缩剪辑会保护字幕语句边界，尽量避免主播话没说完就切走。
+- 标题文案会在短弱标题缺少上下文时适当扩展，优先生成能独立说明视频内容的标题。
+
+BGM 库示例路径：
+
+```env
+ARL_EDIT_BGM_LIBRARY_PATH=data/bgm/library.json
+ARL_EDIT_SKIP_BGM_WHEN_SOURCE_HAS_MUSIC=1
 ```
 
-如果某个 session 已经生成了错误边界、占位字幕或错误导出，先清掉该 session 的后处理生成物，再重新跑一轮。这个命令不会删除 `data/raw/.../recording-source.mp4`：
+如果你只想导出完整对局，不使用浓缩剪辑：
 
-```powershell
-.\.venv\Scripts\python.exe -m arl.cli postprocess-reset --session-id session-20260608095022-03694add
-.\.venv\Scripts\python.exe -m arl.cli postprocess --once --session-id session-20260608095022-03694add
+```env
+ARL_HIGHLIGHT_PLANNER_ENABLED=0
+ARL_EXPORT_USE_HIGHLIGHT_PLANS=0
+ARL_EDIT_PLANNER_ENABLED=0
+ARL_EXPORT_USE_EDIT_PLANS=0
 ```
 
-查看整体健康状态：
+## 长时间录制建议
 
-```powershell
-.\.venv\Scripts\python.exe -m arl.cli status
-```
-
-判断后处理完成时，看 `status` 输出里的 `postprocess.missing_subtitles`、`missing_exports`、`missing_copies`、`unregistered_recordings` 是否都是 `0`。导出视频会写到 `data/exports/<platform>/`，例如 B 站录制在 `data/exports/bilibili/`。
-
-如果没有可靠的 `in_game` 信号，系统会把整段低置信边界标记为待处理，不会导出完整源视频，也不会再往 `data/exports/<platform>/` 写 `session-*_match*.txt` 占位文件。此时 `status` 里会看到 `missing_exports > 0`，表示需要补充手工 `stage-hint` / `stage-signal` 或等待后续真正的语义识别能力，而不是编排已经产出成片。
-
-## 降低电脑压力
-
-优先调这几项：
+长时间无人值守时优先保证稳定性：
 
 ```env
 ARL_AGENT_POLL_INTERVAL_SECONDS=90
 ARL_ORCHESTRATOR_POLL_INTERVAL_SECONDS=10
+ARL_RECORDER_INTERVAL_SECONDS=5
+ARL_RECORDER_MAX_CONCURRENT_JOBS=1
+ARL_DIRECT_STREAM_TIMEOUT_SECONDS=7200
+ARL_COOKIE_HEALTH_GATE=warning
+```
+
+如果直播很长，建议启用分片录制，便于异常恢复和后续处理：
+
+```env
+ARL_RECORDING_SEGMENTED_ENABLED=1
+ARL_RECORDING_SEGMENTED_CHUNK_SECONDS=900
+```
+
+分片会写到：
+
+```text
+data/raw/<session>/recording-chunks.json
+data/raw/<session>/chunks/recording-*.mp4
+```
+
+若遇到分片兼容问题，可以临时关闭：
+
+```env
+ARL_RECORDING_SEGMENTED_ENABLED=0
+```
+
+## 降低电脑压力
+
+优先调整这些项：
+
+```env
+ARL_AGENT_POLL_INTERVAL_SECONDS=120
 ARL_RECORDER_MAX_CONCURRENT_JOBS=1
 ARL_SUBTITLES_ENABLED=0
 ARL_EXPORT_ENABLE_FFMPEG=0
 ```
 
-字幕最吃算力。需要字幕但想轻一点，把模型调小：
+字幕最吃算力。需要字幕但想轻一点，可以调小模型：
 
 ```env
 ARL_WHISPER_MODEL_SIZE=tiny
 ```
 
-GTX 1650 4GB stable ASR settings:
+GTX 1650 4GB 比较稳的 ASR 设置：
 
 ```env
 ARL_WHISPER_MODEL_SIZE=small
@@ -258,82 +356,32 @@ ARL_ASR_PREPROCESS_AUDIO=1
 ARL_EXPORT_BURN_SUBTITLES=0
 ```
 
-`ARL_ASR_PREPROCESS_AUDIO=1` extracts and denoises a boundary-scoped WAV before
-Whisper. If ffmpeg preprocessing fails, subtitles fall back to the original media
-input instead of failing the postprocess run. Third-party ASR should be wired as an
-explicit provider with credentials, timeout, quota, and privacy controls; it is not
-enabled by default. `ARL_WHISPER_MODEL_SIZE=medium` can be tested manually, but is
-not recommended for unattended GTX 1650 runs unless a short probe finishes quickly.
+`ARL_ASR_PREPROCESS_AUDIO=1` 会先抽取并降噪音频再交给 Whisper。预处理失败时会回退到原媒体输入，不会直接中断后处理。
 
-多直播间同时开播时，`ARL_RECORDER_MAX_CONCURRENT_JOBS=1` 会让 recorder 一次只跑一个 ffmpeg 录制任务，压力最低。
+## 状态检查和排查
 
-## 排查
-
-看当前状态：
+查看整体状态：
 
 ```powershell
 .\.venv\Scripts\python.exe -m arl.cli status
 ```
 
-### 验证对局边界检测是否正常
+判断后处理是否完成时，重点看：
 
-如果发现导出的对局视频开头已经打到很高级别（例如开局已经 6/10/11 级），或者一个 session 应该有多局但只裁出了一局，说明视觉对局检测的边界有问题。更新代码后可以按以下步骤重新验证：
-
-**1. 重置旧的后处理结果（不会删除原始录制文件）：**
-
-```powershell
-.\.venv\Scripts\python.exe -m arl.cli postprocess-reset --session-id session-20260617073649-4b5ec478
+```text
+postprocess.missing_subtitles
+postprocess.missing_exports
+postprocess.missing_copies
+postprocess.unregistered_recordings
 ```
 
-**2. 重新跑后处理（会在 segmenter 阶段用新代码重新检测对局边界）：**
+这些值应尽量为 `0`。最终视频通常在：
 
-```powershell
-.\.venv\Scripts\python.exe -m arl.cli postprocess --once --session-id session-20260617073649-4b5ec478
+```text
+data/exports/<platform>/
 ```
 
-**3. 查看检测到的对局边界：**
-
-```powershell
-Get-Content data/tmp/match-boundaries.jsonl | Select-String "session-20260617073649-4b5ec478"
-```
-
-关注输出里的 `is_complete`、`confidence`、`reason` 和 `started_at_seconds`。完整的对局应该是 `"is_complete":true`、`"confidence"` ≥ 0.8，且 `started_at_seconds` 接近该局真正的开局时间戳。
-
-**4. 如果边界仍有问题，可以调细自适应采样参数：**
-
-```powershell
-# 默认粗采样 20s + 未识别起点时自动细采样 5s
-# 可以调细粗采样（增加整体帧数）或调细搜索窗口
-$env:ARL_VISION_FRAME_SAMPLE_INTERVAL_SECONDS = "10"
-$env:ARL_VISION_MATCH_START_REFINE_INTERVAL_SECONDS = "3"
-$env:ARL_VISION_MATCH_START_REFINE_LOOKBACK_SECONDS = "180"
-.\.venv\Scripts\python.exe -m arl.cli postprocess --once --session-id session-20260617073649-4b5ec478
-```
-
-相关环境变量：
-
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `ARL_VISION_MATCH_DETECTION_ENABLED` | `1` | 启用视觉对局检测 |
-| `ARL_VISION_FRAME_SAMPLE_INTERVAL_SECONDS` | `20` | 粗采样间隔（秒）；值越小越精确，但耗时增加 |
-| `ARL_VISION_MATCH_START_THRESHOLD_SECONDS` | `120` | 游戏计时器 ≤ 此值时判定为有效开局 |
-| `ARL_VISION_MATCH_START_REFINE_INTERVAL_SECONDS` | `5` | 对未识别到起点的对局，在此区域以该间隔细采样 |
-| `ARL_VISION_MATCH_START_REFINE_LOOKBACK_SECONDS` | `120` | 细采样时从当前起点往前搜索多少秒 |
-| `ARL_VISION_MIN_MATCH_DURATION_SECONDS` | `360` | 最短对局时长（秒）；短于此值的不会被标记为完整对局 |
-
-**5. 确认边界正确后再导出：**
-
-```powershell
-.\.venv\Scripts\python.exe -m arl.cli exporter --session-id session-20260617073649-4b5ec478
-```
-
-如果想批量重处理多个有问题的 session：
-
-```powershell
-.\.venv\Scripts\python.exe -m arl.cli postprocess --once --session-ids session-abc,session-def,session-ghi
-```
-
-检查 Cookie / SESSDATA 是否有效：
+检查 Cookie / SESSDATA：
 
 ```powershell
 .\.venv\Scripts\python.exe -m arl.cli cookie-health
@@ -342,7 +390,7 @@ $env:ARL_VISION_MATCH_START_REFINE_LOOKBACK_SECONDS = "180"
 B 站 403 不一定是 SESSDATA 过期，也可能只是短时效直播流 URL 过期。处理顺序：
 
 1. 先跑 `cookie-health`
-2. 如果看到 `cookie_expired_for_bilibili`，更换 `ARL_BILIBILI_SESSDATA`
+2. 如果看到 `cookie_expired_for_bilibili`，更新 `ARL_BILIBILI_SESSDATA`
 3. 如果只看到 `stream_url_expired_for_bilibili`，通常等下一轮 probe 刷新 URL 即可
 
 常用日志查询：
@@ -354,21 +402,39 @@ Select-String "subtitle_fallback_placeholder" data/tmp/subtitles-events.jsonl
 Select-String "ffmpeg_export_failed" data/tmp/exporter-events.jsonl
 ```
 
-ffmpeg 完整 stderr 会落在：
+ffmpeg 完整 stderr：
 
 ```text
 data/tmp/recorder-stderr/
 data/tmp/exporter-stderr/
 ```
 
-长时间运行后清理日志：
+如果对局边界明显错误，例如导出开头已经打到很高等级，或一个 session 只切出一局，重置并重跑该 session：
+
+```powershell
+.\.venv\Scripts\python.exe -m arl.cli postprocess-reset --session-id <session>
+.\.venv\Scripts\python.exe -m arl.cli postprocess --once --session-id <session>
+Get-Content data/tmp/match-boundaries.jsonl | Select-String "<session>"
+```
+
+关注边界记录里的 `is_complete`、`confidence`、`reason`、`started_at_seconds`、`ended_at_seconds`。
+
+## 维护
+
+长期运行后清理过大的 JSONL 和临时状态：
 
 ```powershell
 .\.venv\Scripts\python.exe -m arl.cli maintenance --once
 ```
 
-无人值守冒烟测试：
+无人值守冒烟检查：
 
 ```powershell
 .\.venv\Scripts\python.exe -m arl.cli soak --cycles 1 --interval-seconds 0 --skip-recorder --skip-postprocess
+```
+
+查看已解析配置：
+
+```powershell
+.\.venv\Scripts\python.exe -m arl.cli show-config
 ```

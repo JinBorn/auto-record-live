@@ -87,25 +87,6 @@ def _draw_cover_text(draw: object, image_size: tuple[int, int], cover_lines: Seq
     total_height = sum(item[3] for item in line_metrics) + gap * (len(line_metrics) - 1)
     x = int(width * 0.08)
     y = max(72, int(height * 0.52) - total_height // 2)
-    text_width = max(item[2] for item in line_metrics)
-    padding_x = 42
-    padding_y = 34
-    panel_box = (
-        max(0, x - padding_x),
-        max(0, y - padding_y),
-        min(width, x + text_width + padding_x),
-        min(height, y + total_height + padding_y),
-    )
-    try:
-        draw.rounded_rectangle(
-            panel_box,
-            radius=28,
-            fill=(20, 20, 20),
-            outline=(255, 238, 0),
-            width=5,
-        )
-    except AttributeError:
-        draw.rectangle(panel_box, fill=(20, 20, 20), outline=(255, 238, 0), width=5)
 
     for index, (line, font, _, line_height) in enumerate(line_metrics):
         fill = (255, 238, 0) if index == 0 else (255, 255, 255)

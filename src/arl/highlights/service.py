@@ -36,6 +36,10 @@ class _WindowDraft:
     reason: str
 
 
+_SPEECH_BOUNDARY_TOLERANCE_SECONDS = 0.15
+_SPEECH_CHAIN_GAP_SECONDS = 0.6
+
+
 _HIGHLIGHT_KEYWORDS = tuple(
     item.lower()
     for item in [
@@ -486,6 +490,90 @@ class HighlightPlannerService:
                 cues.append(_SrtCue(start_seconds, end_seconds, text))
             index += 1
         return cues
+
+    @staticmethod
+    def _clip_cues_to_duration(cues: list[_SrtCue], duration: float) -> list[_SrtCue]:
+        if duration <= 0.0:
+            return []
+        clipped: list[_SrtCue] = []
+        for cue in cues:
+            if cue.started_at_seconds >= duration:
+                continue
+            end_seconds = min(cue.ended_at_seconds, duration)
+            if end_seconds <= cue.started_at_seconds:
+                continue
+            clipped.append(
+                _SrtCue(
+                    started_at_seconds=cue.started_at_seconds,
+                    ended_at_seconds=end_seconds,
+                    text=cue.text,
+                )
+            )
+        return clipped
+
+    def _clamp_highlight_windows(
+        self,
+        windows: list[HighlightClipWindow],
+        duration: float,
+    ) -> list[HighlightClipWindow]:
+        if duration <= 0.0:
+            return []
+        min_seconds = self.settings.highlights.condensed_min_window_duration_seconds
+        clamped: list[HighlightClipWindow] = []
+        for window in windows:
+            start_seconds = max(0.0, window.started_at_seconds)
+            end_seconds = min(duration, window.ended_at_seconds)
+            if end_seconds - start_seconds < min_seconds:
+                continue
+            clamped.append(
+                HighlightClipWindow(
+                    started_at_seconds=start_seconds,
+                    ended_at_seconds=end_seconds,
+                    reason=window.reason,
+                )
+            )
+        return self._merge_clip_windows(clamped)
+
+    @classmethod
+    def _merge_clip_windows(
+        cls,
+        windows: list[HighlightClipWindow],
+    ) -> list[HighlightClipWindow]:
+        ordered = sorted(
+            windows,
+            key=lambda window: (window.started_at_seconds, window.ended_at_seconds),
+        )
+        merged: list[HighlightClipWindow] = []
+        for window in ordered:
+            if not merged:
+                merged.append(window)
+                continue
+            previous = merged[-1]
+            if window.started_at_seconds <= previous.ended_at_seconds + 0.001:
+                merged[-1] = HighlightClipWindow(
+                    started_at_seconds=previous.started_at_seconds,
+                    ended_at_seconds=max(previous.ended_at_seconds, window.ended_at_seconds),
+                    reason=cls._merge_clip_reason(previous.reason, window.reason),
+                )
+                continue
+            merged.append(window)
+        return merged
+
+    @staticmethod
+    def _merge_clip_reason(first: str, second: str) -> str:
+        priorities = {
+            "highlight_keyword": 0,
+            "condensed_key_event": 1,
+            "condensed_tactical": 2,
+            "condensed_continuity": 3,
+            "condensed_match_context": 4,
+            "match_start_context": 5,
+            "match_end_context": 5,
+        }
+        return min(
+            (first, second),
+            key=lambda reason: (priorities.get(reason, 100), reason),
+        )
 
     def _parse_srt_timestamp(self, raw: str) -> float | None:
         try:
@@ -975,6 +1063,87 @@ class HighlightPlannerService:
 
         return extended
 
+    def _protect_speech_boundaries(
+        self,
+        windows: list[HighlightClipWindow],
+        *,
+        speech_cues: list[_SrtCue],
+        match_duration_seconds: float,
+    ) -> list[HighlightClipWindow]:
+        if not windows or not speech_cues or match_duration_seconds <= 0.0:
+            return windows
+
+        ordered_cues = sorted(
+            speech_cues,
+            key=lambda cue: (cue.started_at_seconds, cue.ended_at_seconds),
+        )
+        protected: list[HighlightClipWindow] = []
+        adjusted = 0
+        for window in sorted(windows, key=lambda item: (item.started_at_seconds, item.ended_at_seconds)):
+            start_seconds = window.started_at_seconds
+            end_seconds = window.ended_at_seconds
+
+            for cue in ordered_cues:
+                if cue.ended_at_seconds <= start_seconds:
+                    continue
+                if cue.started_at_seconds >= end_seconds:
+                    break
+                if cue.started_at_seconds < start_seconds < cue.ended_at_seconds:
+                    start_seconds = max(0.0, cue.started_at_seconds)
+                    break
+
+            new_end = self._speech_safe_window_end(
+                end_seconds,
+                speech_cues=ordered_cues,
+                match_duration_seconds=match_duration_seconds,
+            )
+            if abs(start_seconds - window.started_at_seconds) > 0.001 or new_end - end_seconds > 0.001:
+                adjusted += 1
+            protected.append(
+                HighlightClipWindow(
+                    started_at_seconds=start_seconds,
+                    ended_at_seconds=new_end,
+                    reason=window.reason,
+                )
+            )
+
+        if adjusted:
+            log(
+                "highlights",
+                "protected speech boundaries "
+                f"count={adjusted} tolerance={_SPEECH_BOUNDARY_TOLERANCE_SECONDS:.2f}s",
+            )
+
+        return protected
+
+    @staticmethod
+    def _speech_safe_window_end(
+        end_seconds: float,
+        *,
+        speech_cues: list[_SrtCue],
+        match_duration_seconds: float,
+    ) -> float:
+        safe_end = end_seconds
+        cursor = end_seconds
+        for cue in speech_cues:
+            if cue.ended_at_seconds <= cursor:
+                continue
+            if cue.started_at_seconds - cursor > _SPEECH_BOUNDARY_TOLERANCE_SECONDS:
+                if cue.started_at_seconds - cursor > _SPEECH_CHAIN_GAP_SECONDS:
+                    break
+                if safe_end == end_seconds:
+                    break
+            if cue.started_at_seconds <= cursor + _SPEECH_BOUNDARY_TOLERANCE_SECONDS:
+                safe_end = max(safe_end, cue.ended_at_seconds)
+                cursor = max(cursor, cue.ended_at_seconds)
+                continue
+            if cue.started_at_seconds <= cursor + _SPEECH_CHAIN_GAP_SECONDS and safe_end > end_seconds:
+                safe_end = max(safe_end, cue.ended_at_seconds)
+                cursor = max(cursor, cue.ended_at_seconds)
+                continue
+            break
+        return min(match_duration_seconds, safe_end)
+
     def _trim_post_death_low_value_waits(
         self,
         windows: list[HighlightClipWindow],
@@ -1256,8 +1425,9 @@ class HighlightPlannerService:
             )
             return None
 
+        bounded_cues = self._clip_cues_to_duration(cues, duration)
         meaningful_cues = [
-            cue for cue in cues if not self._is_placeholder_text(cue.text)
+            cue for cue in bounded_cues if not self._is_placeholder_text(cue.text)
         ]
         if not meaningful_cues:
             log(
@@ -1346,6 +1516,12 @@ class HighlightPlannerService:
             windows,
             classified_cues=classified_cues,
         )
+        windows = self._protect_speech_boundaries(
+            windows,
+            speech_cues=meaningful_cues,
+            match_duration_seconds=duration,
+        )
+        windows = self._clamp_highlight_windows(windows, duration)
 
         if not windows:
             return None

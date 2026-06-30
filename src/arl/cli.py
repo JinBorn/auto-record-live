@@ -309,6 +309,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--session-ids",
         help="Only segment comma-separated session ids.",
     )
+    segmenter.add_argument(
+        "--force-reprocess",
+        action="store_true",
+        help="Rebuild existing match boundaries for matched sessions.",
+    )
     detect_matches = subparsers.add_parser(
         "detect-matches",
         help="Detect match segments from raw recordings using vision.",
@@ -767,7 +772,10 @@ def main() -> int:
         return 0
 
     if args.command == "segmenter":
-        SegmenterService(settings).run(session_ids=_collect_session_ids(args))
+        SegmenterService(settings).run(
+            session_ids=_collect_session_ids(args),
+            force_reprocess=args.force_reprocess,
+        )
         return 0
 
     if args.command == "detect-matches":

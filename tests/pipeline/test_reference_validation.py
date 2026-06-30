@@ -276,10 +276,16 @@ class ReferenceValidationTest(unittest.TestCase):
         self.assertIn("[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[v][basea]", filter_complex)
         self.assertIn("[v]subtitles=", filter_complex)
         self.assertIn("[vsub]", filter_complex)
+        self.assertIn("[basea]asplit=2[basemix][basechain0]", filter_complex)
         self.assertIn("[1:a]atrim=start=0.000:duration=75.000", filter_complex)
         self.assertIn(
             "volume=0.063096,afade=t=in:st=0.000:d=2.000,"
-            "afade=t=out:st=73.000:d=2.000[bgm0]",
+            "afade=t=out:st=73.000:d=2.000[bgmraw0]",
+            filter_complex,
+        )
+        self.assertIn(
+            "[bgmraw0][basechain0]sidechaincompress="
+            "threshold=0.030:ratio=6.0:attack=20:release=350:makeup=1[bgm0]",
             filter_complex,
         )
         self.assertIn(
@@ -287,7 +293,7 @@ class ReferenceValidationTest(unittest.TestCase):
             filter_complex,
         )
         self.assertIn(
-            "[basea][bgm0][sfx0]amix=inputs=3:duration=first:dropout_transition=0[a]",
+            "[basemix][bgm0][sfx0]amix=inputs=3:duration=first:dropout_transition=0[a]",
             filter_complex,
         )
         self.assertNotIn("select=", filter_complex)

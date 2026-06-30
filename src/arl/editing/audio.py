@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import shutil
@@ -105,6 +106,7 @@ class BgmSelectionContext:
     tags: tuple[str, ...]
     highlight_reasons: tuple[str, ...]
     rendered_duration_seconds: float
+    selection_key: str = ""
 
 
 def ensure_default_editing_audio_assets(root: Path) -> dict[str, Path]:
@@ -249,6 +251,15 @@ def infer_bgm_context_tags(
         (("教学", "讲解"), "tutorial"),
         (("套路", "骗", "整活"), "trick"),
         (("搞笑", "哈哈", "笑死"), "funny"),
+        ((
+            "\u88c5\u6ca1\u94b1",
+            "\u6ca1\u94b1",
+            "\u6709\u94b1",
+            "\u7c89\u4e1d",
+            "\u8ba4\u51fa",
+            "\u8ba4\u51fa\u6765",
+        ), "funny"),
+        (("\u7092\u80a1", "\u80a1\u7968", "\u4e8f\u94b1"), "chill"),
         (("团战", "开团", "击杀", "双杀", "三杀", "四杀", "五杀"), "hype"),
         (("翻盘", "逆风"), "comeback"),
         (("发育", "清线", "补刀"), "laning"),
@@ -284,8 +295,36 @@ def _best_bgm_track(
     scored = [(score, track) for score, track in scored if score > 0]
     if not scored:
         return None
-    scored.sort(key=lambda item: (-item[0], str(item[1].path)))
-    return scored[0][1]
+    best_score = max(score for score, _ in scored)
+    candidates = [
+        (score, track)
+        for score, track in scored
+        if score == best_score
+    ]
+    candidates.sort(key=lambda item: str(item[1].path))
+    if len(candidates) == 1 or not context.selection_key:
+        return candidates[0][1]
+    index = _stable_bgm_candidate_index(
+        context.selection_key,
+        preferred_phase=preferred_phase,
+        candidate_count=len(candidates),
+    )
+    return candidates[index][1]
+
+
+def _stable_bgm_candidate_index(
+    selection_key: str,
+    *,
+    preferred_phase: str,
+    candidate_count: int,
+) -> int:
+    if candidate_count <= 1:
+        return 0
+    digest = hashlib.blake2b(
+        f"{selection_key}:{preferred_phase}".encode("utf-8"),
+        digest_size=4,
+    ).digest()
+    return int.from_bytes(digest, "big") % candidate_count
 
 
 def _bgm_track_score(

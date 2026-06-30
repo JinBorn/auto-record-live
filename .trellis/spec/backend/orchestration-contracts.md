@@ -1232,6 +1232,7 @@ class PublishingPackage(BaseModel):
 | `arl copywriter` sees an existing subtitle asset and optional export asset | Write one per-match copy JSON under `data/processed/<session>/`, append one `CopyAsset`, write one publishing package JSON, append one `PublishingPackage`, and mark the match key processed |
 | `arl copywriter` sees a valid highlight plan for the current boundary | Prefer overlapping subtitle cues for `recommended_title`, `summary`, `cover_lines`, and `evidence` |
 | `arl copywriter` sees both edge/context windows and high-signal highlight windows | Build metadata from the high-signal cue first even when the edge/context cue has the earlier timestamp |
+| `arl copywriter` sees a persona/finance theme such as `装没钱` + `炒股` plus a generic damage reaction without matching `清线` context | Preserve the richer persona/finance theme in the title; do not synthesize `清线快伤害高` or let generic `伤害这么高` replace it |
 | `arl copywriter` sees a stale highlight plan whose source boundary no longer matches the current boundary | Ignore the plan and generate metadata from the full subtitle transcript |
 | `arl copywriter` sees a usable recording but ffmpeg/Pillow/frame extraction is unavailable | Leave `cover_path=None`, still write the publishing JSON, and still append the `PublishingPackage` row |
 | `arl copywriter` sees a subtitle asset whose path does not exist | Log skip, do not append `CopyAsset`, and do not mark the match key processed |
@@ -1397,6 +1398,7 @@ class PublishingPackage(BaseModel):
 - Unit test: copywriter reads selected-recording orchestrator state files when resolving streamer names.
 - Unit test: copywriter prefers highlight-window subtitle cues for publishing metadata when the highlight plan matches the current boundary.
 - Unit/integration test: copywriter highlight cue selection prefers `highlight_keyword` or `condensed_key_event` evidence over earlier `match_start_context` evidence in `recommended_title`, `cover_lines`, and `PublishingPackage.evidence`.
+- Unit test: copywriter title scoring preserves richer persona/finance themes (`装没钱人设`, `炒股经济学`) over generic damage reactions unless the excerpt also contains a clear lane-clear context.
 - Unit test: copywriter skips optional cover rendering when recording/ffmpeg/Pillow is unavailable and still writes publishing metadata.
 - Unit test: copywriter remains idempotent across repeated runs.
 - Unit test: copywriter skips missing subtitle paths without marking the match processed.
@@ -1553,6 +1555,33 @@ title = build_title_from(selected_cues[0])
 
 - Keeps the headline, cover text, and evidence anchored to high-signal windows.
 - Preserves chronological ordering only as a tie-breaker within the same signal strength.
+
+#### Wrong
+
+```python
+if contains_any(text, ["清线", "伤害高", "伤害这么高", "什么伤害"]):
+    phrases.append("清线快伤害高")
+```
+
+- Turns a generic damage reaction into a lane-clear title even when the excerpt
+  does not discuss clearing waves.
+- Lets a shallow gameplay phrase replace a more distinctive chat/economy theme
+  such as `装没钱人设 炒股经济学`.
+
+#### Correct
+
+```python
+if "清线" in text and contains_any(text, ["伤害高", "伤害这么高", "什么伤害"]):
+    phrases.append("清线快伤害高")
+if contains_all(text, ["装", "没钱"]):
+    phrases.append("装没钱人设")
+if contains_any(text, ["炒股", "股票"]):
+    phrases.append("炒股经济学")
+```
+
+- Requires explicit lane-clear context before emitting the lane-clear headline.
+- Preserves richer persona/finance themes when the damage phrase is only a
+  generic reaction.
 
 #### Wrong
 

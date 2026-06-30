@@ -223,6 +223,74 @@ class CopywriterServiceTest(unittest.TestCase):
         self.assertEqual(len(copy_assets), 1)
         self.assertEqual(copy_assets[0].session_id, "session-copywriter-filter-b")
 
+    def test_gameplay_headline_beats_chat_finance_when_both_exist(self) -> None:
+        session_id = "session-copywriter-gameplay-rank"
+        subtitle_path = self._write_subtitle(
+            session_id,
+            "1\n00:00:00,000 --> 00:00:03,000\n"
+            "一定要装没钱 这个人设还能聊炒股经济学\n\n"
+            "2\n00:01:00,000 --> 00:01:04,000\n"
+            "上单电刀AP机器人 清线快伤害高\n",
+        )
+        export_path = self._write_export(session_id)
+        append_model(
+            self.temp_root / "subtitle-assets.jsonl",
+            SubtitleAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(subtitle_path),
+                format="srt",
+            ),
+        )
+        append_model(
+            self.temp_root / "export-assets.jsonl",
+            ExportAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(export_path),
+                subtitle_path=str(subtitle_path),
+                created_at=self._now(),
+            ),
+        )
+
+        CopywriterService(self.settings).run()
+
+        copy_assets = load_models(self.temp_root / "copy-assets.jsonl", CopyAsset)
+        self.assertEqual(len(copy_assets), 1)
+        self.assertIn("电刀AP机器人", copy_assets[0].title)
+        self.assertNotEqual(copy_assets[0].title, "装没钱人设 炒股经济学")
+
+    def test_finance_persona_headline_beats_generic_damage_reaction(self) -> None:
+        session_id = "session-copywriter-finance-persona"
+        subtitle_path = self._write_subtitle(
+            session_id,
+            "1\n00:00:00,000 --> 00:00:03,000\n"
+            "一定要装没钱 他这种人设不能装有钱\n\n"
+            "2\n00:01:00,000 --> 00:01:04,000\n"
+            "如果到那时候我是不是就变成炒股博主了\n\n"
+            "3\n00:02:00,000 --> 00:02:04,000\n"
+            "哇靠 什么伤害 伤害这么高\n",
+        )
+        append_model(
+            self.temp_root / "subtitle-assets.jsonl",
+            SubtitleAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(subtitle_path),
+                format="srt",
+            ),
+        )
+
+        CopywriterService(self.settings).run()
+
+        packages = load_models(self.temp_root / "publishing-packages.jsonl", PublishingPackage)
+        self.assertEqual(len(packages), 1)
+        package = packages[0]
+        self.assertIn("装没钱人设", package.recommended_title)
+        self.assertIn("炒股经济学", package.recommended_title)
+        self.assertNotIn("清线快伤害高", package.recommended_title)
+        self.assertNotIn("伤害这么高", package.recommended_title)
+
     def test_publishing_package_prefers_highlight_window_cues(self) -> None:
         session_id = "session-copywriter-highlight"
         subtitle_path = self._write_subtitle(
@@ -339,6 +407,37 @@ class CopywriterServiceTest(unittest.TestCase):
         self.assertIn("清线快伤害高", cover_text)
         self.assertIn("韩服千分套路", cover_text)
         self.assertIn("被粉丝认出来", cover_text)
+
+    def test_short_weak_title_expands_with_context(self) -> None:
+        service = CopywriterService(self.settings)
+
+        candidates = service._title_candidates(
+            excerpt=[
+                "stacking?",
+                "that depends how many games",
+                "sixty percent win rate is fine",
+            ],
+            match_index=2,
+        )
+
+        self.assertNotEqual(candidates[0], "stacking?")
+        self.assertIn("stacking?", candidates[0])
+        self.assertIn("that depends", candidates[0])
+
+    def test_single_short_theme_title_expands_with_context(self) -> None:
+        service = CopywriterService(self.settings)
+
+        candidates = service._title_candidates(
+            excerpt=[
+                "过几个月又有钱了然后冲进去结果亏了",
+                "我认识那个16岁",
+                "我有钱啊我钱给家里了",
+            ],
+            match_index=4,
+        )
+
+        self.assertIn("被粉丝认出来", candidates[0])
+        self.assertIn("有钱", candidates[0])
 
     def test_cover_renderer_is_optional_and_records_cover_path(self) -> None:
         session_id = "session-copywriter-cover"
@@ -751,24 +850,21 @@ class CopywriterServiceTest(unittest.TestCase):
         self.assertFalse(rendered)
         self.assertFalse(output_path.exists())
 
-    def test_cover_text_renderer_uses_title_panel_and_preserves_secondary_size(self) -> None:
+    def test_cover_text_renderer_omits_panel_and_preserves_secondary_size(self) -> None:
         draw = _FakeCoverDraw()
 
         _draw_cover_text(
             draw,
             (1920, 1080),
             [
-                "Very long explosive headline that has to shrink to fit the cover panel",
+                "Very long explosive headline that has to shrink to fit the cover image",
                 "Fast clear",
                 "Ladder trick",
             ],
             _FakeCoverFontFactory,
         )
 
-        self.assertEqual(len(draw.panels), 1)
-        panel = draw.panels[0]
-        self.assertGreaterEqual(panel[0], 0)
-        self.assertLessEqual(panel[2], 1920)
+        self.assertEqual(draw.panels, [])
         self.assertEqual(len(draw.text_calls), 3)
         self.assertEqual(draw.text_calls[0]["fill"], (255, 238, 0))
         self.assertEqual(draw.text_calls[1]["fill"], (255, 255, 255))

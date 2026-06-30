@@ -44,7 +44,7 @@ _REASON_PRIORITY = {
     "condensed_context": 3,
 }
 
-_TEASER_REASONS = {"highlight_keyword"}
+_PRIMARY_TEASER_REASONS = {"highlight_keyword"}
 _ZOOM_REASONS = {"highlight_keyword", "condensed_key_event", "condensed_tactical"}
 _SFX_REASONS = {"highlight_keyword", "condensed_key_event", "condensed_tactical"}
 _SFX_MIN_INTERVAL_SECONDS = 20.0
@@ -347,6 +347,8 @@ class EditingPlannerService:
         audio_beds: list[AudioBed] = []
         sound_effects: list[SoundEffectHit] = []
         rendered_duration = self._timeline_duration(timeline)
+        bgm_start_seconds = self._leading_teaser_duration(timeline)
+        bgm_duration = max(0.0, rendered_duration - bgm_start_seconds)
         source_music = self._source_music_detection(boundary, recording)
         skip_bgm = source_music.has_music
         default_assets = (
@@ -369,7 +371,7 @@ class EditingPlannerService:
                 audio_beds.append(
                     AudioBed(
                         source_path=str(bgm_path),
-                        timeline_start_seconds=0.0,
+                        timeline_start_seconds=bgm_start_seconds,
                         timeline_end_seconds=None,
                         gain_db=self.settings.editing.bgm_gain_db,
                         loop=True,
@@ -390,7 +392,8 @@ class EditingPlannerService:
                     highlight_plan=highlight_plan,
                     subtitle=subtitle,
                     streamer_name=streamer_name,
-                    rendered_duration=rendered_duration,
+                    rendered_duration=bgm_duration,
+                    timeline_start_seconds=bgm_start_seconds,
                 )
             )
 
@@ -548,9 +551,12 @@ class EditingPlannerService:
         assets: dict[str, Path],
         *,
         rendered_duration: float,
+        timeline_start_seconds: float = 0.0,
     ) -> list[AudioBed]:
         playful_path = assets.get("playful_bgm")
         climax_path = assets.get("climax_bgm")
+        if rendered_duration <= 0.0:
+            return []
         if playful_path is None or not playful_path.is_file():
             return []
         if (
@@ -562,18 +568,19 @@ class EditingPlannerService:
                 max(30.0, min(rendered_duration * 0.55, rendered_duration - 30.0)),
                 3,
             )
+            timeline_switch_seconds = round(timeline_start_seconds + switch_at, 3)
             return [
                 AudioBed(
                     source_path=str(playful_path),
-                    timeline_start_seconds=0.0,
-                    timeline_end_seconds=switch_at,
+                    timeline_start_seconds=timeline_start_seconds,
+                    timeline_end_seconds=timeline_switch_seconds,
                     gain_db=self.settings.editing.bgm_gain_db,
                     loop=True,
                     reason="background_music_playful",
                 ),
                 AudioBed(
                     source_path=str(climax_path),
-                    timeline_start_seconds=switch_at,
+                    timeline_start_seconds=timeline_switch_seconds,
                     timeline_end_seconds=None,
                     gain_db=self.settings.editing.bgm_gain_db,
                     loop=True,
@@ -583,7 +590,7 @@ class EditingPlannerService:
         return [
             AudioBed(
                 source_path=str(playful_path),
-                timeline_start_seconds=0.0,
+                timeline_start_seconds=timeline_start_seconds,
                 timeline_end_seconds=None,
                 gain_db=self.settings.editing.bgm_gain_db,
                 loop=True,
@@ -600,6 +607,7 @@ class EditingPlannerService:
         subtitle: SubtitleAsset | None,
         streamer_name: str | None,
         rendered_duration: float,
+        timeline_start_seconds: float = 0.0,
     ) -> list[AudioBed]:
         selected_tracks = self._select_bgm_library_tracks(
             boundary=boundary,
@@ -618,11 +626,13 @@ class EditingPlannerService:
             return self._bgm_beds_from_tracks(
                 selected_tracks,
                 rendered_duration=rendered_duration,
+                timeline_start_seconds=timeline_start_seconds,
                 gain_db=self.settings.editing.bgm_gain_db,
             )
         return self._default_bgm_beds(
             assets,
             rendered_duration=rendered_duration,
+            timeline_start_seconds=timeline_start_seconds,
         )
 
     def _select_bgm_library_tracks(
@@ -648,6 +658,10 @@ class EditingPlannerService:
             tags=tags,
             highlight_reasons=tuple(highlight_reasons),
             rendered_duration_seconds=rendered_duration,
+            selection_key=(
+                f"{boundary.session_id}:{boundary.match_index}:"
+                f"{','.join(tags)}:{','.join(highlight_reasons)}"
+            ),
         )
         selected = select_bgm_tracks(tracks, context)
         if not selected:
@@ -664,15 +678,18 @@ class EditingPlannerService:
         tracks: list[BgmLibraryTrack],
         *,
         rendered_duration: float,
+        timeline_start_seconds: float = 0.0,
         gain_db: float,
     ) -> list[AudioBed]:
         if not tracks:
+            return []
+        if rendered_duration <= 0.0:
             return []
         if len(tracks) == 1:
             return [
                 AudioBed(
                     source_path=str(tracks[0].path),
-                    timeline_start_seconds=0.0,
+                    timeline_start_seconds=timeline_start_seconds,
                     timeline_end_seconds=None,
                     gain_db=gain_db,
                     loop=True,
@@ -683,18 +700,19 @@ class EditingPlannerService:
             max(30.0, min(rendered_duration * 0.55, rendered_duration - 30.0)),
             3,
         )
+        timeline_switch_seconds = round(timeline_start_seconds + switch_at, 3)
         return [
             AudioBed(
                 source_path=str(tracks[0].path),
-                timeline_start_seconds=0.0,
-                timeline_end_seconds=switch_at,
+                timeline_start_seconds=timeline_start_seconds,
+                timeline_end_seconds=timeline_switch_seconds,
                 gain_db=gain_db,
                 loop=True,
                 reason="background_music_library",
             ),
             AudioBed(
                 source_path=str(tracks[1].path),
-                timeline_start_seconds=switch_at,
+                timeline_start_seconds=timeline_switch_seconds,
                 timeline_end_seconds=None,
                 gain_db=gain_db,
                 loop=True,
@@ -768,17 +786,25 @@ class EditingPlannerService:
             for segment in timeline
         )
 
+    @staticmethod
+    def _leading_teaser_duration(timeline: list[TimelineSegment]) -> float:
+        duration = 0.0
+        for segment in timeline:
+            if segment.role != "teaser":
+                break
+            duration += max(0.0, segment.source_end_seconds - segment.source_start_seconds)
+        return round(duration, 3)
+
     def _select_teaser_windows(
         self,
         windows: list[HighlightClipWindow],
         duration: float,
     ) -> list[HighlightClipWindow]:
-        candidates = [
-            window
-            for window in windows
-            if window.reason in _TEASER_REASONS
-            and self._valid_teaser_window(window, duration)
-        ]
+        candidates = self._teaser_candidates(
+            windows,
+            duration,
+            reasons=_PRIMARY_TEASER_REASONS,
+        )
         candidates.sort(
             key=lambda window: (
                 _REASON_PRIORITY.get(window.reason, 100),
@@ -811,6 +837,20 @@ class EditingPlannerService:
             )
             total_seconds += end - start
         return selected
+
+    def _teaser_candidates(
+        self,
+        windows: list[HighlightClipWindow],
+        duration: float,
+        *,
+        reasons: set[str],
+    ) -> list[HighlightClipWindow]:
+        return [
+            window
+            for window in windows
+            if window.reason in reasons
+            and self._valid_teaser_window(window, duration)
+        ]
 
     def _build_main_segments(
         self,
@@ -960,6 +1000,10 @@ class EditingPlannerService:
         ) and self._edit_plan_has_current_main_shape(
             plan,
             duration,
+        ) and self._edit_plan_has_current_teaser_shape(
+            plan,
+            highlight_plan,
+            duration,
         ) and self._edit_plan_has_current_zoom_shape(plan)
         if not matches_shape:
             return False
@@ -983,30 +1027,128 @@ class EditingPlannerService:
     ) -> bool:
         if not self.settings.editing.audio_mixing_enabled:
             return not plan.audio_beds and not plan.sound_effects
-        source_music = self._source_music_detection(boundary, recording)
-        if source_music.has_music and plan.audio_beds:
+        if highlight_plan is None:
+            return True
+        expected_audio_beds, expected_sound_effects = self._build_audio_instructions(
+            boundary,
+            highlight_plan,
+            plan.timeline,
+            recording,
+            subtitle,
+            streamer_name,
+        )
+        return self._audio_beds_match(
+            plan.audio_beds,
+            expected_audio_beds,
+        ) and self._sound_effects_match(
+            plan.sound_effects,
+            expected_sound_effects,
+        )
+
+    @classmethod
+    def _audio_beds_match(
+        cls,
+        actual: list[AudioBed],
+        expected: list[AudioBed],
+    ) -> bool:
+        if len(actual) != len(expected):
             return False
-        if (
-            self.settings.editing.bgm_path is None
-            and self.settings.editing.bgm_library_path is not None
-            and not source_music.has_music
-        ):
-            selected_tracks = self._select_bgm_library_tracks(
-                boundary=boundary,
-                highlight_plan=highlight_plan,
-                subtitle=subtitle,
-                streamer_name=streamer_name,
-                rendered_duration=self._timeline_duration(plan.timeline),
+        return all(
+            cls._audio_bed_matches(actual_bed, expected_bed)
+            for actual_bed, expected_bed in zip(actual, expected, strict=True)
+        )
+
+    @classmethod
+    def _audio_bed_matches(cls, actual: AudioBed, expected: AudioBed) -> bool:
+        return (
+            actual.source_path == expected.source_path
+            and cls._float_matches(
+                actual.timeline_start_seconds,
+                expected.timeline_start_seconds,
             )
-            if selected_tracks:
-                expected_paths = [str(track.path) for track in selected_tracks]
-                actual_paths = [
-                    bed.source_path
-                    for bed in plan.audio_beds
-                    if bed.reason.startswith("background_music")
-                ]
-                return actual_paths == expected_paths
-        return True
+            and cls._optional_float_matches(
+                actual.timeline_end_seconds,
+                expected.timeline_end_seconds,
+            )
+            and cls._float_matches(actual.gain_db, expected.gain_db)
+            and actual.loop == expected.loop
+            and actual.reason == expected.reason
+        )
+
+    @classmethod
+    def _sound_effects_match(
+        cls,
+        actual: list[SoundEffectHit],
+        expected: list[SoundEffectHit],
+    ) -> bool:
+        if len(actual) != len(expected):
+            return False
+        return all(
+            cls._sound_effect_matches(actual_hit, expected_hit)
+            for actual_hit, expected_hit in zip(actual, expected, strict=True)
+        )
+
+    @classmethod
+    def _sound_effect_matches(
+        cls,
+        actual: SoundEffectHit,
+        expected: SoundEffectHit,
+    ) -> bool:
+        return (
+            actual.source_path == expected.source_path
+            and cls._float_matches(actual.at_seconds, expected.at_seconds)
+            and cls._float_matches(actual.gain_db, expected.gain_db)
+            and actual.reason == expected.reason
+        )
+
+    @staticmethod
+    def _optional_float_matches(actual: float | None, expected: float | None) -> bool:
+        if actual is None or expected is None:
+            return actual is None and expected is None
+        return EditingPlannerService._float_matches(actual, expected)
+
+    @staticmethod
+    def _float_matches(actual: float, expected: float) -> bool:
+        return abs(actual - expected) <= _SEGMENT_TOLERANCE_SECONDS
+
+    def _edit_plan_has_current_teaser_shape(
+        self,
+        plan: EditPlanAsset,
+        highlight_plan: HighlightPlanAsset | None,
+        duration: float,
+    ) -> bool:
+        expected_windows = (
+            self._select_teaser_windows(highlight_plan.windows, duration)
+            if highlight_plan is not None
+            else []
+        )
+        teaser_segments = [
+            segment for segment in plan.timeline if segment.role == "teaser"
+        ]
+        if len(teaser_segments) != len(expected_windows):
+            return False
+        return all(
+            self._timeline_segment_matches_window(segment, window)
+            for segment, window in zip(teaser_segments, expected_windows, strict=True)
+        )
+
+    @classmethod
+    def _timeline_segment_matches_window(
+        cls,
+        segment: TimelineSegment,
+        window: HighlightClipWindow,
+    ) -> bool:
+        return (
+            cls._float_matches(
+                segment.source_start_seconds,
+                round(window.started_at_seconds, 3),
+            )
+            and cls._float_matches(
+                segment.source_end_seconds,
+                round(window.ended_at_seconds, 3),
+            )
+            and segment.reason == window.reason
+        )
 
     @staticmethod
     def _edit_plan_has_current_main_shape(

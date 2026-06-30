@@ -73,6 +73,7 @@ class VisionMatchDetector:
 
         # ── Refinement pass ──────────────────────────────────────
         segments = self._refine_segment_starts(video_path, segments)
+        segments = self._refine_segment_ends(video_path, segments)
 
         return segments
 
@@ -150,6 +151,46 @@ class VisionMatchDetector:
 
         return segments
 
+    def _refine_segment_ends(
+        self,
+        video_path: Path,
+        segments: list[MatchSegment],
+    ) -> list[MatchSegment]:
+        """Re-sample complete segment tails to avoid post-game client bleed."""
+        refine_interval = self.settings.match_start_refine_interval_seconds
+        lookback = min(90.0, self.settings.match_start_refine_lookback_seconds)
+
+        for seg in segments:
+            if not seg.is_complete:
+                continue
+            window_start = max(seg.start_seconds, seg.end_seconds - lookback)
+            window_end = seg.end_seconds
+            if window_start >= window_end:
+                continue
+
+            fine_frames = sample_frame_window(
+                video_path,
+                window_start,
+                window_end,
+                interval_seconds=refine_interval,
+            )
+            if not fine_frames:
+                continue
+
+            fine_scenes = [classify_scene(frame, ts) for ts, frame in fine_frames]
+            refined_end = self._find_trailing_non_game_start(
+                fine_scenes,
+                current_end=seg.end_seconds,
+            )
+            if refined_end is None or refined_end >= seg.end_seconds:
+                continue
+            refined_end = min(seg.end_seconds, refined_end + refine_interval)
+            if refined_end - seg.start_seconds < self.settings.min_match_duration_seconds:
+                continue
+            seg.end_seconds = refined_end
+
+        return segments
+
     @staticmethod
     def _find_real_loading(
         scenes: list[SceneReading],
@@ -201,4 +242,30 @@ class VisionMatchDetector:
             if game_time is not None and game_time <= 180.0:
                 return ld_ts
 
+        return None
+
+    @staticmethod
+    def _find_trailing_non_game_start(
+        scenes: list[SceneReading],
+        *,
+        current_end: float,
+    ) -> float | None:
+        sorted_scenes = [
+            scene
+            for scene in sorted(scenes, key=lambda item: item.timestamp_seconds)
+            if scene.timestamp_seconds <= current_end + 0.001
+        ]
+        if not sorted_scenes:
+            return None
+
+        last_in_game_index: int | None = None
+        for index, scene in enumerate(sorted_scenes):
+            if scene.scene == "in_game":
+                last_in_game_index = index
+        if last_in_game_index is None:
+            return None
+
+        for scene in sorted_scenes[last_in_game_index + 1 :]:
+            if scene.scene != "in_game":
+                return scene.timestamp_seconds
         return None

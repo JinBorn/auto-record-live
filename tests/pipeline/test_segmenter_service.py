@@ -146,6 +146,51 @@ class SegmenterServiceTest(unittest.TestCase):
         self.assertEqual(boundaries[1]["started_at_seconds"], 1320.0)
         self.assertEqual(boundaries[1]["ended_at_seconds"], 2400.0)
 
+    def test_segmenter_force_reprocess_replaces_existing_boundaries(self) -> None:
+        session_id = "session-segment-force"
+        append_model(
+            self.recording_assets_path,
+            RecordingAsset(
+                session_id=session_id,
+                source_type=SourceType.BROWSER_CAPTURE,
+                path="/tmp/segment-force.mp4",
+                started_at=datetime(2026, 6, 9, 6, 0, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 6, 9, 7, 0, tzinfo=timezone.utc),
+            ),
+        )
+        append_model(
+            self.match_stage_hints_path,
+            MatchStageHint(
+                session_id=session_id,
+                stage=MatchStage.IN_GAME,
+                at_seconds=0.0,
+            ),
+        )
+
+        service = SegmenterService(self.settings)
+        service.run(session_ids={session_id})
+        boundaries = _read_jsonl(self.boundaries_path)
+        self.assertEqual(len(boundaries), 1)
+        self.assertEqual(boundaries[0]["ended_at_seconds"], 3600.0)
+
+        append_model(
+            self.match_stage_hints_path,
+            MatchStageHint(
+                session_id=session_id,
+                stage=MatchStage.POST_GAME,
+                at_seconds=1200.0,
+            ),
+        )
+        service.run(session_ids={session_id})
+        boundaries = _read_jsonl(self.boundaries_path)
+        self.assertEqual(len(boundaries), 1)
+        self.assertEqual(boundaries[0]["ended_at_seconds"], 3600.0)
+
+        service.run(session_ids={session_id}, force_reprocess=True)
+        boundaries = _read_jsonl(self.boundaries_path)
+        self.assertEqual(len(boundaries), 1)
+        self.assertEqual(boundaries[0]["ended_at_seconds"], 1200.0)
+
     def test_segmenter_ends_match_at_post_game_before_next_in_game(self) -> None:
         append_model(
             self.recording_assets_path,

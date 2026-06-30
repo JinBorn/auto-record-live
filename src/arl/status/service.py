@@ -96,22 +96,12 @@ class StatusService:
             for event in recorder_events
             if event.event_type == "stream_url_expired_for_bilibili"
         ]
-        exporter_fallback_events = [
-            event
-            for event in exporter_events
-            if event.event_type == "ffmpeg_export_fallback_placeholder"
-        ]
-        exporter_batch_aborted_events = [
-            event
-            for event in exporter_events
-            if event.event_type == "ffmpeg_export_batch_aborted"
-        ]
         exporter_fallback_events = self._unresolved_exporter_fallback_events(
-            exporter_fallback_events,
+            exporter_events,
             export_assets,
         )
         exporter_batch_aborted_events = self._unresolved_exporter_batch_aborted_events(
-            exporter_batch_aborted_events,
+            exporter_events,
             boundaries,
             export_assets,
         )
@@ -308,14 +298,20 @@ class StatusService:
 
     def _unresolved_exporter_fallback_events(
         self,
-        fallback_events: list[ExporterAuditEvent],
+        exporter_events: list[ExporterAuditEvent],
         export_assets: list[ExportAsset],
     ) -> list[ExporterAuditEvent]:
         media_export_times = self._present_media_export_times(export_assets)
+        latest_outcomes = self._latest_exporter_match_outcomes(exporter_events)
         unresolved: list[ExporterAuditEvent] = []
-        for event in fallback_events:
+        for event in exporter_events:
+            if event.event_type != "ffmpeg_export_fallback_placeholder":
+                continue
             if event.match_index is None:
                 unresolved.append(event)
+                continue
+            key = (event.session_id, event.match_index)
+            if latest_outcomes.get(key) is not event:
                 continue
             resolved_at = media_export_times.get((event.session_id, event.match_index))
             if resolved_at is not None and resolved_at >= event.created_at:
@@ -325,17 +321,18 @@ class StatusService:
 
     def _unresolved_exporter_batch_aborted_events(
         self,
-        batch_events: list[ExporterAuditEvent],
+        exporter_events: list[ExporterAuditEvent],
         boundaries: list[MatchBoundary],
         export_assets: list[ExportAsset],
     ) -> list[ExporterAuditEvent]:
         media_export_times = self._present_media_export_times(export_assets)
+        latest_batch_events = self._latest_exporter_batch_aborts(exporter_events)
         boundaries_by_session: dict[str, list[MatchBoundary]] = {}
         for boundary in boundaries:
             boundaries_by_session.setdefault(boundary.session_id, []).append(boundary)
 
         unresolved: list[ExporterAuditEvent] = []
-        for event in batch_events:
+        for event in latest_batch_events.values():
             session_boundaries = boundaries_by_session.get(event.session_id, [])
             if not session_boundaries:
                 unresolved.append(event)
@@ -352,6 +349,39 @@ class StatusService:
                 continue
             unresolved.append(event)
         return unresolved
+
+    def _latest_exporter_match_outcomes(
+        self,
+        exporter_events: list[ExporterAuditEvent],
+    ) -> dict[tuple[str, int], ExporterAuditEvent]:
+        latest: dict[tuple[str, int], tuple[datetime, int, ExporterAuditEvent]] = {}
+        terminal_event_types = {
+            "ffmpeg_export_succeeded",
+            "ffmpeg_export_fallback_placeholder",
+        }
+        for index, event in enumerate(exporter_events):
+            if event.event_type not in terminal_event_types or event.match_index is None:
+                continue
+            key = (event.session_id, event.match_index)
+            current = latest.get(key)
+            marker = (event.created_at, index, event)
+            if current is None or marker[:2] > current[:2]:
+                latest[key] = marker
+        return {key: event for key, (_, _, event) in latest.items()}
+
+    def _latest_exporter_batch_aborts(
+        self,
+        exporter_events: list[ExporterAuditEvent],
+    ) -> dict[str, ExporterAuditEvent]:
+        latest: dict[str, tuple[datetime, int, ExporterAuditEvent]] = {}
+        for index, event in enumerate(exporter_events):
+            if event.event_type != "ffmpeg_export_batch_aborted":
+                continue
+            current = latest.get(event.session_id)
+            marker = (event.created_at, index, event)
+            if current is None or marker[:2] > current[:2]:
+                latest[event.session_id] = marker
+        return {session_id: event for session_id, (_, _, event) in latest.items()}
 
     def _present_media_export_times(
         self,

@@ -38,6 +38,10 @@ from arl.subtitles.ass import AssSubtitleStyle, SrtCue, parse_srt_cues, write_as
 _BGM_GAIN_RANGE_DB = (-60.0, 0.0)
 _SFX_GAIN_RANGE_DB = (-60.0, 6.0)
 _BGM_FADE_SECONDS = 2.0
+_BGM_DUCK_THRESHOLD = 0.03
+_BGM_DUCK_RATIO = 6.0
+_BGM_DUCK_ATTACK_MS = 20
+_BGM_DUCK_RELEASE_MS = 350
 
 
 class ExporterService:
@@ -949,7 +953,9 @@ class ExporterService:
                 "setpts=N/FRAME_RATE/TB",
             ]
         )
-        audio_filter = f"aselect='{select_expr}',asetpts=N/SR/TB"
+        audio_filter = self._audio_filter_chain(
+            f"aselect='{select_expr}',asetpts=N/SR/TB"
+        )
         log(
             "exporter",
             "highlight plan export "
@@ -1053,6 +1059,7 @@ class ExporterService:
             )
         if has_audio_mix:
             filter_parts.extend(self._edit_plan_audio_filters(edit_plan))
+        audio_output_label = self._append_audio_loudnorm_filter(filter_parts)
         log(
             "exporter",
             "edit plan export "
@@ -1081,7 +1088,7 @@ class ExporterService:
                 "-map",
                 f"[{video_output_label}]",
                 "-map",
-                "[a]",
+                f"[{audio_output_label}]",
             ]
         )
         command.extend(self._video_encode_args())
@@ -1143,6 +1150,7 @@ class ExporterService:
                     first_audio_input_index=len(expanded),
                 )
             )
+        audio_output_label = self._append_audio_loudnorm_filter(filter_parts)
         log(
             "exporter",
             "edit plan chunk export "
@@ -1167,7 +1175,7 @@ class ExporterService:
                 "-map",
                 f"[{video_output_label}]",
                 "-map",
-                "[a]",
+                f"[{audio_output_label}]",
             ]
         )
         command.extend(self._video_encode_args())
@@ -1192,17 +1200,36 @@ class ExporterService:
         first_audio_input_index: int = 1,
     ) -> list[str]:
         filter_parts: list[str] = []
-        mix_inputs = ["[basea]"]
+        audio_bed_count = len(edit_plan.audio_beds)
+        base_mix_label = "basea"
+        if audio_bed_count:
+            base_mix_label = "basemix"
+            split_labels = [base_mix_label] + [
+                f"basechain{index}" for index in range(audio_bed_count)
+            ]
+            filter_parts.append(
+                f"[basea]asplit={len(split_labels)}"
+                f"{''.join(f'[{label}]' for label in split_labels)}"
+            )
+        mix_inputs = [f"[{base_mix_label}]"]
         rendered_duration = self._edit_plan_output_duration(edit_plan)
         next_input_index = first_audio_input_index
         for index, bed in enumerate(edit_plan.audio_beds):
             label = f"bgm{index}"
+            raw_label = f"bgmraw{index}"
             filter_parts.append(
                 self._audio_bed_filter(
                     bed,
                     input_index=next_input_index,
-                    label=label,
+                    label=raw_label,
                     rendered_duration=rendered_duration,
+                )
+            )
+            filter_parts.append(
+                self._audio_bed_duck_filter(
+                    raw_label=raw_label,
+                    sidechain_label=f"basechain{index}",
+                    output_label=label,
                 )
             )
             mix_inputs.append(f"[{label}]")
@@ -1224,6 +1251,37 @@ class ExporterService:
             f"amix=inputs={len(mix_inputs)}:duration=first:dropout_transition=0[a]"
         )
         return filter_parts
+
+    @staticmethod
+    def _audio_bed_duck_filter(
+        *,
+        raw_label: str,
+        sidechain_label: str,
+        output_label: str,
+    ) -> str:
+        return (
+            f"[{raw_label}][{sidechain_label}]"
+            "sidechaincompress="
+            f"threshold={_BGM_DUCK_THRESHOLD:.3f}:"
+            f"ratio={_BGM_DUCK_RATIO:.1f}:"
+            f"attack={_BGM_DUCK_ATTACK_MS}:"
+            f"release={_BGM_DUCK_RELEASE_MS}:"
+            "makeup=1"
+            f"[{output_label}]"
+        )
+
+    def _append_audio_loudnorm_filter(self, filter_parts: list[str]) -> str:
+        if not self.settings.export.audio_loudnorm_enabled:
+            return "a"
+        filter_parts.append(
+            f"[a]{self.settings.export.audio_loudnorm_filter}[aout]"
+        )
+        return "aout"
+
+    def _audio_filter_chain(self, base_filter: str) -> str:
+        if not self.settings.export.audio_loudnorm_enabled:
+            return base_filter
+        return f"{base_filter},{self.settings.export.audio_loudnorm_filter}"
 
     def _audio_bed_filter(
         self,
@@ -1323,6 +1381,7 @@ class ExporterService:
             filter_parts.append(
                 f"[v]{self._subtitle_filter_arg(subtitle_path)}[{video_output_label}]"
             )
+        audio_output_label = self._append_audio_loudnorm_filter(filter_parts)
 
         command = [
             "ffmpeg",
@@ -1344,7 +1403,7 @@ class ExporterService:
                 "-map",
                 f"[{video_output_label}]",
                 "-map",
-                "[a]",
+                f"[{audio_output_label}]",
             ]
         )
         if soft_subtitles:
@@ -1923,6 +1982,11 @@ class ExporterService:
 
         # Prefer fixed bitrate if configured (better quality preservation)
         if self.settings.export.ffmpeg_bitrate:
+            if (
+                self.settings.export.use_hardware_encoding
+                and self.settings.export.ffmpeg_video_codec in {"h264", "h265"}
+            ):
+                args.extend(["-rc", "cbr", "-cbr_padding", "1"])
             args.extend(["-b:v", self.settings.export.ffmpeg_bitrate])
             if self.settings.export.ffmpeg_max_bitrate:
                 args.extend(["-maxrate", self.settings.export.ffmpeg_max_bitrate])

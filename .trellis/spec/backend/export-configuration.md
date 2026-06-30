@@ -33,6 +33,9 @@ ARL_EXPORT_USE_HARDWARE_ENCODING=1
 ```bash
 -b:v 4000k -maxrate 5000k -bufsize 8M -preset p7
 ```
+When hardware encoding is enabled for H.264/H.265 with a fixed bitrate, the
+exporter must also add NVENC CBR controls (`-rc cbr -cbr_padding 1`) so upload
+exports do not drift far below the requested bitrate on visually simple scenes.
 
 **Use case**: 
 - Source recordings at 3-4 Mbps need output at same or higher bitrate
@@ -409,7 +412,7 @@ write_plan(drafts)
       source_path: str
       timeline_start_seconds: float = 0.0
       timeline_end_seconds: float | None = None
-      gain_db: float = -24.0
+      gain_db: float = -28.0
       loop: bool = True
       reason: str = "background_music"
 
@@ -459,7 +462,7 @@ write_plan(drafts)
   ARL_EDIT_ZOOM_MAX_SEGMENTS=1
   ARL_EDIT_AUDIO_MIXING_ENABLED=0
   ARL_EDIT_BGM_PATH=
-  ARL_EDIT_BGM_GAIN_DB=-24
+  ARL_EDIT_BGM_GAIN_DB=-28
   ARL_EDIT_SFX_PATH=
   ARL_EDIT_SFX_GAIN_DB=-12
   ARL_EXPORT_USE_EDIT_PLANS=1
@@ -476,11 +479,11 @@ write_plan(drafts)
   `main` segment(s) copied from the validated highlight/condensed windows.
   Main segments must cover both the start and the end of the source boundary,
   but they must not be a single full-boundary `full_validated_match` segment.
-- Teasers are optional. The planner should prepend teaser segments only for
-  explicit high-confidence highlight windows (`highlight_keyword`). Generic
-  `condensed_key_event` or `condensed_tactical` windows are useful main-edit
-  material, but they are not sufficient by themselves for a cold-open teaser.
-  If no high-confidence teaser remains, write a valid main-only edit plan.
+- Teasers are optional and must use explicit high-confidence highlight windows
+  only (`highlight_keyword`). Generic `condensed_key_event` or
+  `condensed_tactical` windows are useful main-edit material, but they are not
+  sufficient by themselves for a cold-open teaser. If no valid
+  `highlight_keyword` teaser remains, write a valid main-only edit plan.
 - Planner segment times are always relative to the validated match boundary.
   Do not mutate `MatchBoundary` or treat teaser windows as canonical match
   starts.
@@ -534,6 +537,11 @@ write_plan(drafts)
     window.
   - a generated default `wow.wav` SFX under `data/tmp/editing-audio/` when
     `ARL_EDIT_SFX_PATH` is unset
+- BGM starts at the first main segment, not at the beginning of an optional
+  leading teaser. For teaser-first timelines, every BGM `AudioBed` must be
+  offset by the total leading teaser duration; for main-only timelines, BGM
+  starts at `0.0`. This preserves the demo2 convention where the cold-open
+  teaser has no added BGM and the music enters with the main video.
 - When `ARL_EDIT_SKIP_BGM_WHEN_SOURCE_HAS_MUSIC=1` (default), the planner must
   inspect the matching source `RecordingAsset` audio before adding any BGM bed.
   If multiple sampled windows indicate a persistent music-like bed in the
@@ -557,6 +565,11 @@ write_plan(drafts)
   short BGM `afade` in/out, plus `adelay` where needed, and mix with
   `amix=inputs=N:duration=first:dropout_transition=0[a]`. Audio-free edit-plan
   commands keep the existing `[v][a]` concat output shape.
+- `ARL_EXPORT_AUDIO_LOUDNORM_ENABLED=1` appends the configured loudness filter
+  to export audio. Highlight-plan direct exports append the filter to `-af`;
+  edit-plan and span-concat exports append `[a]<filter>[aout]` to
+  `filter_complex` and map `[aout]`. Default behavior stays unchanged with
+  loudnorm disabled.
 - `postprocess-reset` must remove target-session `edit-plans.jsonl` rows and
   `editing-state.json` processed keys. `status` must report `edit_plans` and
   `editing.processed_matches`.
@@ -569,12 +582,15 @@ write_plan(drafts)
 | Boundary incomplete or confidence `<0.8` | Edit planner skips; exporter already skips incomplete boundaries |
 | Missing or stale highlight plan | Edit planner skips without marking the match processed |
 | Highlight window is negative, reversed, out of bounds, or shorter than teaser minimum | Window is ignored for teaser selection |
-| No high-confidence teaser windows remain but main windows are valid | Edit planner writes a main-only edit plan and marks processed |
+| No `highlight_keyword` teaser exists but valid high-signal condensed key/tactical windows exist | Edit planner keeps those windows in the main timeline only and writes a main-only edit plan |
+| No valid teaser candidates remain but main windows are valid | Edit planner writes a main-only edit plan and marks processed |
 | Highlight windows do not cover both source start and source end | Edit planner writes no edit plan and does not mark processed |
 | Highlight windows collapse to one full-boundary main segment | Edit planner writes no edit plan; use full/highlight export instead |
 | Existing processed key but manifest row is missing | Edit planner compacts state and can regenerate |
 | Existing edit plan contains `full_validated_match` | Edit planner treats it as stale and can append a replacement; exporter ignores it and falls back |
 | Existing edit plan no longer matches current zoom settings or lacks required high-signal main punch-ins | Edit planner treats it as stale and can append a replacement |
+| Existing edit plan teaser segments differ from current strict `highlight_keyword` teaser selection | Edit planner treats it as stale and can append a replacement |
+| Existing edit plan audio instructions differ from the current timeline/library/source-music decision in path, start/end timing, gain, loop, or reason | Edit planner treats it as stale and can append a replacement so BGM starts at the first main segment, after any leading teaser |
 | `--force-reprocess` is used | Edit planner appends a replacement row; downstream latest row wins |
 | Edit plan source boundary differs from current boundary by more than 1 second | Exporter ignores the edit plan and falls back |
 | Timeline has no main segment or teaser appears after main | Exporter ignores the edit plan and falls back |
@@ -584,6 +600,8 @@ write_plan(drafts)
 | Teaser appears after main, insert role appears, or `source_path` is set | Exporter ignores the edit plan and falls back |
 | Transform kind is not `none` or `punch_in`, punch-in scale is outside `(1.0, 1.5]`, or anchors are outside `[0.0, 1.0]` | Exporter ignores the edit plan and falls back |
 | Audio source path is missing, not a file, out of output range, reversed, or has gain outside the safety range | Exporter ignores the edit plan and falls back |
+| `ARL_EXPORT_AUDIO_LOUDNORM_ENABLED=0` | Exporter keeps existing audio filter/map behavior |
+| `ARL_EXPORT_AUDIO_LOUDNORM_ENABLED=1` and filter is blank | Config normalizes the filter to `loudnorm=I=-16:TP=-1.5:LRA=11` |
 | `ARL_EDIT_AUDIO_MIXING_ENABLED=1` but configured BGM/SFX files are missing | Edit planner writes the base audio-free edit plan and logs missing-file skips |
 | `ARL_EDIT_BGM_LIBRARY_PATH` is set and contains matching local tracks | Edit planner emits library-backed `AudioBed` rows before falling back to generated default BGM |
 | BGM library manifest contains malformed rows or missing local files | Edit planner logs loaded/skipped counts once, ignores invalid rows, and keeps processing valid tracks |
@@ -607,6 +625,12 @@ write_plan(drafts)
   references generated low-volume BGM/SFX WAV files; long edits switch from
   playful BGM to a higher-energy BGM later in the timeline with a short
   fade-out/fade-in transition instead of a hard cut.
+- Good: Default BGM beds use `gain_db=-28.0`, keeping music peaks below normal
+  gameplay/commentary presence in publish exports while still allowing an
+  explicit `ARL_EDIT_BGM_GAIN_DB` override for special cases.
+- Good: A teaser-first edit plan has no added BGM during the teaser; its first
+  BGM bed starts when the first main segment begins. A main-only edit plan may
+  start BGM at `0.0`.
 - Good: Main-only edit plans can still receive a small number of default "wow"
   SFX hits on high-signal `condensed_key_event` / `condensed_tactical` windows,
   while nearby hits are suppressed to avoid over-dense sound effects.
@@ -643,6 +667,9 @@ write_plan(drafts)
 - Unit: edit planner selects local BGM library tracks from subtitle/highlight
   context when `ARL_EDIT_BGM_LIBRARY_PATH` is configured, and replans older
   default-BGM edit plans when the current library match differs.
+- Unit: edit planner treats stale audio timing as stale, including legacy
+  teaser-first plans whose first BGM bed starts at output `0.0` instead of
+  after the teaser.
 - Unit: BGM library matching accepts Chinese-only `tags`, `phase`, and `mood`
   aliases and normalizes them before selecting early and climax tracks.
 - Unit: BGM library loading logs configured-manifest diagnostics for loaded
@@ -746,9 +773,15 @@ highlight_plan = (
   - `export.use_ass_subtitles=True`
   - `export.use_edit_plans=True`
   - `export.use_highlight_plans=True`
-- The preset must not make teaser selection less strict. It only enables the
-  existing edit planner; teaser clips still require explicit `highlight_keyword`
-  windows, and valid main-only edit plans remain allowed.
+  - `export.ffmpeg_video_codec="h264"` when the source setting is `auto`
+  - `export.ffmpeg_bitrate` at least `"8000k"` when the existing setting is
+    missing or lower
+  - `export.ffmpeg_max_bitrate` at least `"10000k"` when the existing setting
+    is missing or lower
+  - `export.audio_loudnorm_enabled=True`
+- The preset uses the normal strict edit-planner teaser rules: only
+  `highlight_keyword` windows can become teaser clips. Valid main-only edit
+  plans remain allowed when no teaser candidate exists.
 - Subtitle burn-in still follows the exporter placeholder guard: placeholder SRT
   files are not burned even when the preset enables burn-in.
 - Missing ffmpeg or missing recording prerequisites must defer export through
@@ -879,6 +912,79 @@ windows = [opening_fight, baron_fight, nexus_fight]  # source gaps of several mi
 #### Correct
 ```python
 windows = collapse_large_gaps_to_one_continuous_span(windows)
+```
+
+---
+
+## Scenario: Vision Post-Game Tail Refinement
+
+### 1. Scope / Trigger
+- Trigger: Vision match detection writes `MatchBoundary.ended_at_seconds`, and condensed exports trust that boundary when selecting final windows.
+- Trigger: League post-game honor/client screens can be classified as `loading` or `other` immediately after the final in-game frame, causing exports to include desktop/client UI after the match.
+
+### 2. Signatures
+- CLI:
+  ```bash
+  python -m arl.cli segmenter --session-id <session_id> --force-reprocess
+  ```
+- Vision API:
+  ```python
+  VisionMatchDetector.detect(video_path: Path) -> list[MatchSegment]
+  VisionMatchDetector._find_trailing_non_game_start(scenes, current_end=...)
+  ```
+
+### 3. Contracts
+- `stitch_scene_readings` must keep an abrupt `loading` frame after `in_game` as a possible match end when gameplay does not resume. If later `in_game` appears, it remains a death/respawn false-split guard and must not end the match.
+- `VisionMatchDetector` must resample complete segment tails at the configured fine interval and trim `ended_at_seconds` to the first trailing non-`in_game` scene plus one fine sample interval. This preserves a short victory/end reaction while avoiding client/desktop bleed.
+- `segmenter --force-reprocess` may replace existing `match-boundaries.jsonl` rows for the matched session and clear only the matching segmenter processed-state keys. It must not delete raw recordings, subtitles, exports, or publishing packages.
+- Condensed highlight planning must clip subtitle cues and windows to the current boundary duration, then merge overlapping windows before persisting the latest plan row.
+
+### 4. Validation & Error Matrix
+| Condition | Behavior |
+|-----------|----------|
+| Abrupt `loading` appears after `in_game`, then `in_game` resumes | Treat as death/respawn; do not split or end the match |
+| Abrupt `loading` appears after `in_game`, then only `other/loading` remains | Use that point as the candidate natural end |
+| Fine tail scan sees `in_game -> other/loading` near the boundary | Trim the boundary to first trailing non-game scene plus one fine interval |
+| Fine tail scan has no trailing non-game scene | Keep the coarse boundary |
+| Trimming would make the match shorter than `min_match_duration_seconds` | Keep the coarse boundary |
+| Existing boundaries are stale for a target session | `segmenter --force-reprocess` rewrites only that session's boundary rows |
+
+### 5. Good/Base/Bad Cases
+- Good: A final nexus explosion at `4050s` followed by League client/honor UI at `4055s` produces a boundary ending at `4050s`.
+- Base: A death/respawn overlay misclassified as loading at `80s`, followed by gameplay at `100s`, remains one continuous match.
+- Bad: A condensed export includes the League queue/client desktop after the victory sequence, or repeats overlapping tail windows after clamping.
+
+### 6. Tests Required
+- Unit: `tests/vision/test_match_stitcher.py` asserts abrupt loading becomes an end only when gameplay does not resume.
+- Unit: `tests/vision/test_detector.py` asserts trailing non-game tail detection chooses the first post-game scene and ignores middle non-game gaps.
+- Unit: `tests/pipeline/test_segmenter_service.py` asserts force reprocess replaces existing boundary rows without duplication.
+- Unit: `tests/pipeline/test_highlight_planner_service.py` asserts condensed helper code clips cues/windows to boundary duration and merges overlaps.
+
+### 7. Wrong vs Correct
+#### Wrong
+```python
+if pending_other_start is None and direct_gap <= 90.0:
+    continue  # always ignore abrupt loading after gameplay
+```
+
+#### Correct
+```python
+if pending_other_start is None and direct_gap <= 90.0:
+    pending_abrupt_loading_end = pending_abrupt_loading_end or reading.timestamp_seconds
+    continue
+```
+
+#### Wrong
+```python
+windows = extend_action_resolution_windows(windows, classified_cues)
+append_plan(windows)  # may exceed a refined boundary or overlap itself
+```
+
+#### Correct
+```python
+windows = extend_action_resolution_windows(windows, classified_cues)
+windows = clamp_and_merge_highlight_windows(windows, boundary_duration)
+append_plan(windows)
 ```
 
 ---
@@ -1046,6 +1152,124 @@ ARL_EXPORT_FFMPEG_PRESET=p7  # Highest quality
 
 **Prevention**: Always use `p7` with NVENC; the speed gain from p1 is minimal compared to the quality loss
 
+### Mistake 4: Counting historical exporter fallbacks as current health
+
+**Symptom**: `arl status` reports `exporter_fallbacks` for a session that was
+successfully re-exported later.
+
+**Cause**: `exporter-events.jsonl` is append-only. Historical
+`ffmpeg_export_fallback_placeholder` rows remain in the audit log after a later
+`ffmpeg_export_succeeded` row for the same `(session_id, match_index)`.
+
+**Fix**: Status views must derive the latest terminal exporter outcome per
+`(session_id, match_index)` before reporting fallback health. A fallback is
+current only when it is the latest match outcome and no later present `.mp4`
+`ExportAsset` resolves it.
+
+**Prevention**: Keep status regression tests for fallback-then-success and
+duplicate-fallback cases. Missing output files should still be reported through
+`missing_exports`; historical fallback rows should not duplicate that signal.
+
+### Mistake 5: Forcing a cold-open teaser from generic condensed windows
+
+**Symptom**: The export starts with a long "highlight" clip that is not actually
+the strongest moment, and added BGM plays over that teaser before the main video
+begins.
+
+**Cause**: Generic `condensed_key_event` or `condensed_tactical` windows were
+promoted into teaser slots as a fallback, and BGM beds started at output `0.0`
+instead of the first main segment.
+
+**Fix**: Only `highlight_keyword` windows can become teaser clips. When no such
+window exists, emit a main-only edit plan. If a teaser exists, offset BGM beds by
+the leading teaser duration so music starts with the main content.
+
+**Prevention**: Keep edit-planner regressions for main-only condensed key-event
+plans and teaser-first BGM timing.
+
+### Mistake 6: Cutting condensed windows through active speech
+
+**Symptom**: A condensed export cuts to the next segment while the streamer is
+still mid-sentence, or drops the next subtitle cue that begins immediately after
+the window end.
+
+**Cause**: Window optimization and continuity bridge insertion work from
+highlight/event timing first. If the final window edge lands inside an SRT cue,
+or less than a short tolerance before the next cue in the same utterance, FFmpeg
+will cut the narration even though the visual event was preserved.
+
+**Fix**: Before persisting a condensed `HighlightPlanAsset`, run the windows
+through speech-boundary protection. The protection must:
+- move a window start back to the beginning of an overlapping cue
+- extend a window end to the end of any cue it cuts through
+- extend across immediately adjacent subtitle cues in the same thought
+- cap the result to the current match boundary duration, then use the existing
+  clamp/merge pass
+
+**Prevention**: Keep highlight-planner regressions asserting no window end falls
+inside a subtitle cue or within the configured immediate-cue tolerance after
+planning.
+
+### Mistake 7: BGM library ties always choose the same files
+
+**Symptom**: Every exported video receives the same two BGM tracks even though
+the library contains multiple tracks with equivalent style/energy matches.
+
+**Cause**: Library selection sorted equal-score candidates by path only. This is
+deterministic, but it makes same-style videos reuse the alphabetically earliest
+track pair forever.
+
+**Fix**: Keep scoring style-first, then apply deterministic tie rotation only
+among tracks with the best score. The rotation key should include
+`session_id`, `match_index`, normalized context tags, and highlight reasons, so
+reruns are stable while different videos can pick different suitable tracks.
+
+**Prevention**: Keep edit-planner regressions where several equal-score tracks
+are available and different selection keys choose more than one candidate
+without selecting a lower-score track.
+
+### Mistake 8: Short weak titles lack enough context
+
+**Symptom**: A title such as `被粉丝认出来` or a raw short subtitle line is
+technically related to the excerpt but too short to explain what the video is
+about.
+
+**Cause**: Copywriter headline generation can produce a single compact phrase,
+or fall back to the first scored subtitle cue, even when the phrase is not a
+strong standalone gameplay/topic summary.
+
+**Fix**: Treat compact titles without strong topic markers as context-needing.
+Append high-signal excerpt phrases until the title is self-contained, while
+preserving concise strong titles such as `电刀AP机器人`, `装没钱人设 炒股经济学`,
+or `清线快伤害高`.
+
+**Prevention**: Keep copywriter regressions for both pure weak short titles and
+single short theme titles that need one or two supporting context phrases.
+
+### Mistake 9: Treating one video's loud timestamp as a global BGM check
+
+**Symptom**: A manual review finds BGM too loud at a timestamp such as `05:04`,
+then later validations reuse that exact timestamp on unrelated exports.
+
+**Cause**: Condensed exports have different timelines, selected windows, BGM
+switch points, and speech density. A timestamp that catches loud BGM in one
+video may be silent, low-value, or unrelated in another.
+
+**Fix**: Enforce voice/gameplay priority in the mix itself, then validate with
+content-aware samples:
+- Exporter BGM beds must be sidechain-ducked against the concatenated base
+  audio before `amix`, so BGM is automatically reduced when the source audio is
+  active.
+- Post-export checks should map SRT cues through the edit-plan timeline and
+  sample speech-dense output windows for that specific video.
+- Fixed timestamp checks are valid only when the feedback explicitly names that
+  video and timestamp.
+
+**Prevention**: Keep exporter command tests asserting BGM filters include
+`sidechaincompress` with the base audio as sidechain input. Manual validation
+reports should record the video path plus timestamp instead of promoting the
+timestamp into a general rule.
+
 ---
 
 ## Design Decisions
@@ -1103,6 +1327,8 @@ def _video_quality_args(self) -> list[str]:
 | `ARL_EXPORT_FFMPEG_CRF` | int | 18 | CRF value when bitrate not set |
 | `ARL_EXPORT_FFMPEG_PRESET` | string | "slow" | CPU preset or NVENC p1-p7 |
 | `ARL_EXPORT_USE_HARDWARE_ENCODING` | bool | False | Use NVENC if available |
+| `ARL_EXPORT_AUDIO_LOUDNORM_ENABLED` | bool | False | Apply the configured audio loudness normalization filter during export |
+| `ARL_EXPORT_AUDIO_LOUDNORM_FILTER` | string | `loudnorm=I=-16:TP=-1.5:LRA=11` | FFmpeg loudnorm filter string used when export audio loudnorm is enabled; blank values normalize to the default |
 | `ARL_EXPORT_BURN_SUBTITLES` | bool | False | Burn subtitles into video instead of muxing soft subtitles |
 | `ARL_EXPORT_USE_ASS_SUBTITLES` | bool | False | Convert real SRT subtitles to ASS sidecars for burn-in |
 | `ARL_EXPORT_ASS_FONT_NAME` | string | "SimHei" | ASS style font name for burned subtitles |
@@ -1127,7 +1353,7 @@ def _video_quality_args(self) -> list[str]:
 | `ARL_EDIT_SKIP_BGM_WHEN_SOURCE_HAS_MUSIC` | bool | True | Skip adding edit BGM when the source recording already appears to contain a persistent music bed |
 | `ARL_EDIT_BGM_LIBRARY_PATH` | path | None | Optional JSON manifest for automatic local BGM matching |
 | `ARL_EDIT_BGM_PATH` | path | None | Explicit local background-music file path |
-| `ARL_EDIT_BGM_GAIN_DB` | float | -24.0 | BGM gain in dB, clamped to `[-60.0, 0.0]` |
+| `ARL_EDIT_BGM_GAIN_DB` | float | -28.0 | BGM gain in dB, clamped to `[-60.0, 0.0]` |
 | `ARL_EDIT_SFX_PATH` | path | None | Explicit local sound-effect file path |
 | `ARL_EDIT_SFX_GAIN_DB` | float | -12.0 | SFX gain in dB, clamped to `[-60.0, 6.0]` |
 | `ARL_HIGHLIGHT_PLANNER_ENABLED` | bool | False | Run highlight detection stage |

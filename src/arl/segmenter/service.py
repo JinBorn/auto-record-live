@@ -18,7 +18,12 @@ class SegmenterService:
         self.boundaries_path = settings.storage.temp_dir / "match-boundaries.jsonl"
         self.state_path = settings.storage.temp_dir / "segmenter-state.json"
 
-    def run(self, *, session_ids: set[str] | None = None) -> None:
+    def run(
+        self,
+        *,
+        session_ids: set[str] | None = None,
+        force_reprocess: bool = False,
+    ) -> None:
         log("segmenter", "starting")
         assets = load_models(self.recording_assets_path, RecordingAsset)
         filtered_assets = self._filter_assets(assets, session_ids=session_ids)
@@ -32,13 +37,34 @@ class SegmenterService:
                 ),
             )
         stage_hints = load_models(self.match_stage_hints_path, MatchStageHint)
-        existing_boundary_sessions = {
-            boundary.session_id
-            for boundary in load_models(self.boundaries_path, MatchBoundary)
-        }
+        all_boundaries = load_models(self.boundaries_path, MatchBoundary)
         hints_by_session = self._group_hints_by_session(stage_hints)
         state = self._load_state()
         processed_asset_keys = set(state.processed_asset_keys)
+
+        if force_reprocess and filtered_assets:
+            force_session_ids = {asset.session_id for asset in filtered_assets}
+            removed_rows = self._rewrite_boundaries_excluding_sessions(force_session_ids)
+            if removed_rows:
+                log(
+                    "segmenter",
+                    "force reprocessing boundaries "
+                    f"session_ids={','.join(sorted(force_session_ids))} "
+                    f"removed_rows={removed_rows}",
+                )
+            all_boundaries = [
+                boundary
+                for boundary in all_boundaries
+                if boundary.session_id not in force_session_ids
+            ]
+            state.processed_asset_keys = [
+                key
+                for key in state.processed_asset_keys
+                if not self._key_matches_any_session(key, force_session_ids)
+            ]
+            processed_asset_keys = set(state.processed_asset_keys)
+
+        existing_boundary_sessions = {boundary.session_id for boundary in all_boundaries}
 
         processed = 0
         for asset in filtered_assets:
@@ -204,6 +230,27 @@ class SegmenterService:
                 grouped[hint.session_id] = []
             grouped[hint.session_id].append(hint)
         return grouped
+
+    def _rewrite_boundaries_excluding_sessions(self, session_ids: set[str]) -> int:
+        if not session_ids:
+            return 0
+        boundaries = load_models(self.boundaries_path, MatchBoundary)
+        kept = [
+            boundary for boundary in boundaries if boundary.session_id not in session_ids
+        ]
+        removed = len(boundaries) - len(kept)
+        if removed == 0:
+            return 0
+        self.boundaries_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.boundaries_path.open("w", encoding="utf-8") as handle:
+            for boundary in kept:
+                handle.write(boundary.model_dump_json())
+                handle.write("\n")
+        return removed
+
+    @staticmethod
+    def _key_matches_any_session(key: str, session_ids: set[str]) -> bool:
+        return any(key.startswith(f"{session_id}:") for session_id in session_ids)
 
     def _load_state(self) -> SegmenterStateFile:
         if not self.state_path.exists():

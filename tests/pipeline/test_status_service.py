@@ -468,6 +468,84 @@ class StatusServiceTest(unittest.TestCase):
         self.assertEqual(status["summary"]["degraded_reasons"], [])
         self.assertEqual(status["summary"]["action_required_reasons"], [])
 
+    def test_status_ignores_exporter_fallback_when_latest_match_event_succeeded(
+        self,
+    ) -> None:
+        session_id = "session-exporter-latest-success"
+        failed_at = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+        succeeded_at = datetime(2026, 6, 1, 12, 5, tzinfo=timezone.utc)
+        append_model(
+            self.temp_root / "exporter-events.jsonl",
+            ExporterAuditEvent(
+                event_type="ffmpeg_export_fallback_placeholder",
+                session_id=session_id,
+                match_index=1,
+                decision="fallback_placeholder",
+                failure_category="ffmpeg_process_error_retryable",
+                is_retryable=True,
+                reason_code="ffmpeg_process_error",
+                reason_detail="timed out after 120s",
+                reason="timed out after 120s",
+                created_at=failed_at,
+            ),
+        )
+        append_model(
+            self.temp_root / "exporter-events.jsonl",
+            ExporterAuditEvent(
+                event_type="ffmpeg_export_succeeded",
+                session_id=session_id,
+                match_index=1,
+                attempt=1,
+                max_attempts=2,
+                created_at=succeeded_at,
+            ),
+        )
+
+        status = StatusService(self.settings).build()
+
+        self.assertEqual(status["summary"]["health"], "ok")
+        self.assertEqual(status["exporter"]["fallback_events"], 0)
+        self.assertEqual(status["summary"]["degraded_reasons"], [])
+
+    def test_status_counts_only_latest_exporter_fallback_per_match(self) -> None:
+        session_id = "session-exporter-latest-fallback"
+        first_at = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+        latest_at = datetime(2026, 6, 1, 12, 5, tzinfo=timezone.utc)
+        for created_at, reason in [
+            (first_at, "timed out after 120s"),
+            (latest_at, "exit_status:1"),
+        ]:
+            append_model(
+                self.temp_root / "exporter-events.jsonl",
+                ExporterAuditEvent(
+                    event_type="ffmpeg_export_fallback_placeholder",
+                    session_id=session_id,
+                    match_index=1,
+                    decision="fallback_placeholder",
+                    failure_category="ffmpeg_process_error_retryable",
+                    is_retryable=True,
+                    reason_code="ffmpeg_process_error",
+                    reason_detail=reason,
+                    reason=reason,
+                    created_at=created_at,
+                ),
+            )
+
+        status = StatusService(self.settings).build()
+
+        self.assertEqual(status["summary"]["health"], "degraded")
+        self.assertEqual(status["exporter"]["fallback_events"], 1)
+        self.assertEqual(
+            status["summary"]["degraded_reasons"],
+            [
+                {
+                    "code": "exporter_fallbacks",
+                    "count": 1,
+                    "session_ids": [session_id],
+                }
+            ],
+        )
+
     def test_unregistered_raw_recording_is_degraded_diagnostic(self) -> None:
         session_id = "session-20260606101149-9fe32958"
         recording_path = (

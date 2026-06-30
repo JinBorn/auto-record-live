@@ -3316,6 +3316,40 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertIn("-tag:v", command)
         self.assertEqual(command[command.index("-tag:v") + 1], "hvc1")
 
+    def test_hardware_fixed_bitrate_export_uses_nvenc_cbr_padding(self) -> None:
+        self._seed_export_inputs()
+        settings = self.settings.model_copy(deep=True)
+        settings.export.burn_subtitles = True
+        settings.export.ffmpeg_video_codec = "h264"
+        settings.export.use_hardware_encoding = True
+        settings.export.ffmpeg_bitrate = "8000k"
+        settings.export.ffmpeg_max_bitrate = "10000k"
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        self.assertIn("-c:v", command)
+        self.assertEqual(command[command.index("-c:v") + 1], "h264_nvenc")
+        self.assertIn("-rc", command)
+        self.assertEqual(command[command.index("-rc") + 1], "cbr")
+        self.assertIn("-cbr_padding", command)
+        self.assertEqual(command[command.index("-cbr_padding") + 1], "1")
+        self.assertIn("-b:v", command)
+        self.assertEqual(command[command.index("-b:v") + 1], "8000k")
+        self.assertIn("-maxrate", command)
+        self.assertEqual(command[command.index("-maxrate") + 1], "10000k")
+
     def test_export_can_burn_subtitles_when_enabled(self) -> None:
         self._seed_export_inputs()
         settings = self.settings.model_copy(deep=True)
@@ -3471,6 +3505,51 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertIn("setpts=N/FRAME_RATE/TB", video_filter)
         self.assertIn("aselect='between(t,0.000,30.000)+between(t,90.000,120.000)'", audio_filter)
         self.assertIn("asetpts=N/SR/TB", audio_filter)
+
+    def test_highlight_plan_export_appends_loudnorm_audio_filter(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=120.0)
+        settings = self.settings.model_copy(deep=True)
+        settings.export.use_highlight_plans = True
+        settings.export.audio_loudnorm_enabled = True
+        append_model(
+            self.temp_root / "highlight-plans.jsonl",
+            HighlightPlanAsset(
+                session_id="session-e",
+                match_index=1,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=120.0,
+                windows=[
+                    HighlightClipWindow(
+                        started_at_seconds=0.0,
+                        ended_at_seconds=30.0,
+                        reason="condensed_match_context",
+                    ),
+                    HighlightClipWindow(
+                        started_at_seconds=90.0,
+                        ended_at_seconds=120.0,
+                        reason="condensed_key_event",
+                    ),
+                ],
+                created_at=datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        audio_filter = command[command.index("-af") + 1]
+        self.assertIn("asetpts=N/SR/TB,loudnorm=I=-16:TP=-1.5:LRA=11", audio_filter)
 
     def test_highlight_plan_export_can_disable_subtitle_burn_in(self) -> None:
         self._seed_export_inputs(boundary_ended_at_seconds=120.0)
@@ -3903,8 +3982,10 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertIn("[1:v]trim=start=8.000:end=10.000,setpts=PTS-STARTPTS[v1]", filter_complex)
         self.assertIn("[2:v]trim=start=0.000:end=2.000,setpts=PTS-STARTPTS[v2]", filter_complex)
         self.assertIn("[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[v][basea]", filter_complex)
+        self.assertIn("[basea]asplit=2[basemix][basechain0]", filter_complex)
         self.assertIn("[3:a]atrim=start=0.000:duration=9.000", filter_complex)
-        self.assertIn("[basea][bgm0]amix=inputs=2:duration=first:dropout_transition=0[a]", filter_complex)
+        self.assertIn("[bgmraw0][basechain0]sidechaincompress=", filter_complex)
+        self.assertIn("[basemix][bgm0]amix=inputs=2:duration=first:dropout_transition=0[a]", filter_complex)
         self.assertNotIn("select=", filter_complex)
 
     def test_edit_plan_audio_mix_adds_asset_inputs_and_amix(self) -> None:
@@ -3956,15 +4037,49 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertIn(str(bgm_path), command)
         self.assertIn(str(sfx_path), command)
         filter_complex = command[command.index("-filter_complex") + 1]
+        self.assertIn("trim=start=90.000:end=105.000,setpts=PTS-STARTPTS[v0]", filter_complex)
         self.assertIn("concat=n=3:v=1:a=1[v][basea]", filter_complex)
         self.assertIn("[1:a]atrim=start=0.000:duration=75.000", filter_complex)
         self.assertIn(
             "volume=0.063096,afade=t=in:st=0.000:d=2.000,"
-            "afade=t=out:st=73.000:d=2.000[bgm0]",
+            "afade=t=out:st=73.000:d=2.000[bgmraw0]",
+            filter_complex,
+        )
+        bgm_filter = filter_complex.split("[bgmraw0]", maxsplit=1)[0].rsplit(";", maxsplit=1)[-1]
+        self.assertNotIn("adelay=", bgm_filter)
+        self.assertIn("[basea]asplit=2[basemix][basechain0]", filter_complex)
+        self.assertIn(
+            "[bgmraw0][basechain0]sidechaincompress="
+            "threshold=0.030:ratio=6.0:attack=20:release=350:makeup=1[bgm0]",
             filter_complex,
         )
         self.assertIn("[2:a]asetpts=PTS-STARTPTS,volume=0.251189,adelay=15000|15000[sfx0]", filter_complex)
-        self.assertIn("[basea][bgm0][sfx0]amix=inputs=3:duration=first:dropout_transition=0[a]", filter_complex)
+        self.assertIn("[basemix][bgm0][sfx0]amix=inputs=3:duration=first:dropout_transition=0[a]", filter_complex)
+
+    def test_edit_plan_export_appends_loudnorm_and_maps_audio_output(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=120.0)
+        settings = self.settings.model_copy(deep=True)
+        settings.export.use_edit_plans = True
+        settings.export.audio_loudnorm_enabled = True
+        self._append_edit_plan(duration=120.0)
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        filter_complex = command[command.index("-filter_complex") + 1]
+        self.assertIn("[a]loudnorm=I=-16:TP=-1.5:LRA=11[aout]", filter_complex)
+        self.assertIn("[aout]", command)
 
     def test_edit_plan_bgm_switch_fades_between_beds(self) -> None:
         self._seed_export_inputs(boundary_ended_at_seconds=120.0)
@@ -4015,17 +4130,20 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertIn(
             "[1:a]atrim=start=0.000:duration=40.000,asetpts=PTS-STARTPTS,"
             "volume=0.063096,afade=t=in:st=0.000:d=2.000,"
-            "afade=t=out:st=38.000:d=2.000[bgm0]",
+            "afade=t=out:st=38.000:d=2.000[bgmraw0]",
             filter_complex,
         )
         self.assertIn(
             "[2:a]atrim=start=0.000:duration=35.000,asetpts=PTS-STARTPTS,"
             "volume=0.063096,afade=t=in:st=0.000:d=2.000,"
-            "afade=t=out:st=33.000:d=2.000,adelay=40000|40000[bgm1]",
+            "afade=t=out:st=33.000:d=2.000,adelay=40000|40000[bgmraw1]",
             filter_complex,
         )
+        self.assertIn("[basea]asplit=3[basemix][basechain0][basechain1]", filter_complex)
+        self.assertIn("[bgmraw0][basechain0]sidechaincompress=", filter_complex)
+        self.assertIn("[bgmraw1][basechain1]sidechaincompress=", filter_complex)
         self.assertIn(
-            "[basea][bgm0][bgm1]amix=inputs=3:duration=first:dropout_transition=0[a]",
+            "[basemix][bgm0][bgm1]amix=inputs=3:duration=first:dropout_transition=0[a]",
             filter_complex,
         )
 

@@ -307,10 +307,16 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertFalse(settings.export.use_edit_plans)
         self.assertFalse(settings.export.use_highlight_plans)
         self.assertFalse(settings.export.use_hardware_encoding)
+        self.assertFalse(settings.export.audio_loudnorm_enabled)
+        self.assertEqual(
+            settings.export.audio_loudnorm_filter,
+            "loudnorm=I=-16:TP=-1.5:LRA=11",
+        )
         self.assertEqual(settings.highlights.mode, "highlight")
         self.assertFalse(settings.editing.enabled)
         self.assertFalse(settings.editing.zoom_enabled)
         self.assertFalse(settings.editing.audio_mixing_enabled)
+        self.assertEqual(settings.editing.bgm_gain_db, -28.0)
 
     def test_postprocess_publish_preset_env_enables_publish_pipeline(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
@@ -328,6 +334,10 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertTrue(settings.export.use_ass_subtitles)
         self.assertTrue(settings.export.use_edit_plans)
         self.assertTrue(settings.export.use_highlight_plans)
+        self.assertEqual(settings.export.ffmpeg_video_codec, "h264")
+        self.assertEqual(settings.export.ffmpeg_bitrate, "8000k")
+        self.assertEqual(settings.export.ffmpeg_max_bitrate, "10000k")
+        self.assertTrue(settings.export.audio_loudnorm_enabled)
 
     def test_postprocess_publish_preset_bool_env_enables_publish_pipeline(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
@@ -349,6 +359,60 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(published.highlights.mode, "condensed")
         self.assertTrue(published.editing.enabled)
         self.assertTrue(published.export.use_edit_plans)
+        self.assertEqual(published.export.ffmpeg_video_codec, "h264")
+        self.assertEqual(published.export.ffmpeg_bitrate, "8000k")
+        self.assertEqual(published.export.ffmpeg_max_bitrate, "10000k")
+        self.assertTrue(published.export.audio_loudnorm_enabled)
+
+    def test_apply_publish_preset_raises_low_existing_bitrate_settings(self) -> None:
+        settings = Settings(
+            export={
+                "ffmpeg_bitrate": "4000k",
+                "ffmpeg_max_bitrate": "5000k",
+            },
+        )
+
+        published = apply_publish_preset(settings)
+
+        self.assertEqual(published.export.ffmpeg_bitrate, "8000k")
+        self.assertEqual(published.export.ffmpeg_max_bitrate, "10000k")
+
+    def test_apply_publish_preset_preserves_higher_existing_bitrate_settings(self) -> None:
+        settings = Settings(
+            export={
+                "ffmpeg_bitrate": "12M",
+                "ffmpeg_max_bitrate": "15000k",
+            },
+        )
+
+        published = apply_publish_preset(settings)
+
+        self.assertEqual(published.export.ffmpeg_bitrate, "12M")
+        self.assertEqual(published.export.ffmpeg_max_bitrate, "15000k")
+
+    def test_export_audio_loudnorm_envs_load(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_EXPORT_AUDIO_LOUDNORM_ENABLED"] = "1"
+            os.environ["ARL_EXPORT_AUDIO_LOUDNORM_FILTER"] = (
+                "loudnorm=I=-14:TP=-1:LRA=9"
+            )
+            settings = load_settings()
+
+        self.assertTrue(settings.export.audio_loudnorm_enabled)
+        self.assertEqual(
+            settings.export.audio_loudnorm_filter,
+            "loudnorm=I=-14:TP=-1:LRA=9",
+        )
+
+    def test_export_audio_loudnorm_empty_filter_uses_default(self) -> None:
+        settings = Settings(
+            export={"audio_loudnorm_filter": "   "},
+        )
+
+        self.assertEqual(
+            settings.export.audio_loudnorm_filter,
+            "loudnorm=I=-16:TP=-1.5:LRA=11",
+        )
 
     def test_export_burn_subtitles_env_loads(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):

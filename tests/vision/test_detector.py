@@ -96,9 +96,44 @@ def test_find_real_loading_skips_after_segment_start():
     assert result is None, f"Expected None, got {result}"
 
 
+def test_find_trailing_non_game_start_uses_first_tail_non_game_scene():
+    scenes = [
+        SceneReading(4000.0, "in_game", 0.9),
+        SceneReading(4045.0, "in_game", 0.9),
+        SceneReading(4050.0, "other", 0.7),
+        SceneReading(4055.0, "loading", 0.9),
+        SceneReading(4060.0, "other", 0.7),
+    ]
+
+    result = VisionMatchDetector._find_trailing_non_game_start(
+        scenes,
+        current_end=4060.0,
+    )
+
+    assert result == 4050.0
+
+
+def test_find_trailing_non_game_start_ignores_middle_non_game_gaps():
+    scenes = [
+        SceneReading(100.0, "in_game", 0.9),
+        SceneReading(105.0, "other", 0.7),
+        SceneReading(110.0, "in_game", 0.9),
+        SceneReading(115.0, "in_game", 0.9),
+    ]
+
+    result = VisionMatchDetector._find_trailing_non_game_start(
+        scenes,
+        current_end=115.0,
+    )
+
+    assert result is None
+
+
 if __name__ == "__main__":
     test_vision_match_detector_integration()
     test_find_real_loading_detects_valid_start()
     test_find_real_loading_rejects_mid_game()
     test_find_real_loading_skips_after_segment_start()
+    test_find_trailing_non_game_start_uses_first_tail_non_game_scene()
+    test_find_trailing_non_game_start_ignores_middle_non_game_gaps()
     print("Vision detector integration test passed!")

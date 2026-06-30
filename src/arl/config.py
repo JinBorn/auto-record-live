@@ -12,6 +12,8 @@ DEFAULT_ASR_PREPROCESS_AUDIO_FILTER = (
     "loudnorm=I=-16:TP=-1.5:LRA=11"
 )
 
+DEFAULT_EXPORT_AUDIO_LOUDNORM_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11"
+
 
 def _load_dotenv(dotenv_path: Path) -> None:
     if not dotenv_path.exists():
@@ -280,7 +282,7 @@ class EditingSettings(BaseModel):
     skip_bgm_when_source_has_music: bool = True
     bgm_library_path: Path | None = None
     bgm_path: Path | None = None
-    bgm_gain_db: float = -24.0
+    bgm_gain_db: float = -28.0
     sfx_path: Path | None = None
     sfx_gain_db: float = -12.0
 
@@ -326,6 +328,8 @@ class ExportSettings(BaseModel):
     use_edit_plans: bool = False
     use_highlight_plans: bool = False
     use_hardware_encoding: bool = False
+    audio_loudnorm_enabled: bool = False
+    audio_loudnorm_filter: str = DEFAULT_EXPORT_AUDIO_LOUDNORM_FILTER
 
     @model_validator(mode="after")
     def _normalize_ffmpeg_video_codec(self) -> "ExportSettings":
@@ -354,6 +358,10 @@ class ExportSettings(BaseModel):
         self.ass_outline = max(0, self.ass_outline)
         self.ass_max_chars_per_line = max(1, self.ass_max_chars_per_line)
         self.ass_max_lines = max(1, self.ass_max_lines)
+        self.audio_loudnorm_filter = (
+            self.audio_loudnorm_filter.strip()
+            or DEFAULT_EXPORT_AUDIO_LOUDNORM_FILTER
+        )
         return self
 
 
@@ -389,6 +397,12 @@ class Settings(BaseModel):
 def apply_publish_preset(settings: Settings) -> Settings:
     """Enable the full publish-edit pipeline on top of existing settings."""
 
+    ffmpeg_bitrate = _publish_min_bitrate(settings.export.ffmpeg_bitrate, "8000k")
+    ffmpeg_max_bitrate = _publish_min_bitrate(
+        settings.export.ffmpeg_max_bitrate,
+        "10000k",
+    )
+
     return settings.model_copy(
         deep=True,
         update={
@@ -412,10 +426,52 @@ def apply_publish_preset(settings: Settings) -> Settings:
                     "use_ass_subtitles": True,
                     "use_edit_plans": True,
                     "use_highlight_plans": True,
+                    "ffmpeg_video_codec": (
+                        "h264"
+                        if settings.export.ffmpeg_video_codec == "auto"
+                        else settings.export.ffmpeg_video_codec
+                    ),
+                    "ffmpeg_bitrate": ffmpeg_bitrate,
+                    "ffmpeg_max_bitrate": ffmpeg_max_bitrate,
+                    "audio_loudnorm_enabled": True,
                 }
             ),
         },
     )
+
+
+def _publish_min_bitrate(current: str | None, minimum: str) -> str:
+    if current is None:
+        return minimum
+    current_kbps = _bitrate_to_kbps(current)
+    minimum_kbps = _bitrate_to_kbps(minimum)
+    if current_kbps is None or minimum_kbps is None:
+        return current
+    if current_kbps < minimum_kbps:
+        return minimum
+    return current
+
+
+def _bitrate_to_kbps(value: str) -> float | None:
+    raw = value.strip().lower()
+    if not raw:
+        return None
+    multiplier = 1.0
+    number = raw
+    if raw.endswith("kbps"):
+        number = raw[:-4]
+    elif raw.endswith("k"):
+        number = raw[:-1]
+    elif raw.endswith("mbps"):
+        number = raw[:-4]
+        multiplier = 1000.0
+    elif raw.endswith("m"):
+        number = raw[:-1]
+        multiplier = 1000.0
+    try:
+        return float(number.strip()) * multiplier
+    except ValueError:
+        return None
 
 
 def _env_int(key: str, default: int) -> int:
@@ -937,7 +993,7 @@ def load_settings() -> Settings:
             bgm_path=_env_optional_path("ARL_EDIT_BGM_PATH"),
             bgm_gain_db=min(
                 0.0,
-                max(-60.0, _env_float("ARL_EDIT_BGM_GAIN_DB", -24.0)),
+                max(-60.0, _env_float("ARL_EDIT_BGM_GAIN_DB", -28.0)),
             ),
             sfx_path=_env_optional_path("ARL_EDIT_SFX_PATH"),
             sfx_gain_db=min(
@@ -1050,6 +1106,15 @@ def load_settings() -> Settings:
             use_edit_plans=_env_bool("ARL_EXPORT_USE_EDIT_PLANS", False),
             use_highlight_plans=_env_bool("ARL_EXPORT_USE_HIGHLIGHT_PLANS", False),
             use_hardware_encoding=_env_bool("ARL_EXPORT_USE_HARDWARE_ENCODING", False),
+            audio_loudnorm_enabled=_env_bool(
+                "ARL_EXPORT_AUDIO_LOUDNORM_ENABLED",
+                False,
+            ),
+            audio_loudnorm_filter=os.getenv(
+                "ARL_EXPORT_AUDIO_LOUDNORM_FILTER",
+                DEFAULT_EXPORT_AUDIO_LOUDNORM_FILTER,
+            )
+            or DEFAULT_EXPORT_AUDIO_LOUDNORM_FILTER,
         ),
         maintenance=MaintenanceSettings(
             max_jsonl_bytes=max(

@@ -184,6 +184,24 @@ def test_scene_stitching_skips_abrupt_loading_as_death_screen():
     assert segments[0].end_seconds == 2040.0
 
 
+def test_scene_stitching_uses_abrupt_loading_as_end_when_game_does_not_resume():
+    readings = [
+        SceneReading(0.0, "loading", 0.9),
+        SceneReading(20.0, "in_game", 0.9),
+        SceneReading(2000.0, "in_game", 0.9),
+        SceneReading(2020.0, "loading", 0.9),
+        SceneReading(2040.0, "other", 0.7),
+        SceneReading(2060.0, "other", 0.7),
+    ]
+
+    segments = stitch_scene_readings(readings)
+
+    assert len(segments) == 1
+    assert segments[0].is_complete is True
+    assert segments[0].start_seconds == 0.0
+    assert segments[0].end_seconds == 2020.0
+
+
 def test_timer_validation_upgrades_missed_loading_start():
     """When loading is missed but timer shows early game → upgrade to complete."""
     scene_readings = [

@@ -703,19 +703,26 @@ class CopywriterService:
     def _headline_score(self, text: str) -> int:
         score = 0
         if self._contains_all(text, ["电刀", "AP", "机器人"]):
-            score += 24
+            score += 42
         elif self._contains_any(text, ["电刀", "机器人"]):
-            score += 10
+            score += 16
         if self._contains_any(text, ["上单", "韩服", "千分", "套路"]):
+            score += 8
+        if self._contains_any(text, ["清线"]) and self._contains_any(
+            text,
+            ["伤害高", "伤害这么高", "什么伤害"],
+        ):
+            score += 10
+        elif self._contains_any(text, ["清线"]):
             score += 5
-        if self._contains_any(text, ["清线", "伤害高", "伤害这么高", "什么伤害"]):
-            score += 6
+        elif self._contains_any(text, ["伤害高", "伤害这么高", "什么伤害"]):
+            score += 2
         if self._contains_all(text, ["装", "没钱"]):
-            score += 14
+            score += 18
         if self._contains_any(text, ["人设", "有钱", "小康"]):
-            score += 5
+            score += 6
         if self._contains_any(text, ["炒股", "股票"]):
-            score += 7
+            score += 14
         if self._contains_any(text, ["粉丝", "认出来", "认出", "认识"]):
             score += 6
         if self._contains_any(text, ["教学", "续费", "为师", "师的名号", "坑了"]):
@@ -754,17 +761,100 @@ class CopywriterService:
 
         first = self._truncate(excerpt[0], 28)
         headline = self._summary_headline(excerpt)
-        candidates = [headline or first]
+        primary = self._expanded_title_if_needed(
+            headline=headline,
+            first=first,
+            excerpt=excerpt,
+        )
+        candidates = [primary]
         if not first.endswith(("?", "？", "!", "！")):
             candidates.append(f"{first}｜对局高光")
-        joined = self._truncate(" ".join(excerpt[:2]), 24)
+        joined = self._truncate(" ".join(excerpt[:2]), 36)
         candidates.append(f"这一波聊到重点：{joined}")
         candidates.append(f"第{match_index:02d}局高光：{self._truncate(excerpt[0], 18)}")
         return self._dedupe(candidates)
 
+    def _expanded_title_if_needed(
+        self,
+        *,
+        headline: str,
+        first: str,
+        excerpt: list[str],
+    ) -> str:
+        primary = headline or first
+        if not self._title_needs_context(primary):
+            return primary
+
+        parts = [primary] if primary else []
+        for line in excerpt:
+            phrase = self._title_context_phrase(line)
+            if not phrase:
+                continue
+            if any(self._title_phrases_overlap(phrase, part) for part in parts):
+                continue
+            parts.append(phrase)
+            if len(parts) >= 3 and self._compact_title_length(" ".join(parts)) >= 22:
+                break
+
+        expanded = " ".join(parts).strip()
+        return self._truncate(expanded, 42) if expanded else primary
+
+    def _title_needs_context(self, title: str) -> bool:
+        if not title.strip():
+            return True
+        if self._compact_title_length(title) >= 10:
+            return False
+        return not self._is_strong_compact_title(title)
+
+    def _is_strong_compact_title(self, title: str) -> bool:
+        return self._contains_any(
+            title,
+            [
+                "电刀",
+                "AP",
+                "机器人",
+                "上单",
+                "韩服",
+                "千分",
+                "清线",
+                "伤害",
+                "装没钱",
+                "人设",
+                "炒股",
+                "股票",
+                "教学",
+                "击杀",
+                "单杀",
+                "小龙",
+                "团战",
+            ],
+        )
+
+    def _title_context_phrase(self, line: str) -> str:
+        cleaned = self._clean_line(line)
+        if not cleaned:
+            return ""
+        return self._truncate(cleaned, 18)
+
+    @staticmethod
+    def _title_phrases_overlap(first: str, second: str) -> bool:
+        if not first or not second:
+            return False
+        return first in second or second in first
+
+    @staticmethod
+    def _compact_title_length(title: str) -> int:
+        return len(re.sub(r"[\s｜:：,，。！？!?、；;]+", "", title))
+
     def _summary_headline(self, excerpt: list[str]) -> str:
         text = " ".join(excerpt)
         phrases: list[str] = []
+        has_persona = self._contains_all(text, ["装", "没钱"])
+        has_finance = self._contains_any(text, ["炒股", "股票"])
+        has_generic_damage = self._contains_any(
+            text,
+            ["伤害高", "伤害这么高", "什么伤害"],
+        )
         if self._contains_all(text, ["电刀", "AP", "机器人"]):
             phrases.append("电刀AP机器人")
         elif "机器人" in text:
@@ -778,12 +868,18 @@ class CopywriterService:
                 phrases.append("上单套路")
             if self._contains_any(text, ["韩服", "千分"]):
                 phrases.append("韩服千分套路")
-        if self._contains_any(text, ["清线", "伤害高", "伤害这么高", "什么伤害"]):
+        if "清线" in text and has_generic_damage:
             phrases.append("清线快伤害高")
-        if self._contains_all(text, ["装", "没钱"]):
+        if has_persona:
             phrases.append("装没钱人设")
-        if self._contains_any(text, ["炒股", "股票"]):
+        if has_finance:
             phrases.append("炒股经济学")
+        if (
+            has_generic_damage
+            and "清线" not in text
+            and not (has_persona or has_finance)
+        ):
+            phrases.append("伤害这么高")
         if self._contains_any(text, ["粉丝", "认出来", "认出", "认识"]):
             phrases.append("被粉丝认出来")
         if self._contains_any(text, ["教学", "续费", "为师", "师的名号"]):

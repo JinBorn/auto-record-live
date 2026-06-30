@@ -10,7 +10,12 @@ from pathlib import Path
 
 from arl.config import EditingSettings, Settings, StorageSettings
 from arl.editing.models import EditPlannerStateFile
-from arl.editing.audio import SourceMusicDetection
+from arl.editing.audio import (
+    BgmLibraryTrack,
+    BgmSelectionContext,
+    SourceMusicDetection,
+    select_bgm_tracks,
+)
 from arl.editing.service import EditingPlannerService
 from arl.shared.contracts import (
     AudioBed,
@@ -171,11 +176,13 @@ class EditingPlannerServiceTest(unittest.TestCase):
         plans = load_models(self.edit_plans_path, EditPlanAsset)
         self.assertEqual(len(plans), 1)
         plan = plans[0]
-        self.assertTrue(all(segment.role == "main" for segment in plan.timeline))
+        self.assertTrue(all(segment.role != "teaser" for segment in plan.timeline))
         key_segments = [
             segment for segment in plan.timeline if segment.reason == "condensed_key_event"
         ]
         self.assertEqual(len(key_segments), 1)
+        self.assertEqual(key_segments[0].source_start_seconds, 120.0)
+        self.assertEqual(key_segments[0].source_end_seconds, 150.0)
         self.assertIsNotNone(key_segments[0].transform)
         assert key_segments[0].transform is not None
         self.assertEqual(key_segments[0].transform.kind, "punch_in")
@@ -184,7 +191,7 @@ class EditingPlannerServiceTest(unittest.TestCase):
             all(
                 segment.transform is None
                 for segment in plan.timeline
-                if segment.reason != "condensed_key_event"
+                if segment is not key_segments[0]
             )
         )
         self.assertEqual(plan.sound_effects, [])
@@ -323,12 +330,13 @@ class EditingPlannerServiceTest(unittest.TestCase):
         self.assertEqual(len(plan.audio_beds), 2)
         self.assertTrue(plan.audio_beds[0].source_path.endswith("bgm-playful.wav"))
         self.assertTrue(plan.audio_beds[1].source_path.endswith("bgm-climax.wav"))
-        self.assertEqual(plan.audio_beds[0].timeline_start_seconds, 0.0)
+        self.assertEqual(plan.audio_beds[0].timeline_start_seconds, 45.0)
         self.assertIsNotNone(plan.audio_beds[0].timeline_end_seconds)
         self.assertEqual(
             plan.audio_beds[1].timeline_start_seconds,
             plan.audio_beds[0].timeline_end_seconds,
         )
+        self.assertGreater(plan.audio_beds[1].timeline_start_seconds, 45.0)
         self.assertEqual(plan.audio_beds[1].timeline_end_seconds, None)
         self.assertEqual(plan.audio_beds[0].reason, "background_music_playful")
         self.assertEqual(plan.audio_beds[1].reason, "background_music_climax")
@@ -384,6 +392,33 @@ class EditingPlannerServiceTest(unittest.TestCase):
         self.assertEqual([bed.gain_db for bed in plan.audio_beds], [-28.0, -28.0])
         self.assertEqual(plan.audio_beds[0].reason, "background_music_library")
         self.assertEqual(plan.audio_beds[1].reason, "background_music_library_climax")
+
+    def test_bgm_library_tie_break_uses_selection_key_for_variety(self) -> None:
+        tracks = [
+            BgmLibraryTrack(
+                path=self.temp_root / f"hype-{index}.wav",
+                tags=("hype",),
+                phase="climax",
+                energy=5,
+            )
+            for index in range(4)
+        ]
+
+        selected_names = {
+            select_bgm_tracks(
+                tracks,
+                BgmSelectionContext(
+                    tags=("hype",),
+                    highlight_reasons=("condensed_key_event",),
+                    rendered_duration_seconds=60.0,
+                    selection_key=f"session-edit:{index}",
+                ),
+            )[0].path.name
+            for index in range(12)
+        }
+
+        self.assertGreater(len(selected_names), 1)
+        self.assertTrue(selected_names <= {track.path.name for track in tracks})
 
     def test_audio_mixing_selects_bgm_from_chinese_library_aliases(self) -> None:
         session_id = "session-edit-bgm-library-cn"
@@ -559,7 +594,109 @@ class EditingPlannerServiceTest(unittest.TestCase):
             [str(early_path), str(climax_path)],
         )
 
-    def test_audio_mixing_marks_main_key_events_without_teaser(self) -> None:
+    def test_audio_timing_keeps_bgm_after_teaser(self) -> None:
+        session_id = "session-edit-bgm-teaser-replan"
+        self.settings.editing.audio_mixing_enabled = True
+        library_path, early_path, climax_path = self._write_bgm_library()
+        self.settings.editing.bgm_library_path = library_path
+        self._append_subtitle(
+            session_id,
+            "1\n00:00:02,000 --> 00:00:04,000\n"
+            "robot trick fight\n",
+        )
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=100.0,
+                    ended_at_seconds=145.0,
+                    reason="highlight_keyword",
+                )
+            ],
+            duration=600.0,
+        )
+        append_model(
+            self.edit_plans_path,
+            EditPlanAsset(
+                session_id=session_id,
+                match_index=1,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=600.0,
+                timeline=[
+                    TimelineSegment(
+                        role="teaser",
+                        source_start_seconds=100.0,
+                        source_end_seconds=145.0,
+                        reason="highlight_keyword",
+                    ),
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=0.0,
+                        source_end_seconds=30.0,
+                        reason="condensed_match_context",
+                    ),
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=100.0,
+                        source_end_seconds=145.0,
+                        reason="highlight_keyword",
+                    ),
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=570.0,
+                        source_end_seconds=600.0,
+                        reason="condensed_match_context",
+                    ),
+                ],
+                audio_beds=[
+                    AudioBed(
+                        source_path=str(early_path),
+                        timeline_start_seconds=45.0,
+                        timeline_end_seconds=97.5,
+                        gain_db=self.settings.editing.bgm_gain_db,
+                        loop=True,
+                        reason="background_music_library",
+                    ),
+                    AudioBed(
+                        source_path=str(climax_path),
+                        timeline_start_seconds=97.5,
+                        timeline_end_seconds=None,
+                        gain_db=self.settings.editing.bgm_gain_db,
+                        loop=True,
+                        reason="background_music_library_climax",
+                    ),
+                ],
+                created_at=datetime(2026, 6, 25, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.state_path.write_text(
+            EditPlannerStateFile(
+                processed_match_keys=[f"{session_id}:1"],
+            ).model_dump_json(indent=2)
+            + "\n",
+            encoding="utf-8",
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plans = load_models(self.edit_plans_path, EditPlanAsset)
+        self.assertEqual(len(plans), 2)
+        latest = plans[-1]
+        self.assertTrue(latest.audio_beds)
+        self.assertTrue(
+            all(Path(bed.source_path) in {early_path, climax_path} for bed in latest.audio_beds)
+        )
+        self.assertEqual(latest.audio_beds[0].timeline_start_seconds, 45.0)
+        if len(latest.audio_beds) > 1:
+            self.assertEqual(
+                latest.audio_beds[0].timeline_end_seconds,
+                latest.audio_beds[1].timeline_start_seconds,
+            )
+            self.assertGreater(latest.audio_beds[1].timeline_start_seconds, 45.0)
+
+    def test_audio_mixing_marks_main_key_event_without_fallback_teaser(self) -> None:
         session_id = "session-edit-main-sfx"
         self.settings.editing.audio_mixing_enabled = True
         self._append_boundary(session_id, duration=600.0)
@@ -580,11 +717,22 @@ class EditingPlannerServiceTest(unittest.TestCase):
         plans = load_models(self.edit_plans_path, EditPlanAsset)
         self.assertEqual(len(plans), 1)
         plan = plans[0]
-        self.assertTrue(all(segment.role == "main" for segment in plan.timeline))
+        self.assertTrue(all(segment.role != "teaser" for segment in plan.timeline))
+        key_segments = [
+            segment for segment in plan.timeline if segment.reason == "condensed_key_event"
+        ]
+        self.assertEqual(len(key_segments), 1)
         self.assertEqual(len(plan.sound_effects), 1)
-        self.assertTrue(plan.sound_effects[0].source_path.endswith("wow.wav"))
-        self.assertEqual(plan.sound_effects[0].at_seconds, 30.0)
-        self.assertEqual(plan.sound_effects[0].reason, "condensed_key_event")
+        self.assertTrue(
+            all(hit.source_path.endswith("wow.wav") for hit in plan.sound_effects)
+        )
+        self.assertEqual(
+            [hit.at_seconds for hit in plan.sound_effects],
+            [30.0],
+        )
+        self.assertTrue(
+            all(hit.reason == "condensed_key_event" for hit in plan.sound_effects)
+        )
 
     def test_audio_mixing_skips_bgm_when_source_already_has_music(self) -> None:
         session_id = "session-edit-source-music"
@@ -955,13 +1103,22 @@ class EditingPlannerServiceTest(unittest.TestCase):
 
         plans = load_models(self.edit_plans_path, EditPlanAsset)
         self.assertEqual(len(plans), 2)
+        latest = plans[-1]
+        self.assertTrue(all(segment.role != "teaser" for segment in latest.timeline))
         latest_key_segments = [
-            segment for segment in plans[-1].timeline if segment.reason == "condensed_key_event"
+            segment for segment in latest.timeline if segment.reason == "condensed_key_event"
         ]
         self.assertEqual(len(latest_key_segments), 1)
         self.assertIsNotNone(latest_key_segments[0].transform)
         assert latest_key_segments[0].transform is not None
         self.assertEqual(latest_key_segments[0].transform.kind, "punch_in")
+        self.assertTrue(
+            all(
+                segment.transform is None
+                for segment in latest.timeline
+                if segment is not latest_key_segments[0]
+            )
+        )
 
     def test_filters_by_session_and_match_index(self) -> None:
         for session_id, match_index in [

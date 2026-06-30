@@ -127,7 +127,7 @@ class AudioBed(BaseModel):
     source_path: str
     timeline_start_seconds: float = 0.0
     timeline_end_seconds: float | None = None
-    gain_db: float = -24.0
+    gain_db: float = -28.0
     loop: bool = True
     reason: str = "background_music"
 

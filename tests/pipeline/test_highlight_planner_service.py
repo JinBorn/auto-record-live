@@ -720,6 +720,75 @@ class HighlightPlannerServiceTest(unittest.TestCase):
         self.assertEqual(extended[0].started_at_seconds, 100.0)
         self.assertEqual(extended[0].ended_at_seconds, 120.0)
 
+    def test_protect_speech_boundaries_extends_cut_subtitle_cues(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        windows = [
+            HighlightClipWindow(
+                started_at_seconds=10.5,
+                ended_at_seconds=30.0,
+                reason="condensed_key_event",
+            )
+        ]
+        speech_cues = [
+            _SrtCue(10.0, 12.0, "speech already started"),
+            _SrtCue(29.5, 32.0, "unfinished sentence"),
+            _SrtCue(32.4, 34.0, "same thought continues"),
+            _SrtCue(36.0, 38.0, "later unrelated speech"),
+        ]
+
+        protected = service._protect_speech_boundaries(
+            windows,
+            speech_cues=speech_cues,
+            match_duration_seconds=40.0,
+        )
+
+        self.assertEqual(len(protected), 1)
+        self.assertEqual(protected[0].started_at_seconds, 10.0)
+        self.assertEqual(protected[0].ended_at_seconds, 34.0)
+
+    def test_condensed_helpers_clip_cues_and_windows_to_boundary_duration(self) -> None:
+        service = HighlightPlannerService(self.settings)
+
+        cues = service._clip_cues_to_duration(
+            [
+                _SrtCue(10.0, 20.0, "opening"),
+                _SrtCue(170.0, 190.0, "tail narration"),
+                _SrtCue(190.0, 200.0, "after boundary"),
+            ],
+            180.0,
+        )
+        self.assertEqual(len(cues), 2)
+        self.assertEqual(cues[1].ended_at_seconds, 180.0)
+
+        windows = service._clamp_highlight_windows(
+            [
+                HighlightClipWindow(
+                    started_at_seconds=0.0,
+                    ended_at_seconds=30.0,
+                    reason="condensed_match_context",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=150.0,
+                    ended_at_seconds=210.0,
+                    reason="condensed_key_event",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=160.0,
+                    ended_at_seconds=175.0,
+                    reason="condensed_continuity",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=181.0,
+                    ended_at_seconds=190.0,
+                    reason="condensed_key_event",
+                ),
+            ],
+            180.0,
+        )
+        self.assertEqual(len(windows), 2)
+        self.assertEqual(windows[-1].reason, "condensed_key_event")
+        self.assertEqual(windows[-1].ended_at_seconds, 180.0)
+
     def test_planner_replans_when_existing_plan_boundary_is_stale(self) -> None:
         session_id = "session-highlight-stale-plan"
         subtitle_path = self._write_srt(
