@@ -304,3 +304,36 @@ Added segmented recording manifests, chunk-aware resolver/export/subtitles/analy
 ### Next Steps
 
 - None - task complete
+
+
+## Session 57: Finalize publish editing refinements
+
+**Date**: 2026-06-30
+**Task**: Finalize publish editing refinements
+**Branch**: `main`
+
+### Summary
+
+Validated and committed publish editing refinements, README refresh, BGM ducking test alignment, and full pytest coverage.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a0d5ae0` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
