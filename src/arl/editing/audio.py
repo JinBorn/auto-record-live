@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import shutil
 import subprocess
 import wave
@@ -113,7 +114,7 @@ def ensure_default_editing_audio_assets(root: Path) -> dict[str, Path]:
     root.mkdir(parents=True, exist_ok=True)
     playful_bgm = root / "bgm-playful.wav"
     climax_bgm = root / "bgm-climax.wav"
-    wow_sfx = root / "wow.wav"
+    coin_sfx = root / "coin.wav"
 
     if not playful_bgm.exists():
         _write_bgm_loop(
@@ -129,13 +130,13 @@ def ensure_default_editing_audio_assets(root: Path) -> dict[str, Path]:
             note_seconds=0.16,
             amplitude=0.20,
         )
-    if not wow_sfx.exists():
-        _write_wow_sfx(wow_sfx)
+    if not coin_sfx.exists():
+        _write_coin_sfx(coin_sfx)
 
     return {
         "playful_bgm": playful_bgm,
         "climax_bgm": climax_bgm,
-        "wow_sfx": wow_sfx,
+        "coin_sfx": coin_sfx,
     }
 
 
@@ -288,6 +289,11 @@ def _best_bgm_track(
     *,
     preferred_phase: str,
 ) -> BgmLibraryTrack | None:
+    tracks = _preferred_phase_tracks(
+        tracks,
+        context,
+        preferred_phase=preferred_phase,
+    )
     scored = [
         (_bgm_track_score(track, context, preferred_phase=preferred_phase), track)
         for track in tracks
@@ -312,6 +318,50 @@ def _best_bgm_track(
     return candidates[index][1]
 
 
+def _preferred_phase_tracks(
+    tracks: list[BgmLibraryTrack],
+    context: BgmSelectionContext,
+    *,
+    preferred_phase: str,
+) -> list[BgmLibraryTrack]:
+    preferred = [
+        track
+        for track in tracks
+        if _track_matches_preferred_phase(track, preferred_phase=preferred_phase)
+    ]
+    if not preferred:
+        return tracks
+    if any(
+        _bgm_track_score(track, context, preferred_phase=preferred_phase) > 0
+        for track in preferred
+    ):
+        return preferred
+    return tracks
+
+
+def _track_matches_preferred_phase(
+    track: BgmLibraryTrack,
+    *,
+    preferred_phase: str,
+) -> bool:
+    phase = track.phase
+    mood = track.mood
+    energy = track.energy
+    if preferred_phase == "early":
+        if phase in {"early", "laning", "playful"}:
+            return True
+        if phase in {"climax", "hype", "fight"}:
+            return False
+        if mood in {"playful", "chill", "tutorial"} and (energy is None or energy <= 3):
+            return True
+        return phase in {None, "any", "all"} and (energy is None or energy <= 3)
+    if phase in {"climax", "hype", "fight"}:
+        return True
+    if energy is not None and energy >= 4:
+        return True
+    return phase in {None, "any", "all"} and mood in {"hype", "trick"}
+
+
 def _stable_bgm_candidate_index(
     selection_key: str,
     *,
@@ -320,11 +370,17 @@ def _stable_bgm_candidate_index(
 ) -> int:
     if candidate_count <= 1:
         return 0
+    key_without_match = selection_key
+    match_index_offset = 0
+    match = re.match(r"^(?P<session>[^:]+):(?P<match_index>\d+):(?P<context>.*)$", selection_key)
+    if match is not None:
+        key_without_match = f"{match.group('session')}:{match.group('context')}"
+        match_index_offset = int(match.group("match_index"))
     digest = hashlib.blake2b(
-        f"{selection_key}:{preferred_phase}".encode("utf-8"),
+        f"{key_without_match}:{preferred_phase}".encode("utf-8"),
         digest_size=4,
     ).digest()
-    return int.from_bytes(digest, "big") % candidate_count
+    return (int.from_bytes(digest, "big") + match_index_offset) % candidate_count
 
 
 def _bgm_track_score(
@@ -619,18 +675,25 @@ def _write_bgm_loop(
     _write_wav(path, frames)
 
 
-def _write_wow_sfx(path: Path) -> None:
-    total_seconds = 0.72
+def _write_coin_sfx(path: Path) -> None:
+    notes = [1318.51, 1760.00, 2637.02]
+    note_seconds = 0.075
+    tail_seconds = 0.12
+    total_seconds = len(notes) * note_seconds + tail_seconds
     total_samples = int(total_seconds * SAMPLE_RATE)
     frames = bytearray()
     for sample_index in range(total_samples):
         seconds = sample_index / SAMPLE_RATE
-        progress = seconds / total_seconds
-        frequency = 330.0 + 620.0 * math.sin(math.pi * progress)
-        wobble = 1.0 + 0.12 * math.sin(math.tau * 8.0 * seconds)
-        envelope = math.sin(math.pi * progress) ** 0.55
-        value = 0.34 * envelope * math.sin(math.tau * frequency * wobble * seconds)
-        frames.extend(_i16_bytes(value))
+        note_index = min(len(notes) - 1, int(seconds / note_seconds))
+        note_offset = seconds - note_index * note_seconds
+        note_remaining = max(0.0, note_seconds - note_offset)
+        frequency = notes[note_index]
+        decay = math.exp(-9.0 * seconds)
+        note_gate = min(1.0, note_remaining / 0.025)
+        shimmer = 0.55 * math.sin(math.tau * frequency * seconds)
+        shimmer += 0.25 * math.sin(math.tau * frequency * 2.01 * seconds)
+        shimmer += 0.10 * math.sin(math.tau * frequency * 3.98 * seconds)
+        frames.extend(_i16_bytes(0.42 * decay * note_gate * shimmer))
     _write_wav(path, frames)
 
 

@@ -38,6 +38,8 @@ class _WindowDraft:
 
 _SPEECH_BOUNDARY_TOLERANCE_SECONDS = 0.15
 _SPEECH_CHAIN_GAP_SECONDS = 0.6
+_CONDENSED_DURATION_BUDGET_MULTIPLIER = 1.25
+_CONDENSED_DURATION_BUDGET_EXTRA_SECONDS = 60.0
 
 
 _HIGHLIGHT_KEYWORDS = tuple(
@@ -523,7 +525,11 @@ class HighlightPlannerService:
         for window in windows:
             start_seconds = max(0.0, window.started_at_seconds)
             end_seconds = min(duration, window.ended_at_seconds)
-            if end_seconds - start_seconds < min_seconds:
+            is_boundary_context = (
+                window.reason == "condensed_match_context"
+                and (start_seconds <= 0.001 or end_seconds >= duration - 0.001)
+            )
+            if end_seconds - start_seconds < min_seconds and not is_boundary_context:
                 continue
             clamped.append(
                 HighlightClipWindow(
@@ -908,6 +914,7 @@ class HighlightPlannerService:
         reaction_tail_seconds = (
             self.settings.highlights.condensed_kda_death_reaction_tail_seconds
         )
+        death_lead_in_guard_seconds = max(5.0, reaction_tail_seconds)
         trimmed: list[HighlightClipWindow] = []
         trimmed_gap_count = 0
         for window in windows:
@@ -951,6 +958,8 @@ class HighlightPlannerService:
                         end_seconds=search_end,
                         min_gap_seconds=threshold,
                     ):
+                        if observed_at - gap_end <= death_lead_in_guard_seconds:
+                            continue
                         next_ranges = []
                         remove_start = min(gap_end, gap_start + reaction_tail_seconds)
                         if gap_end - remove_start < threshold:
@@ -1082,6 +1091,9 @@ class HighlightPlannerService:
         for window in sorted(windows, key=lambda item: (item.started_at_seconds, item.ended_at_seconds)):
             start_seconds = window.started_at_seconds
             end_seconds = window.ended_at_seconds
+            if self._is_short_start_context_window(window):
+                protected.append(window)
+                continue
 
             for cue in ordered_cues:
                 if cue.ended_at_seconds <= start_seconds:
@@ -1115,6 +1127,16 @@ class HighlightPlannerService:
             )
 
         return protected
+
+    def _is_short_start_context_window(self, window: HighlightClipWindow) -> bool:
+        if self.settings.highlights.condensed_start_edge_seconds is None:
+            return False
+        return (
+            window.reason == "condensed_match_context"
+            and window.started_at_seconds <= 0.001
+            and window.ended_at_seconds
+            <= self._condensed_start_edge_seconds() + _SPEECH_BOUNDARY_TOLERANCE_SECONDS
+        )
 
     @staticmethod
     def _speech_safe_window_end(
@@ -1247,6 +1269,545 @@ class HighlightPlannerService:
             )
 
         return trimmed
+
+    def _trim_low_value_internal_gaps(
+        self,
+        windows: list[HighlightClipWindow],
+        *,
+        speech_cues: list[_SrtCue],
+        kda_event_cues: list[ClassifiedCue],
+        classified_cues: list[ClassifiedCue],
+        match_duration_seconds: float,
+    ) -> list[HighlightClipWindow]:
+        settings = self.settings.highlights
+        if (
+            not windows
+            or not settings.condensed_composite_trim_enabled
+            or settings.condensed_internal_gap_trim_seconds <= 0.0
+            or match_duration_seconds <= 0.0
+        ):
+            return windows
+
+        trim_reasons = {"condensed_key_event", "condensed_tactical"}
+        min_piece_seconds = settings.condensed_min_window_duration_seconds
+        keep_seconds = settings.condensed_internal_gap_keep_seconds
+        min_removed_seconds = max(1.0, min_piece_seconds / 2.0)
+        protected_intervals = self._internal_trim_protected_intervals(
+            kda_event_cues=kda_event_cues,
+            classified_cues=classified_cues,
+            match_duration_seconds=match_duration_seconds,
+        )
+
+        trimmed: list[HighlightClipWindow] = []
+        trimmed_gap_count = 0
+        removed_duration = 0.0
+        for window in sorted(
+            windows,
+            key=lambda item: (item.started_at_seconds, item.ended_at_seconds),
+        ):
+            ranges = [(window.started_at_seconds, window.ended_at_seconds)]
+            if window.reason in trim_reasons:
+                for gap_start, gap_end in self._subtitle_silent_gaps(
+                    speech_cues,
+                    start_seconds=window.started_at_seconds,
+                    end_seconds=window.ended_at_seconds,
+                    min_gap_seconds=settings.condensed_internal_gap_trim_seconds,
+                ):
+                    remove_start = gap_start + keep_seconds
+                    remove_end = gap_end - keep_seconds
+                    if remove_end - remove_start < min_removed_seconds:
+                        continue
+                    removable_ranges = self._subtract_protected_intervals(
+                        [(remove_start, remove_end)],
+                        protected_intervals,
+                        keep_seconds=keep_seconds,
+                        min_piece_seconds=min_removed_seconds,
+                    )
+                    for candidate_start, candidate_end in removable_ranges:
+                        if candidate_end - candidate_start < min_removed_seconds:
+                            continue
+                        before_duration = sum(end - start for start, end in ranges)
+                        next_ranges: list[tuple[float, float]] = []
+                        for range_start, range_end in ranges:
+                            next_ranges.extend(
+                                self._subtract_range(
+                                    range_start,
+                                    range_end,
+                                    candidate_start,
+                                    candidate_end,
+                                    min_piece_seconds=min_piece_seconds,
+                                )
+                            )
+                        after_duration = sum(end - start for start, end in next_ranges)
+                        if after_duration < before_duration - 0.001:
+                            trimmed_gap_count += 1
+                            removed_duration += before_duration - after_duration
+                            ranges = next_ranges
+
+            for range_start, range_end in ranges:
+                if range_end <= range_start:
+                    continue
+                trimmed.append(
+                    HighlightClipWindow(
+                        started_at_seconds=range_start,
+                        ended_at_seconds=range_end,
+                        reason=window.reason,
+                    )
+                )
+
+        if trimmed_gap_count:
+            log(
+                "highlights",
+                "trimmed low-value internal gaps "
+                f"count={trimmed_gap_count} removed={removed_duration:.1f}s "
+                f"threshold={settings.condensed_internal_gap_trim_seconds:.1f}s "
+                f"keep={keep_seconds:.1f}s",
+            )
+
+        return sorted(
+            trimmed,
+            key=lambda item: (item.started_at_seconds, item.ended_at_seconds),
+        )
+
+    def _internal_trim_protected_intervals(
+        self,
+        *,
+        kda_event_cues: list[ClassifiedCue],
+        classified_cues: list[ClassifiedCue],
+        match_duration_seconds: float,
+    ) -> list[tuple[float, float]]:
+        intervals: list[tuple[float, float]] = []
+        for cue in [*classified_cues, *kda_event_cues]:
+            if cue.category == "low_value":
+                continue
+            start_seconds = max(0.0, min(match_duration_seconds, cue.started_at_seconds))
+            end_seconds = max(0.0, min(match_duration_seconds, cue.ended_at_seconds))
+            if end_seconds > start_seconds:
+                intervals.append((start_seconds, end_seconds))
+
+            if not cue.text.startswith("kda_change "):
+                continue
+            observed_at = self._kda_cue_time(cue, "current_at")
+            if observed_at is None:
+                continue
+            reaction_tail_seconds = (
+                self.settings.highlights.condensed_kda_death_reaction_tail_seconds
+            )
+            guard_seconds = max(5.0, reaction_tail_seconds)
+            guard_start = max(0.0, observed_at - guard_seconds)
+            guard_end = min(match_duration_seconds, observed_at + reaction_tail_seconds)
+            if guard_end > guard_start:
+                intervals.append((guard_start, guard_end))
+
+        return self._merge_time_ranges(intervals)
+
+    def _subtract_protected_intervals(
+        self,
+        ranges: list[tuple[float, float]],
+        protected_intervals: list[tuple[float, float]],
+        *,
+        keep_seconds: float,
+        min_piece_seconds: float,
+    ) -> list[tuple[float, float]]:
+        removable = list(ranges)
+        for protected_start, protected_end in protected_intervals:
+            guard_start = protected_start - keep_seconds
+            guard_end = protected_end + keep_seconds
+            next_ranges: list[tuple[float, float]] = []
+            for range_start, range_end in removable:
+                next_ranges.extend(
+                    self._subtract_range(
+                        range_start,
+                        range_end,
+                        guard_start,
+                        guard_end,
+                        min_piece_seconds=min_piece_seconds,
+                    )
+                )
+            removable = next_ranges
+            if not removable:
+                break
+        return removable
+
+    @staticmethod
+    def _merge_time_ranges(ranges: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        ordered = sorted((start, end) for start, end in ranges if end > start)
+        merged: list[tuple[float, float]] = []
+        for start, end in ordered:
+            if not merged or start > merged[-1][1] + 0.001:
+                merged.append((start, end))
+                continue
+            previous_start, previous_end = merged[-1]
+            merged[-1] = (previous_start, max(previous_end, end))
+        return merged
+
+    def _protect_death_like_continuity_entries(
+        self,
+        windows: list[HighlightClipWindow],
+        *,
+        boundary: MatchBoundary,
+        recording: RecordingAsset | None,
+    ) -> list[HighlightClipWindow]:
+        if not windows or recording is None:
+            return windows
+
+        from arl.vision.scene_classifier import looks_like_death_screen
+
+        ordered = sorted(
+            windows,
+            key=lambda item: (item.started_at_seconds, item.ended_at_seconds),
+        )
+        protected: list[HighlightClipWindow] = [ordered[0]]
+        adjusted = 0
+        max_entry_gap = max(0.0, self.settings.highlights.keep_edge_seconds)
+
+        for window in ordered[1:]:
+            previous = protected[-1]
+            gap = window.started_at_seconds - previous.ended_at_seconds
+            if (
+                window.reason == "condensed_continuity"
+                and 0.0 < gap <= max_entry_gap
+            ):
+                frame = self._sample_boundary_frame(
+                    recording,
+                    boundary=boundary,
+                    relative_seconds=window.started_at_seconds,
+                )
+                if frame is not None and looks_like_death_screen(frame):
+                    window = HighlightClipWindow(
+                        started_at_seconds=previous.ended_at_seconds,
+                        ended_at_seconds=window.ended_at_seconds,
+                        reason=window.reason,
+                    )
+                    adjusted += 1
+            protected.append(window)
+
+        if adjusted:
+            log(
+                "highlights",
+                "protected death-like continuity entries "
+                f"count={adjusted} max_entry_gap={max_entry_gap:.1f}s",
+            )
+
+        return protected
+
+    def _restore_missing_kda_event_windows(
+        self,
+        windows: list[HighlightClipWindow],
+        *,
+        kda_event_cues: list[ClassifiedCue],
+        match_duration_seconds: float,
+    ) -> list[HighlightClipWindow]:
+        if not windows or not kda_event_cues or match_duration_seconds <= 0.0:
+            return windows
+
+        restored = list(windows)
+        restored_count = 0
+        for cue in kda_event_cues:
+            if not cue.text.startswith("kda_change "):
+                continue
+            cue_start = max(0.0, min(match_duration_seconds, cue.started_at_seconds))
+            cue_end = max(0.0, min(match_duration_seconds, cue.ended_at_seconds))
+            if cue_end <= cue_start:
+                continue
+
+            covered = any(
+                window.reason in {"highlight_keyword", "condensed_key_event"}
+                and window.started_at_seconds <= cue_start + 0.001
+                and window.ended_at_seconds >= cue_end - 0.001
+                for window in restored
+            )
+            if covered:
+                continue
+
+            restored.append(
+                HighlightClipWindow(
+                    started_at_seconds=cue_start,
+                    ended_at_seconds=cue_end,
+                    reason="condensed_key_event",
+                )
+            )
+            restored_count += 1
+
+        if not restored_count:
+            return windows
+
+        log(
+            "highlights",
+            "restored missing KDA event windows "
+            f"count={restored_count}",
+        )
+        return self._clamp_highlight_windows(restored, match_duration_seconds)
+
+    def _enforce_condensed_duration_budget(
+        self,
+        windows: list[HighlightClipWindow],
+        *,
+        classified_cues: list[ClassifiedCue],
+        target_duration_seconds: float,
+        match_duration_seconds: float,
+    ) -> list[HighlightClipWindow]:
+        if (
+            not windows
+            or not classified_cues
+            or target_duration_seconds <= 0.0
+            or match_duration_seconds <= 0.0
+        ):
+            return windows
+
+        current_duration = self._clip_window_total_duration(windows)
+        budget_seconds = self._condensed_duration_budget(
+            target_duration_seconds,
+            match_duration_seconds,
+        )
+        if current_duration <= budget_seconds + 1.0:
+            return windows
+
+        end_edge_seconds = min(
+            max(0.0, self.settings.highlights.keep_edge_seconds),
+            match_duration_seconds / 2.0,
+        )
+        start_edge_seconds = min(
+            self._condensed_start_edge_seconds(),
+            max(0.0, match_duration_seconds - end_edge_seconds),
+        )
+        bridge_seconds = 0.0
+        if (
+            self.settings.highlights.condensed_boring_gap_threshold_seconds > 0.0
+            and self.settings.highlights.condensed_continuity_bridge_seconds > 0.0
+        ):
+            bridge_seconds = min(
+                max(
+                    self.settings.highlights.condensed_continuity_bridge_seconds,
+                    2.0,
+                ),
+                self.settings.highlights.condensed_boring_gap_threshold_seconds / 2.0,
+            )
+        content_budget = (
+            budget_seconds - start_edge_seconds - end_edge_seconds - bridge_seconds * 2.0
+        )
+        content_budget = min(
+            content_budget,
+            max(0.0, match_duration_seconds - start_edge_seconds - end_edge_seconds),
+        )
+        if (
+            content_budget
+            < self.settings.highlights.condensed_min_window_duration_seconds
+        ):
+            return windows
+
+        content_window = self._best_budget_content_window(
+            classified_cues,
+            window_duration_seconds=content_budget,
+            match_duration_seconds=match_duration_seconds,
+            start_edge_seconds=start_edge_seconds,
+            end_edge_seconds=end_edge_seconds,
+        )
+        if content_window is None:
+            return windows
+
+        budgeted: list[HighlightClipWindow] = []
+        if start_edge_seconds > 0.0:
+            budgeted.append(
+                HighlightClipWindow(
+                    started_at_seconds=0.0,
+                    ended_at_seconds=start_edge_seconds,
+                    reason="condensed_match_context",
+                )
+            )
+        budgeted.append(content_window)
+        if end_edge_seconds > 0.0:
+            budgeted.append(
+                HighlightClipWindow(
+                    started_at_seconds=max(0.0, match_duration_seconds - end_edge_seconds),
+                    ended_at_seconds=match_duration_seconds,
+                    reason="condensed_match_context",
+                )
+            )
+
+        budgeted = self._clamp_highlight_windows(budgeted, match_duration_seconds)
+        budgeted_duration = self._clip_window_total_duration(budgeted)
+        log(
+            "highlights",
+            "capped condensed duration budget "
+            f"from={current_duration:.1f}s to={budgeted_duration:.1f}s "
+            f"budget={budget_seconds:.1f}s target={target_duration_seconds:.1f}s",
+        )
+        return budgeted
+
+    @staticmethod
+    def _condensed_duration_budget(
+        target_duration_seconds: float,
+        match_duration_seconds: float,
+    ) -> float:
+        if target_duration_seconds <= 0.0:
+            return match_duration_seconds
+        budget = max(
+            target_duration_seconds * _CONDENSED_DURATION_BUDGET_MULTIPLIER,
+            target_duration_seconds + _CONDENSED_DURATION_BUDGET_EXTRA_SECONDS,
+        )
+        return min(match_duration_seconds, budget)
+
+    def _condensed_start_edge_seconds(self) -> float:
+        configured = self.settings.highlights.condensed_start_edge_seconds
+        if configured is not None:
+            return max(0.0, configured)
+        return max(0.0, self.settings.highlights.keep_edge_seconds)
+
+    def _best_budget_content_window(
+        self,
+        classified_cues: list[ClassifiedCue],
+        *,
+        window_duration_seconds: float,
+        match_duration_seconds: float,
+        start_edge_seconds: float,
+        end_edge_seconds: float,
+    ) -> HighlightClipWindow | None:
+        content_start_boundary = start_edge_seconds
+        content_end_boundary = match_duration_seconds - end_edge_seconds
+        usable_cues = [
+            cue
+            for cue in classified_cues
+            if cue.category != "low_value"
+            and min(content_end_boundary, cue.ended_at_seconds)
+            > max(content_start_boundary, cue.started_at_seconds)
+        ]
+        if not usable_cues:
+            return None
+
+        window_duration_seconds = min(
+            window_duration_seconds,
+            max(0.0, content_end_boundary - content_start_boundary),
+        )
+        if window_duration_seconds <= 0.0:
+            return None
+
+        latest_start = max(
+            content_start_boundary,
+            content_end_boundary - window_duration_seconds,
+        )
+        best_start = content_start_boundary
+        best_score = -1.0
+        for cue in usable_cues:
+            center = (cue.started_at_seconds + cue.ended_at_seconds) / 2.0
+            start = min(
+                max(content_start_boundary, center - window_duration_seconds / 2.0),
+                latest_start,
+            )
+            end = min(content_end_boundary, start + window_duration_seconds)
+            score = self._score_budget_content_window(usable_cues, start, end)
+            score += start * 0.000001
+            if score > best_score:
+                best_score = score
+                best_start = start
+
+        if best_score <= 0.0:
+            return None
+
+        best_end = min(
+            content_end_boundary,
+            best_start + window_duration_seconds,
+        )
+        overlapping = [
+            cue
+            for cue in usable_cues
+            if self._ranges_overlap(
+                best_start,
+                best_end,
+                cue.started_at_seconds,
+                cue.ended_at_seconds,
+            )
+        ]
+        if not overlapping:
+            return None
+        strongest = max(
+            overlapping,
+            key=lambda cue: (self._cue_budget_weight(cue), cue.priority),
+        )
+        return HighlightClipWindow(
+            started_at_seconds=best_start,
+            ended_at_seconds=best_end,
+            reason=self._reason_for_cue_category(strongest.category),
+        )
+
+    @classmethod
+    def _score_budget_content_window(
+        cls,
+        cues: list[ClassifiedCue],
+        start_seconds: float,
+        end_seconds: float,
+    ) -> float:
+        score = 0.0
+        for cue in cues:
+            overlap = min(end_seconds, cue.ended_at_seconds) - max(
+                start_seconds,
+                cue.started_at_seconds,
+            )
+            if overlap <= 0.0:
+                continue
+            cue_duration = max(
+                0.1,
+                cue.ended_at_seconds - cue.started_at_seconds,
+            )
+            score += cls._cue_budget_weight(cue) * min(1.0, overlap / cue_duration)
+        return score
+
+    @staticmethod
+    def _cue_budget_weight(cue: ClassifiedCue) -> float:
+        category_weight = {
+            "key_event": 3.0,
+            "tactical": 2.0,
+            "narration": 0.5,
+        }.get(cue.category, 0.1)
+        return category_weight * max(0.0, cue.priority)
+
+    @staticmethod
+    def _reason_for_cue_category(category: str) -> str:
+        reason_map = {
+            "key_event": "condensed_key_event",
+            "tactical": "condensed_tactical",
+            "narration": "condensed_context",
+        }
+        return reason_map.get(category, "condensed_context")
+
+    @staticmethod
+    def _clip_window_total_duration(windows: list[HighlightClipWindow]) -> float:
+        return sum(
+            max(0.0, window.ended_at_seconds - window.started_at_seconds)
+            for window in windows
+        )
+
+    @staticmethod
+    def _sample_boundary_frame(
+        recording: RecordingAsset,
+        *,
+        boundary: MatchBoundary,
+        relative_seconds: float,
+    ) -> object | None:
+        from arl.vision.frame_sampler import sample_frame_window
+
+        source_seconds = boundary.started_at_seconds + relative_seconds
+        spans = resolve_recording_window(
+            recording,
+            start_seconds=source_seconds,
+            end_seconds=source_seconds + 0.25,
+        )
+        for span in spans:
+            local_seconds = span.local_start_seconds + (
+                source_seconds - span.source_start_seconds
+            )
+            try:
+                frames = sample_frame_window(
+                    Path(span.path),
+                    local_seconds,
+                    min(span.local_end_seconds, local_seconds + 0.25),
+                    interval_seconds=0.25,
+                )
+            except RuntimeError:
+                continue
+            if frames:
+                return frames[0][1]
+        return None
 
     @staticmethod
     def _first_subtitle_key_or_tactical_cue(
@@ -1404,7 +1965,10 @@ class HighlightPlannerService:
 
         from arl.highlights.content_analyzer import analyze_content_density
         from arl.highlights.cue_classifier import classify_cues
-        from arl.highlights.window_optimizer import optimize_windows
+        from arl.highlights.window_optimizer import (
+            bridge_highlight_windows,
+            optimize_windows,
+        )
 
         duration = boundary.ended_at_seconds - boundary.started_at_seconds
         if duration <= 0.0:
@@ -1502,6 +2066,8 @@ class HighlightPlannerService:
             min_window_duration_seconds=self.settings.highlights.condensed_min_window_duration_seconds,
             boring_gap_threshold_seconds=self.settings.highlights.condensed_boring_gap_threshold_seconds,
             edge_context_seconds=self.settings.highlights.keep_edge_seconds,
+            start_edge_context_seconds=self._condensed_start_edge_seconds(),
+            bridge_window_seconds=self.settings.highlights.condensed_continuity_bridge_seconds,
             max_continuous_window_seconds=(
                 float(self.settings.highlights.condensed_target_duration_range[1]) * 60.0
             ),
@@ -1522,6 +2088,107 @@ class HighlightPlannerService:
             match_duration_seconds=duration,
         )
         windows = self._clamp_highlight_windows(windows, duration)
+        windows = bridge_highlight_windows(
+            windows,
+            max_gap_seconds=self.settings.highlights.condensed_boring_gap_threshold_seconds,
+            bridge_window_seconds=self.settings.highlights.condensed_continuity_bridge_seconds,
+            match_duration=duration,
+        )
+        windows = self._clamp_highlight_windows(windows, duration)
+        windows = self._protect_death_like_continuity_entries(
+            windows,
+            boundary=boundary,
+            recording=recording,
+        )
+        budgeted_windows = self._enforce_condensed_duration_budget(
+            windows,
+            classified_cues=classified_cues,
+            target_duration_seconds=density_result.target_duration_seconds,
+            match_duration_seconds=duration,
+        )
+        if budgeted_windows != windows:
+            windows = self._protect_speech_boundaries(
+                budgeted_windows,
+                speech_cues=meaningful_cues,
+                match_duration_seconds=duration,
+            )
+            windows = self._clamp_highlight_windows(windows, duration)
+            windows = bridge_highlight_windows(
+                windows,
+                max_gap_seconds=self.settings.highlights.condensed_boring_gap_threshold_seconds,
+                bridge_window_seconds=self.settings.highlights.condensed_continuity_bridge_seconds,
+                match_duration=duration,
+            )
+            windows = self._clamp_highlight_windows(windows, duration)
+            windows = self._protect_death_like_continuity_entries(
+                windows,
+                boundary=boundary,
+                recording=recording,
+            )
+
+        restored_windows = self._restore_missing_kda_event_windows(
+            windows,
+            kda_event_cues=kda_event_cues,
+            match_duration_seconds=duration,
+        )
+        if restored_windows != windows:
+            windows = self._protect_speech_boundaries(
+                restored_windows,
+                speech_cues=meaningful_cues,
+                match_duration_seconds=duration,
+            )
+            windows = self._clamp_highlight_windows(windows, duration)
+            windows = bridge_highlight_windows(
+                windows,
+                max_gap_seconds=self.settings.highlights.condensed_boring_gap_threshold_seconds,
+                bridge_window_seconds=self.settings.highlights.condensed_continuity_bridge_seconds,
+                match_duration=duration,
+            )
+            windows = self._clamp_highlight_windows(windows, duration)
+            windows = self._protect_death_like_continuity_entries(
+                windows,
+                boundary=boundary,
+                recording=recording,
+            )
+
+        trimmed_windows = self._trim_low_value_internal_gaps(
+            windows,
+            speech_cues=meaningful_cues,
+            kda_event_cues=kda_event_cues,
+            classified_cues=classified_cues,
+            match_duration_seconds=duration,
+        )
+        if trimmed_windows != windows:
+            windows = self._protect_speech_boundaries(
+                trimmed_windows,
+                speech_cues=meaningful_cues,
+                match_duration_seconds=duration,
+            )
+            windows = self._clamp_highlight_windows(windows, duration)
+            restored_after_trim = self._restore_missing_kda_event_windows(
+                windows,
+                kda_event_cues=kda_event_cues,
+                match_duration_seconds=duration,
+            )
+            if restored_after_trim != windows:
+                windows = self._protect_speech_boundaries(
+                    restored_after_trim,
+                    speech_cues=meaningful_cues,
+                    match_duration_seconds=duration,
+                )
+                windows = self._clamp_highlight_windows(windows, duration)
+            windows = bridge_highlight_windows(
+                windows,
+                max_gap_seconds=self.settings.highlights.condensed_boring_gap_threshold_seconds,
+                bridge_window_seconds=self.settings.highlights.condensed_continuity_bridge_seconds,
+                match_duration=duration,
+            )
+            windows = self._clamp_highlight_windows(windows, duration)
+            windows = self._protect_death_like_continuity_entries(
+                windows,
+                boundary=boundary,
+                recording=recording,
+            )
 
         if not windows:
             return None

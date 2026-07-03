@@ -29,6 +29,7 @@ from arl.shared.contracts import (
     SourceType,
     SubtitleAsset,
     TimelineSegment,
+    TimelineVideoTransform,
 )
 from arl.shared.jsonl_store import append_model, load_models
 
@@ -111,6 +112,46 @@ class EditingPlannerServiceTest(unittest.TestCase):
             self.state_path.read_text(encoding="utf-8")
         )
         self.assertEqual(state.processed_match_keys, [f"{session_id}:1"])
+
+    def test_teaser_prefers_high_signal_subtitle_over_earlier_highlight(self) -> None:
+        session_id = "session-edit-teaser-score"
+        self._append_boundary(session_id, duration=600.0)
+        self._append_subtitle(
+            session_id,
+            "1\n00:01:20,000 --> 00:01:25,000\n普通补刀先发育\n\n"
+            "2\n00:05:00,000 --> 00:05:05,000\n"
+            "上单电刀AP机器人 清线快伤害高 单杀打开局面\n",
+        )
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=80.0,
+                    ended_at_seconds=95.0,
+                    reason="highlight_keyword",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=300.0,
+                    ended_at_seconds=315.0,
+                    reason="highlight_keyword",
+                ),
+            ],
+            duration=600.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        teaser_segments = [
+            segment for segment in plan.timeline if segment.role == "teaser"
+        ]
+        self.assertEqual(
+            [
+                (segment.source_start_seconds, segment.source_end_seconds)
+                for segment in teaser_segments
+            ],
+            [(300.0, 315.0), (80.0, 95.0)],
+        )
 
     def test_zoom_enabled_marks_high_signal_segments_with_budget(self) -> None:
         session_id = "session-edit-zoom"
@@ -198,6 +239,50 @@ class EditingPlannerServiceTest(unittest.TestCase):
         self.assertTrue(any(segment.source_start_seconds == 0.0 for segment in plan.timeline))
         self.assertTrue(any(segment.source_end_seconds == 600.0 for segment in plan.timeline))
 
+    def test_zoom_skips_long_main_segment(self) -> None:
+        session_id = "session-edit-long-main-zoom"
+        self.settings.editing.zoom_enabled = True
+        self.settings.editing.zoom_max_duration_seconds = 30.0
+        self._append_boundary(session_id, duration=700.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=0.0,
+                    ended_at_seconds=30.0,
+                    reason="condensed_match_context",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=100.0,
+                    ended_at_seconds=220.0,
+                    reason="condensed_key_event",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=670.0,
+                    ended_at_seconds=700.0,
+                    reason="condensed_match_context",
+                ),
+            ],
+            duration=700.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plans = load_models(self.edit_plans_path, EditPlanAsset)
+        self.assertEqual(len(plans), 1)
+        plan = plans[0]
+        key_segments = [
+            segment for segment in plan.timeline if segment.reason == "condensed_key_event"
+        ]
+        self.assertEqual(
+            [
+                (segment.source_start_seconds, segment.source_end_seconds)
+                for segment in key_segments
+            ],
+            [(100.0, 220.0)],
+        )
+        self.assertIsNone(key_segments[0].transform)
+
     def test_zoom_default_targets_bottom_left_chat_area(self) -> None:
         session_id = "session-edit-chat-zoom"
         self.settings.editing.zoom_enabled = True
@@ -251,7 +336,7 @@ class EditingPlannerServiceTest(unittest.TestCase):
     def test_audio_instructions_emit_only_for_existing_configured_assets(self) -> None:
         session_id = "session-edit-audio"
         bgm_path = self.temp_root / "audio" / "bgm.mp3"
-        sfx_path = self.temp_root / "audio" / "wow.wav"
+        sfx_path = self.temp_root / "audio" / "coin.wav"
         bgm_path.parent.mkdir(parents=True, exist_ok=True)
         bgm_path.write_text("fake bgm", encoding="utf-8")
         sfx_path.write_text("fake sfx", encoding="utf-8")
@@ -296,7 +381,32 @@ class EditingPlannerServiceTest(unittest.TestCase):
             self.assertEqual(hit.source_path, str(sfx_path))
             self.assertEqual(hit.gain_db, -9.0)
 
-    def test_audio_mixing_uses_generated_default_assets_when_paths_are_unset(self) -> None:
+    def test_audio_mixing_does_not_emit_sfx_for_tactical_windows(self) -> None:
+        session_id = "session-edit-tactical-sfx"
+        sfx_path = self.temp_root / "audio" / "coin.wav"
+        sfx_path.parent.mkdir(parents=True, exist_ok=True)
+        sfx_path.write_text("fake sfx", encoding="utf-8")
+        self.settings.editing.audio_mixing_enabled = True
+        self.settings.editing.sfx_path = sfx_path
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=120.0,
+                    ended_at_seconds=140.0,
+                    reason="condensed_tactical",
+                )
+            ],
+            duration=600.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        self.assertEqual(plan.sound_effects, [])
+
+    def test_audio_mixing_uses_generated_default_bgm_when_paths_are_unset(self) -> None:
         session_id = "session-edit-default-audio"
         self.settings.editing.audio_mixing_enabled = True
         self._append_boundary(session_id, duration=600.0)
@@ -341,11 +451,13 @@ class EditingPlannerServiceTest(unittest.TestCase):
         self.assertEqual(plan.audio_beds[0].reason, "background_music_playful")
         self.assertEqual(plan.audio_beds[1].reason, "background_music_climax")
         self.assertEqual(len(plan.sound_effects), 2)
-        self.assertEqual(
-            [(hit.at_seconds, hit.reason) for hit in plan.sound_effects],
-            [(0.0, "highlight_keyword"), (125.0, "highlight_keyword")],
+        self.assertTrue(
+            all(hit.source_path.endswith("coin.wav") for hit in plan.sound_effects)
         )
-        self.assertTrue(plan.sound_effects[0].source_path.endswith("wow.wav"))
+        self.assertEqual(
+            [hit.reason for hit in plan.sound_effects],
+            ["highlight_keyword", "highlight_keyword"],
+        )
         for audio_path in [
             Path(plan.audio_beds[0].source_path),
             Path(plan.audio_beds[1].source_path),
@@ -419,6 +531,64 @@ class EditingPlannerServiceTest(unittest.TestCase):
 
         self.assertGreater(len(selected_names), 1)
         self.assertTrue(selected_names <= {track.path.name for track in tracks})
+
+    def test_bgm_library_tie_break_offsets_adjacent_match_indices(self) -> None:
+        tracks = [
+            BgmLibraryTrack(
+                path=self.temp_root / f"hype-{index}.wav",
+                tags=("hype",),
+                phase="climax",
+                energy=5,
+            )
+            for index in range(4)
+        ]
+
+        selected_names = [
+            select_bgm_tracks(
+                tracks,
+                BgmSelectionContext(
+                    tags=("hype",),
+                    highlight_reasons=("condensed_key_event",),
+                    rendered_duration_seconds=60.0,
+                    selection_key=f"session-edit:{match_index}:hype",
+                ),
+            )[0].path.name
+            for match_index in range(4)
+        ]
+
+        self.assertEqual(len(set(selected_names)), len(selected_names))
+
+    def test_bgm_library_prefers_early_phase_before_climax(self) -> None:
+        early_path = self.temp_root / "early.wav"
+        hype_path = self.temp_root / "hype.wav"
+        tracks = [
+            BgmLibraryTrack(
+                path=early_path,
+                tags=("hype", "chill"),
+                phase="laning",
+                mood="chill",
+                energy=2,
+            ),
+            BgmLibraryTrack(
+                path=hype_path,
+                tags=("hype", "chill", "funny"),
+                phase="climax",
+                mood="hype",
+                energy=5,
+            ),
+        ]
+
+        selected = select_bgm_tracks(
+            tracks,
+            BgmSelectionContext(
+                tags=("hype", "chill", "funny"),
+                highlight_reasons=("condensed_key_event", "condensed_match_context"),
+                rendered_duration_seconds=600.0,
+                selection_key="session-edit:2:hype,chill,funny",
+            ),
+        )
+
+        self.assertEqual([track.path for track in selected], [early_path, hype_path])
 
     def test_audio_mixing_selects_bgm_from_chinese_library_aliases(self) -> None:
         session_id = "session-edit-bgm-library-cn"
@@ -698,7 +868,11 @@ class EditingPlannerServiceTest(unittest.TestCase):
 
     def test_audio_mixing_marks_main_key_event_without_fallback_teaser(self) -> None:
         session_id = "session-edit-main-sfx"
+        sfx_path = self.temp_root / "audio" / "configured-sfx.wav"
+        sfx_path.parent.mkdir(parents=True, exist_ok=True)
+        sfx_path.write_text("fake sfx", encoding="utf-8")
         self.settings.editing.audio_mixing_enabled = True
+        self.settings.editing.sfx_path = sfx_path
         self._append_boundary(session_id, duration=600.0)
         self._append_highlight_plan(
             session_id,
@@ -723,9 +897,7 @@ class EditingPlannerServiceTest(unittest.TestCase):
         ]
         self.assertEqual(len(key_segments), 1)
         self.assertEqual(len(plan.sound_effects), 1)
-        self.assertTrue(
-            all(hit.source_path.endswith("wow.wav") for hit in plan.sound_effects)
-        )
+        self.assertEqual(plan.sound_effects[0].source_path, str(sfx_path))
         self.assertEqual(
             [hit.at_seconds for hit in plan.sound_effects],
             [30.0],
@@ -780,7 +952,9 @@ class EditingPlannerServiceTest(unittest.TestCase):
         self.assertEqual(seen["end_seconds"], 600.0)
         self.assertEqual(plan.audio_beds, [])
         self.assertEqual(len(plan.sound_effects), 2)
-        self.assertTrue(all(hit.source_path.endswith("wow.wav") for hit in plan.sound_effects))
+        self.assertTrue(
+            all(hit.source_path.endswith("coin.wav") for hit in plan.sound_effects)
+        )
 
     def test_source_music_detection_resolves_chunked_recording_spans(self) -> None:
         session_id = "session-edit-source-music-chunked"
@@ -919,6 +1093,9 @@ class EditingPlannerServiceTest(unittest.TestCase):
         self.assertEqual(len(plans), 2)
         self.assertEqual(plans[-1].audio_beds, [])
         self.assertEqual(len(plans[-1].sound_effects), 2)
+        self.assertTrue(
+            all(hit.source_path.endswith("coin.wav") for hit in plans[-1].sound_effects)
+        )
 
     def test_missing_audio_assets_preserve_base_edit_plan(self) -> None:
         session_id = "session-edit-missing-audio"
@@ -1117,6 +1294,96 @@ class EditingPlannerServiceTest(unittest.TestCase):
                 segment.transform is None
                 for segment in latest.timeline
                 if segment is not latest_key_segments[0]
+            )
+        )
+
+    def test_legacy_long_zoom_plan_is_replanned_without_long_zoom(self) -> None:
+        session_id = "session-edit-legacy-long-zoom"
+        self.settings.editing.zoom_enabled = True
+        self.settings.editing.zoom_max_duration_seconds = 30.0
+        self._append_boundary(session_id, duration=700.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=0.0,
+                    ended_at_seconds=30.0,
+                    reason="condensed_match_context",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=100.0,
+                    ended_at_seconds=220.0,
+                    reason="condensed_key_event",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=670.0,
+                    ended_at_seconds=700.0,
+                    reason="condensed_match_context",
+                ),
+            ],
+            duration=700.0,
+        )
+        append_model(
+            self.edit_plans_path,
+            EditPlanAsset(
+                session_id=session_id,
+                match_index=1,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=700.0,
+                timeline=[
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=0.0,
+                        source_end_seconds=30.0,
+                        reason="condensed_match_context",
+                    ),
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=100.0,
+                        source_end_seconds=220.0,
+                        reason="condensed_key_event",
+                        transform=TimelineVideoTransform(
+                            kind="punch_in",
+                            scale=1.2,
+                            x_anchor=0.0,
+                            y_anchor=1.0,
+                            target="chat",
+                        ),
+                    ),
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=670.0,
+                        source_end_seconds=700.0,
+                        reason="condensed_match_context",
+                    ),
+                ],
+                created_at=datetime(2026, 6, 25, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.state_path.write_text(
+            EditPlannerStateFile(
+                processed_match_keys=[f"{session_id}:1"],
+            ).model_dump_json(indent=2)
+            + "\n",
+            encoding="utf-8",
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plans = load_models(self.edit_plans_path, EditPlanAsset)
+        self.assertEqual(len(plans), 2)
+        latest = plans[-1]
+        transformed_segments = [
+            segment for segment in latest.timeline if segment.transform is not None
+        ]
+        self.assertEqual(transformed_segments, [])
+        self.assertTrue(
+            any(
+                segment.source_start_seconds == 100.0
+                and segment.source_end_seconds == 220.0
+                and segment.transform is None
+                for segment in latest.timeline
             )
         )
 

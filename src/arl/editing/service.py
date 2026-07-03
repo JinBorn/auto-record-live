@@ -35,6 +35,7 @@ from arl.shared.contracts import (
 )
 from arl.shared.jsonl_store import append_model, load_models
 from arl.shared.logging import log
+from arl.subtitles.ass import SrtCue, parse_srt_cues
 
 
 _REASON_PRIORITY = {
@@ -46,11 +47,25 @@ _REASON_PRIORITY = {
 
 _PRIMARY_TEASER_REASONS = {"highlight_keyword"}
 _ZOOM_REASONS = {"highlight_keyword", "condensed_key_event", "condensed_tactical"}
-_SFX_REASONS = {"highlight_keyword", "condensed_key_event", "condensed_tactical"}
+_SFX_REASONS = {"highlight_keyword", "condensed_key_event"}
 _SFX_MIN_INTERVAL_SECONDS = 20.0
 _SFX_MAX_HITS = 4
 _SEGMENT_TOLERANCE_SECONDS = 0.001
 _BGM_SWITCH_MIN_DURATION_SECONDS = 120.0
+_TEASER_SIGNAL_KEYWORDS = (
+    (("kda_change",), 36),
+    (("单杀", "solo kill"), 34),
+    (("五杀", "penta"), 34),
+    (("四杀", "quadra"), 32),
+    (("三杀", "triple kill"), 30),
+    (("双杀", "double kill"), 28),
+    (("击杀", "杀你", "杀了", "kill"), 22),
+    (("反杀", "越塔", "开团", "团战"), 18),
+    (("电刀", "ap", "机器人", "blitz"), 14),
+    (("清线", "伤害高", "什么伤害"), 12),
+    (("韩服", "千分", "套路"), 10),
+    (("粉丝", "认出来", "认出"), 8),
+)
 
 
 class EditingPlannerService:
@@ -260,7 +275,11 @@ class EditingPlannerService:
             )
             return None
 
-        teaser_windows = self._select_teaser_windows(highlight_plan.windows, duration)
+        teaser_windows = self._select_teaser_windows(
+            highlight_plan.windows,
+            duration,
+            subtitle=subtitle,
+        )
         if not teaser_windows:
             log(
                 "editing",
@@ -306,16 +325,29 @@ class EditingPlannerService:
         if remaining <= 0:
             return
         x_anchor, y_anchor, target = self._zoom_focus()
-        for segment in timeline:
+        index = 0
+        while index < len(timeline):
+            segment = timeline[index]
             if segment.role not in {"teaser", "main"} or segment.reason not in _ZOOM_REASONS:
+                index += 1
                 continue
-            segment.transform = TimelineVideoTransform(
+            if (
+                segment.role == "main"
+                and self._segment_duration(segment)
+                > self.settings.editing.zoom_max_duration_seconds
+                + _SEGMENT_TOLERANCE_SECONDS
+            ):
+                index += 1
+                continue
+            transform = TimelineVideoTransform(
                 kind="punch_in",
                 scale=self.settings.editing.zoom_scale,
                 x_anchor=x_anchor,
                 y_anchor=y_anchor,
                 target=target,
             )
+            segment.transform = transform
+            index += 1
             remaining -= 1
             if remaining <= 0:
                 return
@@ -397,19 +429,22 @@ class EditingPlannerService:
                 )
             )
 
-        sfx_path = self.settings.editing.sfx_path
+        configured_sfx_path = self.settings.editing.sfx_path
+        sfx_path = (
+            configured_sfx_path
+            if configured_sfx_path is not None
+            else default_assets.get("coin_sfx")
+        )
         if sfx_path is None:
-            sfx_path = default_assets.get("wow_sfx")
-        elif not sfx_path.is_file():
-            log(
-                "editing",
-                "skip configured sfx asset "
-                f"session_id={boundary.session_id} match_index={boundary.match_index} "
-                f"path={sfx_path} reason=missing_file",
-            )
             return audio_beds, sound_effects
-
-        if sfx_path is None or not sfx_path.is_file():
+        if not sfx_path.is_file():
+            if configured_sfx_path is not None:
+                log(
+                    "editing",
+                    "skip configured sfx asset "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    f"path={sfx_path} reason=missing_file",
+                )
             return audio_beds, sound_effects
 
         timeline_cursor = 0.0
@@ -787,6 +822,10 @@ class EditingPlannerService:
         )
 
     @staticmethod
+    def _segment_duration(segment: TimelineSegment) -> float:
+        return max(0.0, segment.source_end_seconds - segment.source_start_seconds)
+
+    @staticmethod
     def _leading_teaser_duration(timeline: list[TimelineSegment]) -> float:
         duration = 0.0
         for segment in timeline:
@@ -799,7 +838,10 @@ class EditingPlannerService:
         self,
         windows: list[HighlightClipWindow],
         duration: float,
+        *,
+        subtitle: SubtitleAsset | None = None,
     ) -> list[HighlightClipWindow]:
+        subtitle_cues = self._subtitle_cues(subtitle)
         candidates = self._teaser_candidates(
             windows,
             duration,
@@ -807,6 +849,7 @@ class EditingPlannerService:
         )
         candidates.sort(
             key=lambda window: (
+                -self._teaser_signal_score(window, subtitle_cues),
                 _REASON_PRIORITY.get(window.reason, 100),
                 window.started_at_seconds,
                 window.ended_at_seconds,
@@ -837,6 +880,51 @@ class EditingPlannerService:
             )
             total_seconds += end - start
         return selected
+
+    @staticmethod
+    def _subtitle_cues(subtitle: SubtitleAsset | None) -> list[SrtCue]:
+        if subtitle is None:
+            return []
+        path = Path(subtitle.path)
+        if not path.is_file():
+            return []
+        try:
+            return parse_srt_cues(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            return []
+
+    @classmethod
+    def _teaser_signal_score(
+        cls,
+        window: HighlightClipWindow,
+        subtitle_cues: list[SrtCue],
+    ) -> int:
+        score = 0
+        for cue in subtitle_cues:
+            overlap = min(cue.ended_at_seconds, window.ended_at_seconds) - max(
+                cue.started_at_seconds,
+                window.started_at_seconds,
+            )
+            if overlap <= 0.0:
+                continue
+            text_score = cls._teaser_text_score(cue.text)
+            if text_score <= 0:
+                continue
+            score += text_score
+            if cue.started_at_seconds >= window.started_at_seconds:
+                score += 2
+            if cue.ended_at_seconds <= window.ended_at_seconds:
+                score += 2
+        return score
+
+    @staticmethod
+    def _teaser_text_score(text: str) -> int:
+        normalized = text.lower()
+        score = 0
+        for keywords, weight in _TEASER_SIGNAL_KEYWORDS:
+            if any(keyword in normalized for keyword in keywords):
+                score += weight
+        return score
 
     def _teaser_candidates(
         self,
@@ -1004,6 +1092,7 @@ class EditingPlannerService:
             plan,
             highlight_plan,
             duration,
+            subtitle,
         ) and self._edit_plan_has_current_zoom_shape(plan)
         if not matches_shape:
             return False
@@ -1116,9 +1205,14 @@ class EditingPlannerService:
         plan: EditPlanAsset,
         highlight_plan: HighlightPlanAsset | None,
         duration: float,
+        subtitle: SubtitleAsset | None,
     ) -> bool:
         expected_windows = (
-            self._select_teaser_windows(highlight_plan.windows, duration)
+            self._select_teaser_windows(
+                highlight_plan.windows,
+                duration,
+                subtitle=subtitle,
+            )
             if highlight_plan is not None
             else []
         )
@@ -1192,6 +1286,13 @@ class EditingPlannerService:
                 return False
             if transform.kind != "punch_in":
                 return False
+            if (
+                segment.role == "main"
+                and self._segment_duration(segment)
+                > self.settings.editing.zoom_max_duration_seconds
+                + _SEGMENT_TOLERANCE_SECONDS
+            ):
+                return False
             x_anchor, y_anchor, target = self._zoom_focus()
             if abs(transform.scale - self.settings.editing.zoom_scale) > 0.001:
                 return False
@@ -1210,13 +1311,25 @@ class EditingPlannerService:
         if remaining <= 0:
             return set()
         selected: set[int] = set()
-        for index, segment in enumerate(timeline):
+        index = 0
+        while index < len(timeline):
+            segment = timeline[index]
             if segment.role not in {"teaser", "main"} or segment.reason not in _ZOOM_REASONS:
+                index += 1
+                continue
+            if (
+                segment.role == "main"
+                and self._segment_duration(segment)
+                > self.settings.editing.zoom_max_duration_seconds
+                + _SEGMENT_TOLERANCE_SECONDS
+            ):
+                index += 1
                 continue
             selected.add(index)
             remaining -= 1
             if remaining <= 0:
                 break
+            index += 1
         return selected
 
     @staticmethod

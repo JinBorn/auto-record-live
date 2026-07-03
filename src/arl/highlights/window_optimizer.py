@@ -21,8 +21,10 @@ def optimize_windows(
     context_padding_seconds: float = 5.0,
     merge_gap_seconds: float = 8.0,
     min_window_duration_seconds: float = 3.0,
-    boring_gap_threshold_seconds: float = 120.0,
+    boring_gap_threshold_seconds: float = 45.0,
     edge_context_seconds: float = 0.0,
+    start_edge_context_seconds: float | None = None,
+    bridge_window_seconds: float | None = None,
     max_continuous_window_seconds: float | None = None,
 ) -> list[HighlightClipWindow]:
     """优化窗口生成condensed plan。
@@ -86,19 +88,25 @@ def optimize_windows(
         target_duration_seconds=target_duration_seconds,
         match_duration_seconds=match_duration_seconds,
         edge_context_seconds=edge_context_seconds,
+        start_edge_context_seconds=start_edge_context_seconds,
     )
     if not drafts:
         return []
     drafts = _ensure_edge_context_preserved(
         drafts,
         edge_context_seconds=edge_context_seconds,
+        start_edge_context_seconds=start_edge_context_seconds,
         match_duration=match_duration_seconds,
     )
     drafts = _clamp_windows_to_match(drafts, match_duration_seconds)
     drafts = _bridge_large_gaps(
         drafts,
         max_gap_seconds=boring_gap_threshold_seconds,
-        bridge_window_seconds=edge_context_seconds,
+        bridge_window_seconds=(
+            edge_context_seconds
+            if bridge_window_seconds is None
+            else bridge_window_seconds
+        ),
         match_duration=match_duration_seconds,
     )
     current_duration = sum(d.ended_at_seconds - d.started_at_seconds for d in drafts)
@@ -128,6 +136,52 @@ def optimize_windows(
     return windows
 
 
+def bridge_highlight_windows(
+    windows: list[HighlightClipWindow],
+    *,
+    max_gap_seconds: float = 45.0,
+    bridge_window_seconds: float = 3.0,
+    match_duration: float,
+) -> list[HighlightClipWindow]:
+    drafts = [
+        WindowDraft(
+            started_at_seconds=window.started_at_seconds,
+            ended_at_seconds=window.ended_at_seconds,
+            reason=window.reason,
+            priority=_priority_for_reason(window.reason),
+        )
+        for window in windows
+    ]
+    bridged = _bridge_large_gaps(
+        drafts,
+        max_gap_seconds=max_gap_seconds,
+        bridge_window_seconds=bridge_window_seconds,
+        match_duration=match_duration,
+    )
+    return [
+        HighlightClipWindow(
+            started_at_seconds=draft.started_at_seconds,
+            ended_at_seconds=draft.ended_at_seconds,
+            reason=draft.reason,
+        )
+        for draft in bridged
+    ]
+
+
+def _priority_for_reason(reason: str) -> float:
+    priority_map = {
+        "highlight_keyword": 1.0,
+        "condensed_key_event": 1.0,
+        "condensed_tactical": 0.7,
+        "condensed_context": 0.4,
+        "condensed_match_context": 0.3,
+        "match_start_context": 0.3,
+        "match_end_context": 0.3,
+        "condensed_continuity": 0.2,
+    }
+    return priority_map.get(reason, 0.2)
+
+
 def _trim_full_span_content_window(
     drafts: list[WindowDraft],
     *,
@@ -135,6 +189,7 @@ def _trim_full_span_content_window(
     target_duration_seconds: float,
     match_duration_seconds: float,
     edge_context_seconds: float,
+    start_edge_context_seconds: float | None,
 ) -> tuple[list[WindowDraft], bool]:
     if len(drafts) != 1 or match_duration_seconds <= 0.0:
         return drafts, False
@@ -143,7 +198,15 @@ def _trim_full_span_content_window(
     if not _draft_nearly_covers_match(draft, match_duration_seconds):
         return drafts, False
 
-    edge_budget = min(max(edge_context_seconds, 0.0) * 2.0, match_duration_seconds)
+    start_edge = (
+        edge_context_seconds
+        if start_edge_context_seconds is None
+        else start_edge_context_seconds
+    )
+    edge_budget = min(
+        max(start_edge, 0.0) + max(edge_context_seconds, 0.0),
+        match_duration_seconds,
+    )
     content_target = min(
         target_duration_seconds,
         max(0.0, match_duration_seconds - edge_budget),
@@ -244,48 +307,82 @@ def _reason_for_category(category: str) -> str:
 def _generate_edge_context_windows(
     edge_context_seconds: float,
     match_duration: float,
+    start_edge_context_seconds: float | None = None,
 ) -> list[WindowDraft]:
-    if edge_context_seconds <= 0.0 or match_duration <= 0.0:
+    if match_duration <= 0.0:
         return []
 
-    edge = min(edge_context_seconds, match_duration / 2.0)
-    if edge <= 0.0:
+    start_edge = (
+        edge_context_seconds
+        if start_edge_context_seconds is None
+        else start_edge_context_seconds
+    )
+    start_edge = min(max(start_edge, 0.0), match_duration)
+    end_edge = min(max(edge_context_seconds, 0.0), match_duration)
+    if start_edge <= 0.0 and end_edge <= 0.0:
         return []
 
-    return [
-        WindowDraft(
-            started_at_seconds=0.0,
-            ended_at_seconds=edge,
-            reason="condensed_match_context",
-            priority=1.0,
-        ),
-        WindowDraft(
-            started_at_seconds=max(0.0, match_duration - edge),
-            ended_at_seconds=match_duration,
-            reason="condensed_match_context",
-            priority=1.0,
-        ),
-    ]
+    windows: list[WindowDraft] = []
+    if start_edge > 0.0:
+        windows.append(
+            WindowDraft(
+                started_at_seconds=0.0,
+                ended_at_seconds=min(start_edge, match_duration),
+                reason="condensed_match_context",
+                priority=1.0,
+            )
+        )
+    if end_edge > 0.0:
+        windows.append(
+            WindowDraft(
+                started_at_seconds=max(0.0, match_duration - end_edge),
+                ended_at_seconds=match_duration,
+                reason="condensed_match_context",
+                priority=1.0,
+            )
+        )
+    return windows
 
 
 def _ensure_edge_context_preserved(
     drafts: list[WindowDraft],
     *,
     edge_context_seconds: float,
+    start_edge_context_seconds: float | None = None,
     match_duration: float,
 ) -> list[WindowDraft]:
-    if edge_context_seconds <= 0.0 or match_duration <= 0.0:
+    if match_duration <= 0.0:
         return drafts
 
-    edge_windows = _generate_edge_context_windows(edge_context_seconds, match_duration)
+    edge_windows = _generate_edge_context_windows(
+        edge_context_seconds,
+        match_duration,
+        start_edge_context_seconds=start_edge_context_seconds,
+    )
     if not edge_windows:
         return drafts
 
     needed: list[WindowDraft] = []
-    if not any(draft.started_at_seconds <= 0.001 for draft in drafts):
-        needed.append(edge_windows[0])
-    if not any(draft.ended_at_seconds >= match_duration - 0.001 for draft in drafts):
-        needed.append(edge_windows[-1])
+    start_window = next(
+        (window for window in edge_windows if window.started_at_seconds <= 0.001),
+        None,
+    )
+    end_window = next(
+        (
+            window
+            for window in edge_windows
+            if window.ended_at_seconds >= match_duration - 0.001
+        ),
+        None,
+    )
+    if start_window is not None and not any(
+        draft.started_at_seconds <= 0.001 for draft in drafts
+    ):
+        needed.append(start_window)
+    if end_window is not None and not any(
+        draft.ended_at_seconds >= match_duration - 0.001 for draft in drafts
+    ):
+        needed.append(end_window)
 
     if not needed:
         return drafts
@@ -300,7 +397,7 @@ def _bridge_large_gaps(
     bridge_window_seconds: float,
     match_duration: float,
 ) -> list[WindowDraft]:
-    """Insert short continuity windows so condensed edits avoid huge time jumps."""
+    """Insert continuity snippets plus a lead-in before the next kept segment."""
     if (
         len(drafts) <= 1
         or max_gap_seconds <= 0.0
@@ -310,9 +407,10 @@ def _bridge_large_gaps(
         return drafts
 
     bridge_duration = min(
-        max(bridge_window_seconds, 5.0),
+        max(bridge_window_seconds, 2.0),
         max_gap_seconds / 2.0,
     )
+    progression_duration = min(5.0, bridge_duration)
     ordered = sorted(drafts, key=lambda draft: draft.started_at_seconds)
     bridged: list[WindowDraft] = []
     inserted = 0
@@ -323,12 +421,36 @@ def _bridge_large_gaps(
             continue
 
         previous = bridged[-1]
-        cursor = previous.ended_at_seconds
-        while current.started_at_seconds - cursor > max_gap_seconds:
-            bridge_end = min(current.started_at_seconds, cursor + max_gap_seconds)
-            bridge_start = max(cursor, bridge_end - bridge_duration)
-            if bridge_end <= bridge_start:
+        gap = current.started_at_seconds - previous.ended_at_seconds
+        if gap <= max_gap_seconds:
+            bridged.append(current)
+            continue
+
+        bridge_end = current.started_at_seconds
+        bridge_start = max(previous.ended_at_seconds, bridge_end - bridge_duration)
+        cursor_end = previous.ended_at_seconds
+
+        while bridge_start - cursor_end > max_gap_seconds:
+            progress_start = min(
+                cursor_end + max_gap_seconds,
+                bridge_start - progression_duration,
+            )
+            progress_start = max(cursor_end, progress_start)
+            progress_end = min(bridge_start, progress_start + progression_duration)
+            if progress_end <= progress_start:
                 break
+            bridged.append(
+                WindowDraft(
+                    started_at_seconds=max(0.0, progress_start),
+                    ended_at_seconds=min(match_duration, progress_end),
+                    reason="condensed_continuity",
+                    priority=0.2,
+                )
+            )
+            cursor_end = progress_end
+            inserted += 1
+
+        if bridge_end > bridge_start:
             bridged.append(
                 WindowDraft(
                     started_at_seconds=max(0.0, bridge_start),
@@ -338,7 +460,6 @@ def _bridge_large_gaps(
                 )
             )
             inserted += 1
-            cursor = bridge_end
 
         bridged.append(current)
 

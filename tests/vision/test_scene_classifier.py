@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 import cv2
 import numpy as np
 
-from arl.vision.scene_classifier import classify_scene
+from arl.vision.scene_classifier import classify_scene, looks_like_death_screen
 
 
 def test_classify_in_game_from_hud_and_minimap_regions():
@@ -78,6 +78,7 @@ def test_death_screen_not_classified_as_loading():
     assert reading.scene != "loading", (
         f"Death screen with visible HUD misclassified as {reading.scene}"
     )
+    assert looks_like_death_screen(frame)
 
 
 def _draw_grid(

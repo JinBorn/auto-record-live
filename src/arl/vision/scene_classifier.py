@@ -52,6 +52,19 @@ def classify_scene(frame: np.ndarray, timestamp_seconds: float) -> SceneReading:
     )
 
 
+def looks_like_death_screen(frame: np.ndarray) -> bool:
+    """Best-effort LoL death/respawn screen detector for edit-boundary guards."""
+    hud_region = _relative_region(frame, 0.30, 0.78, 0.75, 1.0)
+    top_region = _relative_region(frame, 0.78, 0.0, 1.0, 0.07)
+    center_region = _relative_region(frame, 0.10, 0.10, 0.82, 0.72)
+
+    return (
+        _dark_ratio(top_region) >= 0.88
+        and _edge_density(hud_region) >= 0.08
+        and _mean_saturation(center_region) <= 0.24
+    )
+
+
 def _relative_region(
     frame: np.ndarray,
     x1: float,
@@ -76,3 +89,8 @@ def _edge_density(region: np.ndarray) -> float:
 def _dark_ratio(region: np.ndarray) -> float:
     gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
     return float(np.count_nonzero(gray < 40) / gray.size)
+
+
+def _mean_saturation(region: np.ndarray) -> float:
+    hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
+    return float(np.mean(hsv[:, :, 1]) / 255.0)

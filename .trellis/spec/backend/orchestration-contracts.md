@@ -194,8 +194,9 @@ class RecordingJobRecord(BaseModel):
   - unknown recorder event types must not advance monotonic per-job timestamps
 - Operator-selected recording CLI:
   - `arl live-status` returns one stable 1-based `index` per configured probe in `Settings.platforms` order. Text output includes `index=N`; JSON output includes the same field on each `rooms[]` row.
-  - `arl record-rooms --room-index N`, `--room-indices N,M`, and `--all-live` must filter `Settings.platforms` for that one-shot run instead of requiring the operator to edit `.env`.
+  - `arl record-rooms --room-index N`, `--room-indices N,M`, and `--all-live` must filter `Settings.platforms` for the selected rooms instead of requiring the operator to edit `.env`.
   - Selected recording runs must use isolated agent/orchestrator state and event files under `data/tmp/selected-recordings/<run-id>/` so the recorder only sees jobs created for the selected rooms. Shared manifests such as `recording-assets.jsonl` remain in the normal temp directory so downstream postprocess stages can consume the resulting recordings.
+  - `record-rooms` is continuous by default: when a selected cycle ends with a successful `ffmpeg_record_succeeded` / `stopped` job while the session is still `live`, the command must start a fresh selected-run cycle after the agent poll interval. This prevents a normal FFmpeg timeout, CDN EOF, or signed URL rollover from ending recording while the streamer is still live. Failed or retrying cycles must not be blindly restarted in a new isolated state directory because that would hide cookie, quality, or network recovery signals.
   - Exporter platform lookup must read both the normal orchestrator state and selected-run state files under `data/tmp/selected-recordings/*/orchestrator-state.json`; otherwise selected Bilibili recordings export to `data/exports/unknown`.
   - `record-rooms` defaults to real ffmpeg recording (`recording.enable_ffmpeg=True`) because the command is an explicit recording action; a placeholder/testing mode must be opt-in.
 
@@ -1082,6 +1083,7 @@ class PublishingPackage(BaseModel):
 - Copywriter generation contract:
   - `CopywriterService` reads typed `SubtitleAsset` rows and optional matching `ExportAsset`, `RecordingAsset`, `MatchBoundary`, and `HighlightPlanAsset` rows keyed by `(session_id, match_index)` or `session_id`.
   - for each subtitle asset with an existing SRT file, it writes `data/processed/<session_id>/match-<idx>-copy.json` and appends one `CopyAsset` row to `data/tmp/copy-assets.jsonl`.
+  - if `subtitle-assets.jsonl` contains multiple rows for the same `(session_id, match_index)`, copywriter must process only one match instance and use the latest subtitle asset row. Historical duplicate subtitle rows must not make `--force-reprocess` append duplicate `CopyAsset` or `PublishingPackage` rows for the same match in one run.
   - copy JSON must include `transcript_excerpt`, `title_candidates`, `recommended_title`, `description`, `tags`, source subtitle/export paths, `status`, and `created_at`.
   - copywriter also writes `data/processed/<session_id>/match-<idx>-publishing.json` and appends one `PublishingPackage` row to `data/tmp/publishing-packages.jsonl`; this artifact is additive and must not change the `CopyAsset` field contract.
   - publishing package JSON must include `summary`, `cover_lines`, `evidence`, title candidates, recommended title, tags, transcript excerpt, source subtitle/export/recording paths, optional `streamer_name`, optional `cover_path`, optional `published_package_dir`, optional published video/cover/metadata paths, `status`, and `created_at`.
@@ -1230,6 +1232,7 @@ class PublishingPackage(BaseModel):
 | Export input references a missing subtitle file | Fail the export step deterministically instead of silently skipping subtitle burn-in |
 | Exporter ffmpeg command burns in a subtitle file from a Windows absolute path | The `-vf` value uses forward slashes, escapes the drive colon (`D\:/...`), and wraps the filename in single quotes as `subtitles='...'` |
 | `arl copywriter` sees an existing subtitle asset and optional export asset | Write one per-match copy JSON under `data/processed/<session>/`, append one `CopyAsset`, write one publishing package JSON, append one `PublishingPackage`, and mark the match key processed |
+| `arl copywriter` sees duplicate subtitle manifest rows for the same `(session_id, match_index)` | Use the latest subtitle row and process the match once, including under `--force-reprocess` |
 | `arl copywriter` sees a valid highlight plan for the current boundary | Prefer overlapping subtitle cues for `recommended_title`, `summary`, `cover_lines`, and `evidence` |
 | `arl copywriter` sees both edge/context windows and high-signal highlight windows | Build metadata from the high-signal cue first even when the edge/context cue has the earlier timestamp |
 | `arl copywriter` sees a persona/finance theme such as `装没钱` + `炒股` plus a generic damage reaction without matching `清线` context | Preserve the richer persona/finance theme in the title; do not synthesize `清线快伤害高` or let generic `伤害这么高` replace it |
@@ -1387,6 +1390,7 @@ class PublishingPackage(BaseModel):
 - Unit test: exporter ffmpeg failure records `deferred_match_keys` without appending placeholder `ExportAsset` rows.
 - Unit test: exporter treats zero-exit MP4 outputs with no video stream as failed and defers the match instead of emitting `ffmpeg_export_succeeded`.
 - Unit test: copywriter emits deterministic title/copy JSON plus one `CopyAsset` from an existing subtitle asset and optional export asset.
+- Unit test: copywriter processes duplicate subtitle manifest rows for the same match only once, including under force reprocess.
 - Unit test: copywriter emits one `PublishingPackage` with summary, cover lines, evidence, and source paths while preserving the existing `CopyAsset` contract.
 - Unit test: copywriter cover lines expand a shortened recommended title with additional high-signal summary points from the subtitle excerpt.
 - Unit test: copywriter creates a streamer/title/session named published video path beside the export and a same-stem cover image when source export and cover assets exist.

@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/export-configuration.md", "reason": "Quality check must verify the new trimming behavior still preserves KDA, continuity, subtitle retiming, and publish export constraints."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Quality check must follow backend testing, contract, and durable-file safety rules."}

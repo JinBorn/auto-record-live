@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/export-configuration.md", "reason": "Defines condensed highlight planning, KDA preservation, continuity bridging, edit-plan export, audio, and validation contracts."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Defines backend testing and contract-safety expectations for pipeline changes."}

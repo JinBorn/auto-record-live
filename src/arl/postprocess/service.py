@@ -11,6 +11,8 @@ from arl.highlights.service import HighlightPlannerService
 from arl.recorder.asset_repair import RecordingAssetRepairService
 from arl.segmenter.semantic_hints import SemanticStageHintService
 from arl.segmenter.service import SegmenterService
+from arl.shared.contracts import ExportAsset, MatchBoundary, RecordingAsset
+from arl.shared.jsonl_store import load_models
 from arl.shared.logging import log
 from arl.subtitles.service import SubtitleService
 
@@ -29,7 +31,7 @@ class PostProcessService:
             stage()
             log("postprocess", f"stage={stage_name} completed")
         log("postprocess", "completed")
-        self._log_status_summary()
+        self._log_status_summary(session_ids=session_ids)
 
     def _stages(
         self,
@@ -95,7 +97,7 @@ class PostProcessService:
             "hint=run `arl repair-recording-assets` before postprocess",
         )
 
-    def _log_status_summary(self) -> None:
+    def _log_status_summary(self, *, session_ids: set[str] | None = None) -> None:
         try:
             from arl.status.service import StatusService
 
@@ -120,4 +122,87 @@ class PostProcessService:
             f"missing_exports={postprocess['missing_exports']} "
             f"missing_copies={postprocess['missing_copies']} "
             f"unregistered_recordings={postprocess['unregistered_recordings']}",
+        )
+        if session_ids is not None:
+            self._log_filtered_session_diagnostics(session_ids)
+
+    def _log_filtered_session_diagnostics(self, session_ids: set[str]) -> None:
+        temp_dir = self.settings.storage.temp_dir
+        recording_assets = load_models(
+            temp_dir / "recording-assets.jsonl",
+            RecordingAsset,
+        )
+        boundaries = load_models(temp_dir / "match-boundaries.jsonl", MatchBoundary)
+        export_assets = load_models(temp_dir / "export-assets.jsonl", ExportAsset)
+
+        recordings_by_session: dict[str, list[RecordingAsset]] = {}
+        boundaries_by_session: dict[str, list[MatchBoundary]] = {}
+        exports_by_session: dict[str, list[ExportAsset]] = {}
+        for asset in recording_assets:
+            recordings_by_session.setdefault(asset.session_id, []).append(asset)
+        for boundary in boundaries:
+            boundaries_by_session.setdefault(boundary.session_id, []).append(boundary)
+        for asset in export_assets:
+            exports_by_session.setdefault(asset.session_id, []).append(asset)
+
+        for session_id in sorted(session_ids):
+            if exports_by_session.get(session_id):
+                continue
+            if not recordings_by_session.get(session_id):
+                log(
+                    "postprocess",
+                    "no_export_for_session "
+                    f"session_id={session_id} reason=recording_asset_missing "
+                    "hint=run `arl repair-recording-assets` before postprocess",
+                )
+                continue
+
+            session_boundaries = boundaries_by_session.get(session_id, [])
+            if not session_boundaries:
+                log(
+                    "postprocess",
+                    "no_export_for_session "
+                    f"session_id={session_id} reason=no_match_boundaries "
+                    "hint=segmenter produced no match boundary",
+                )
+                continue
+
+            usable_boundaries = [
+                boundary
+                for boundary in session_boundaries
+                if boundary.is_complete and boundary.confidence >= 0.8
+            ]
+            if usable_boundaries:
+                log(
+                    "postprocess",
+                    "no_export_for_session "
+                    f"session_id={session_id} reason=usable_boundary_without_export "
+                    f"usable_boundaries={len(usable_boundaries)} "
+                    "hint=check exporter-events.jsonl",
+                )
+                continue
+
+            details = ";".join(
+                self._boundary_diagnostic(boundary)
+                for boundary in sorted(
+                    session_boundaries,
+                    key=lambda item: item.match_index,
+                )
+            )
+            log(
+                "postprocess",
+                "no_export_for_session "
+                f"session_id={session_id} reason=no_usable_match_boundary "
+                f"boundaries={len(session_boundaries)} details={details} "
+                "hint=no export is written until a complete boundary "
+                "with confidence>=0.8 exists",
+            )
+
+    @staticmethod
+    def _boundary_diagnostic(boundary: MatchBoundary) -> str:
+        return (
+            f"match_index={boundary.match_index},"
+            f"complete={str(boundary.is_complete).lower()},"
+            f"confidence={boundary.confidence:.2f},"
+            f"reason={boundary.reason or 'unknown'}"
         )

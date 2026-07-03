@@ -313,6 +313,7 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             "loudnorm=I=-16:TP=-1.5:LRA=11",
         )
         self.assertEqual(settings.highlights.mode, "highlight")
+        self.assertIsNone(settings.highlights.condensed_start_edge_seconds)
         self.assertFalse(settings.editing.enabled)
         self.assertFalse(settings.editing.zoom_enabled)
         self.assertFalse(settings.editing.audio_mixing_enabled)
@@ -325,10 +326,13 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
 
         self.assertTrue(settings.highlights.enabled)
         self.assertEqual(settings.highlights.mode, "condensed")
+        self.assertEqual(settings.highlights.keep_edge_seconds, 10.0)
+        self.assertEqual(settings.highlights.condensed_start_edge_seconds, 1.0)
         self.assertTrue(settings.editing.enabled)
         self.assertTrue(settings.editing.zoom_enabled)
         self.assertEqual(settings.editing.zoom_target, "chat")
         self.assertTrue(settings.editing.audio_mixing_enabled)
+        self.assertEqual(settings.editing.bgm_library_path, Path("data/bgm/library.json"))
         self.assertTrue(settings.export.enable_ffmpeg)
         self.assertTrue(settings.export.burn_subtitles)
         self.assertTrue(settings.export.use_ass_subtitles)
@@ -357,7 +361,13 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertFalse(settings.editing.enabled)
         self.assertFalse(settings.export.use_edit_plans)
         self.assertEqual(published.highlights.mode, "condensed")
+        self.assertEqual(published.highlights.keep_edge_seconds, 10.0)
+        self.assertEqual(published.highlights.condensed_start_edge_seconds, 1.0)
         self.assertTrue(published.editing.enabled)
+        self.assertEqual(
+            published.editing.bgm_library_path,
+            Path("data/bgm/library.json"),
+        )
         self.assertTrue(published.export.use_edit_plans)
         self.assertEqual(published.export.ffmpeg_video_codec, "h264")
         self.assertEqual(published.export.ffmpeg_bitrate, "8000k")
@@ -389,6 +399,22 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
 
         self.assertEqual(published.export.ffmpeg_bitrate, "12M")
         self.assertEqual(published.export.ffmpeg_max_bitrate, "15000k")
+
+    def test_apply_publish_preset_preserves_explicit_bgm_inputs(self) -> None:
+        settings = Settings(
+            editing={
+                "bgm_library_path": Path("C:/audio/custom-library.json"),
+                "bgm_path": Path("C:/audio/manual.mp3"),
+            }
+        )
+
+        published = apply_publish_preset(settings)
+
+        self.assertEqual(
+            published.editing.bgm_library_path,
+            Path("C:/audio/custom-library.json"),
+        )
+        self.assertEqual(published.editing.bgm_path, Path("C:/audio/manual.mp3"))
 
     def test_export_audio_loudnorm_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
@@ -519,6 +545,7 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             os.environ["ARL_EDIT_ZOOM_X_ANCHOR"] = "-0.5"
             os.environ["ARL_EDIT_ZOOM_Y_ANCHOR"] = "1.5"
             os.environ["ARL_EDIT_ZOOM_MAX_SEGMENTS"] = "-1"
+            os.environ["ARL_EDIT_ZOOM_MAX_DURATION_SECONDS"] = "0"
             settings = load_settings()
 
         self.assertTrue(settings.editing.zoom_enabled)
@@ -527,6 +554,7 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(settings.editing.zoom_x_anchor, 0.0)
         self.assertEqual(settings.editing.zoom_y_anchor, 1.0)
         self.assertEqual(settings.editing.zoom_max_segments, 0)
+        self.assertEqual(settings.editing.zoom_max_duration_seconds, 1.0)
 
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             settings = load_settings()
@@ -537,6 +565,7 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(settings.editing.zoom_x_anchor, 0.5)
         self.assertEqual(settings.editing.zoom_y_anchor, 0.5)
         self.assertEqual(settings.editing.zoom_max_segments, 1)
+        self.assertEqual(settings.editing.zoom_max_duration_seconds, 30.0)
 
     def test_highlight_planner_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
@@ -545,12 +574,28 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             os.environ["ARL_HIGHLIGHT_KEYWORD_PADDING_SECONDS"] = "24"
             os.environ["ARL_HIGHLIGHT_MERGE_GAP_SECONDS"] = "60"
             os.environ["ARL_HIGHLIGHT_KEEP_EDGE_SECONDS"] = "20"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_START_EDGE_SECONDS"] = "2.5"
             os.environ["ARL_HIGHLIGHT_MIN_BOUNDARY_DURATION_SECONDS"] = "300"
             os.environ["ARL_HIGHLIGHT_MIN_REDUCTION_SECONDS"] = "45"
             os.environ["ARL_HIGHLIGHT_MIN_RETAINED_SECONDS"] = "180"
             os.environ["ARL_HIGHLIGHT_MIN_RETAINED_FRACTION"] = "0.4"
             os.environ["ARL_HIGHLIGHT_MAX_WINDOWS"] = "5"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_TARGET_DURATION_RANGE"] = "8,19"
+            os.environ[
+                "ARL_HIGHLIGHT_CONDENSED_HIGH_DENSITY_DURATION_RANGE"
+            ] = "15,19"
+            os.environ[
+                "ARL_HIGHLIGHT_CONDENSED_MID_DENSITY_DURATION_RANGE"
+            ] = "10,15"
+            os.environ[
+                "ARL_HIGHLIGHT_CONDENSED_LOW_DENSITY_DURATION_RANGE"
+            ] = "7,10"
             os.environ["ARL_HIGHLIGHT_CONDENSED_VISUAL_SAMPLE_INTERVAL_SECONDS"] = "30"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_BORING_GAP_THRESHOLD_SECONDS"] = "42"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_COMPOSITE_TRIM_ENABLED"] = "0"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_INTERNAL_GAP_TRIM_SECONDS"] = "13"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_INTERNAL_GAP_KEEP_SECONDS"] = "2"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_CONTINUITY_BRIDGE_SECONDS"] = "6"
             os.environ["ARL_HIGHLIGHT_CONDENSED_ACTION_RESOLUTION_TAIL_SECONDS"] = "31"
             os.environ["ARL_HIGHLIGHT_CONDENSED_ACTION_RESOLUTION_GAP_SECONDS"] = "9"
             os.environ["ARL_HIGHLIGHT_CONDENSED_KDA_EVENT_DETECTION_ENABLED"] = "0"
@@ -578,12 +623,31 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(settings.highlights.highlight_padding_seconds, 24.0)
         self.assertEqual(settings.highlights.merge_gap_seconds, 60.0)
         self.assertEqual(settings.highlights.keep_edge_seconds, 20.0)
+        self.assertEqual(settings.highlights.condensed_start_edge_seconds, 2.5)
         self.assertEqual(settings.highlights.min_boundary_duration_seconds, 300.0)
         self.assertEqual(settings.highlights.min_reduction_seconds, 45.0)
         self.assertEqual(settings.highlights.min_retained_seconds, 180.0)
         self.assertEqual(settings.highlights.min_retained_fraction, 0.4)
         self.assertEqual(settings.highlights.max_windows, 5)
+        self.assertEqual(settings.highlights.condensed_target_duration_range, (8, 19))
+        self.assertEqual(
+            settings.highlights.condensed_high_density_duration_range,
+            (15, 19),
+        )
+        self.assertEqual(
+            settings.highlights.condensed_mid_density_duration_range,
+            (10, 15),
+        )
+        self.assertEqual(
+            settings.highlights.condensed_low_density_duration_range,
+            (7, 10),
+        )
         self.assertEqual(settings.highlights.condensed_visual_sample_interval_seconds, 30.0)
+        self.assertEqual(settings.highlights.condensed_boring_gap_threshold_seconds, 42.0)
+        self.assertFalse(settings.highlights.condensed_composite_trim_enabled)
+        self.assertEqual(settings.highlights.condensed_internal_gap_trim_seconds, 13.0)
+        self.assertEqual(settings.highlights.condensed_internal_gap_keep_seconds, 2.0)
+        self.assertEqual(settings.highlights.condensed_continuity_bridge_seconds, 6.0)
         self.assertEqual(settings.highlights.condensed_action_resolution_tail_seconds, 31.0)
         self.assertEqual(settings.highlights.condensed_action_resolution_gap_seconds, 9.0)
         self.assertFalse(settings.highlights.condensed_kda_event_detection_enabled)
@@ -615,6 +679,28 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             settings.highlights.condensed_kda_death_reaction_tail_seconds,
             4.0,
         )
+
+    def test_highlight_condensed_defaults_use_dynamic_publish_range(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            settings = load_settings()
+
+        self.assertEqual(settings.highlights.condensed_target_duration_range, (7, 20))
+        self.assertEqual(
+            settings.highlights.condensed_high_density_duration_range,
+            (16, 20),
+        )
+        self.assertEqual(
+            settings.highlights.condensed_mid_density_duration_range,
+            (10, 16),
+        )
+        self.assertEqual(
+            settings.highlights.condensed_low_density_duration_range,
+            (7, 11),
+        )
+        self.assertEqual(settings.highlights.condensed_kda_kill_preroll_seconds, 15.0)
+        self.assertEqual(settings.highlights.condensed_kda_death_preroll_seconds, 30.0)
+        self.assertEqual(settings.highlights.condensed_kda_postroll_seconds, 5.0)
+        self.assertEqual(settings.highlights.condensed_continuity_bridge_seconds, 3.0)
 
     def test_maintenance_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):

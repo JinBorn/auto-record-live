@@ -6,6 +6,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import cv2
+import numpy as np
+
 from arl.config import HighlightSettings, Settings, StorageSettings
 from arl.highlights.models import ClassifiedCue, HighlightPlannerStateFile
 from arl.highlights.service import HighlightPlannerService, _SrtCue
@@ -445,7 +448,7 @@ class HighlightPlannerServiceTest(unittest.TestCase):
 
         self.assertEqual(len(cues), 1)
         self.assertEqual(cues[0].category, "key_event")
-        self.assertEqual(cues[0].started_at_seconds, 35.0)
+        self.assertEqual(cues[0].started_at_seconds, 65.0)
         self.assertEqual(cues[0].ended_at_seconds, 195.0)
         self.assertIn("kills=2->3", cues[0].text)
         self.assertIn("deaths=0->1", cues[0].text)
@@ -571,6 +574,44 @@ class HighlightPlannerServiceTest(unittest.TestCase):
         self.assertEqual(trimmed[0].started_at_seconds, 100.0)
         self.assertEqual(trimmed[0].ended_at_seconds, 163.0)
 
+    def test_trim_silent_kda_death_waits_preserves_observation_lead_in(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        windows = [
+            HighlightClipWindow(
+                started_at_seconds=100.0,
+                ended_at_seconds=170.0,
+                reason="condensed_key_event",
+            )
+        ]
+        kda_cues = [
+            ClassifiedCue(
+                started_at_seconds=100.0,
+                ended_at_seconds=165.0,
+                text=(
+                    "kda_change kills=5->5 deaths=0->1 "
+                    "previous_at=150.000 current_at=160.000"
+                ),
+                category="key_event",
+                priority=1.0,
+            )
+        ]
+        speech_cues = [
+            _SrtCue(120.0, 130.0, "fight setup"),
+            _SrtCue(158.0, 159.0, "death reaction"),
+        ]
+
+        trimmed = service._trim_silent_kda_death_waits(
+            windows,
+            kda_event_cues=kda_cues,
+            speech_cues=speech_cues,
+            classified_cues=kda_cues,
+        )
+
+        self.assertEqual(
+            [(item.started_at_seconds, item.ended_at_seconds) for item in trimmed],
+            [(100.0, 170.0)],
+        )
+
     def test_trim_post_death_waits_drops_context_and_shifts_later_key_window(self) -> None:
         service = HighlightPlannerService(self.settings)
         windows = [
@@ -612,6 +653,48 @@ class HighlightPlannerServiceTest(unittest.TestCase):
         self.assertEqual(trimmed[0].started_at_seconds, 1106.9)
         self.assertEqual(trimmed[0].ended_at_seconds, 1360.0)
         self.assertEqual(trimmed[0].reason, "condensed_key_event")
+
+    def test_protect_death_like_continuity_entries_extends_bridge_to_previous_end(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        boundary = MatchBoundary(
+            session_id="session-death-bridge",
+            match_index=1,
+            started_at_seconds=1000.0,
+            ended_at_seconds=1300.0,
+            confidence=0.9,
+        )
+        recording = RecordingAsset(
+            session_id="session-death-bridge",
+            source_type=SourceType.DIRECT_STREAM,
+            path="recording.mp4",
+            started_at=datetime.now(timezone.utc),
+        )
+        windows = [
+            HighlightClipWindow(
+                started_at_seconds=100.0,
+                ended_at_seconds=120.0,
+                reason="condensed_key_event",
+            ),
+            HighlightClipWindow(
+                started_at_seconds=138.0,
+                ended_at_seconds=160.0,
+                reason="condensed_continuity",
+            ),
+        ]
+
+        with patch.object(
+            service,
+            "_sample_boundary_frame",
+            return_value=_death_like_frame(),
+        ):
+            protected = service._protect_death_like_continuity_entries(
+                windows,
+                boundary=boundary,
+                recording=recording,
+            )
+
+        self.assertEqual(protected[1].started_at_seconds, 120.0)
+        self.assertEqual(protected[1].ended_at_seconds, 160.0)
 
     def test_trim_post_death_waits_keeps_later_kda_kill_window(self) -> None:
         service = HighlightPlannerService(self.settings)
@@ -658,6 +741,103 @@ class HighlightPlannerServiceTest(unittest.TestCase):
         self.assertEqual(len(trimmed), 1)
         self.assertEqual(trimmed[0].started_at_seconds, 1037.52)
         self.assertEqual(trimmed[0].ended_at_seconds, 1360.0)
+
+    def test_trim_low_value_internal_gaps_splits_long_no_signal_gap(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        windows = [
+            HighlightClipWindow(
+                started_at_seconds=0.0,
+                ended_at_seconds=100.0,
+                reason="condensed_key_event",
+            )
+        ]
+        speech_cues = [
+            _SrtCue(0.0, 10.0, "opening narration"),
+            _SrtCue(90.0, 100.0, "ending narration"),
+        ]
+
+        trimmed = service._trim_low_value_internal_gaps(
+            windows,
+            speech_cues=speech_cues,
+            kda_event_cues=[],
+            classified_cues=[],
+            match_duration_seconds=120.0,
+        )
+
+        self.assertEqual(
+            [(item.started_at_seconds, item.ended_at_seconds) for item in trimmed],
+            [(0.0, 13.0), (87.0, 100.0)],
+        )
+
+    def test_trim_low_value_internal_gaps_preserves_silent_visual_action(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        windows = [
+            HighlightClipWindow(
+                started_at_seconds=0.0,
+                ended_at_seconds=100.0,
+                reason="condensed_key_event",
+            )
+        ]
+        speech_cues = [
+            _SrtCue(0.0, 10.0, "opening narration"),
+            _SrtCue(90.0, 100.0, "ending narration"),
+        ]
+        classified_cues = [
+            ClassifiedCue(50.0, 60.0, "visual fight cluster", "key_event", 1.0)
+        ]
+
+        trimmed = service._trim_low_value_internal_gaps(
+            windows,
+            speech_cues=speech_cues,
+            kda_event_cues=[],
+            classified_cues=classified_cues,
+            match_duration_seconds=120.0,
+        )
+
+        self.assertEqual(
+            [(item.started_at_seconds, item.ended_at_seconds) for item in trimmed],
+            [(0.0, 13.0), (47.0, 63.0), (87.0, 100.0)],
+        )
+
+    def test_trim_low_value_internal_gaps_preserves_kda_event_coverage(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        windows = [
+            HighlightClipWindow(
+                started_at_seconds=0.0,
+                ended_at_seconds=100.0,
+                reason="condensed_key_event",
+            )
+        ]
+        kda_cues = [
+            ClassifiedCue(
+                40.0,
+                70.0,
+                "kda_change kills=0->1 deaths=0->0 previous_at=50.000 current_at=65.000",
+                "key_event",
+                1.0,
+            )
+        ]
+
+        trimmed = service._trim_low_value_internal_gaps(
+            windows,
+            speech_cues=[],
+            kda_event_cues=kda_cues,
+            classified_cues=kda_cues,
+            match_duration_seconds=120.0,
+        )
+
+        self.assertTrue(
+            any(
+                item.reason == "condensed_key_event"
+                and item.started_at_seconds <= 40.0
+                and item.ended_at_seconds >= 70.0
+                for item in trimmed
+            )
+        )
+        self.assertLess(
+            sum(item.ended_at_seconds - item.started_at_seconds for item in trimmed),
+            100.0,
+        )
 
     def test_extend_action_resolution_keeps_failed_gank_explanation(self) -> None:
         service = HighlightPlannerService(self.settings)
@@ -746,6 +926,108 @@ class HighlightPlannerServiceTest(unittest.TestCase):
         self.assertEqual(protected[0].started_at_seconds, 10.0)
         self.assertEqual(protected[0].ended_at_seconds, 34.0)
 
+    def test_condensed_duration_budget_keeps_dense_content_short(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        windows = [
+            HighlightClipWindow(
+                started_at_seconds=0.0,
+                ended_at_seconds=20.0,
+                reason="condensed_match_context",
+            ),
+            HighlightClipWindow(
+                started_at_seconds=80.0,
+                ended_at_seconds=220.0,
+                reason="condensed_key_event",
+            ),
+            HighlightClipWindow(
+                started_at_seconds=500.0,
+                ended_at_seconds=760.0,
+                reason="condensed_key_event",
+            ),
+            HighlightClipWindow(
+                started_at_seconds=880.0,
+                ended_at_seconds=900.0,
+                reason="condensed_match_context",
+            ),
+        ]
+        classified_cues = [
+            ClassifiedCue(100.0, 104.0, "opening kill", "key_event", 1.0),
+            ClassifiedCue(520.0, 524.0, "dragon fight", "key_event", 1.0),
+            ClassifiedCue(540.0, 544.0, "double kill", "key_event", 1.0),
+            ClassifiedCue(560.0, 564.0, "tower dive", "key_event", 1.0),
+            ClassifiedCue(700.0, 704.0, "rotation", "tactical", 0.7),
+        ]
+
+        budgeted = service._enforce_condensed_duration_budget(
+            windows,
+            classified_cues=classified_cues,
+            target_duration_seconds=120.0,
+            match_duration_seconds=900.0,
+        )
+
+        total = sum(
+            window.ended_at_seconds - window.started_at_seconds
+            for window in budgeted
+        )
+        self.assertLessEqual(total, 180.0)
+        self.assertEqual(budgeted[0].started_at_seconds, 0.0)
+        self.assertEqual(budgeted[-1].ended_at_seconds, 900.0)
+        self.assertTrue(
+            any(
+                window.started_at_seconds <= 540.0 <= window.ended_at_seconds
+                for window in budgeted
+            )
+        )
+
+    def test_restore_missing_kda_event_windows_requires_full_key_event_coverage(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        windows = [
+            HighlightClipWindow(
+                started_at_seconds=0.0,
+                ended_at_seconds=38.0,
+                reason="condensed_match_context",
+            ),
+            HighlightClipWindow(
+                started_at_seconds=83.0,
+                ended_at_seconds=88.0,
+                reason="condensed_continuity",
+            ),
+            HighlightClipWindow(
+                started_at_seconds=127.0,
+                ended_at_seconds=132.0,
+                reason="condensed_continuity",
+            ),
+            HighlightClipWindow(
+                started_at_seconds=177.0,
+                ended_at_seconds=182.0,
+                reason="condensed_continuity",
+            ),
+        ]
+        kda_cues = [
+            ClassifiedCue(
+                70.0,
+                185.0,
+                "kda_change kills=0->1 deaths=0->1 previous_at=130.000 current_at=180.000",
+                "key_event",
+                1.0,
+            )
+        ]
+
+        restored = service._restore_missing_kda_event_windows(
+            windows,
+            kda_event_cues=kda_cues,
+            match_duration_seconds=300.0,
+        )
+
+        self.assertTrue(
+            any(
+                window.reason == "condensed_key_event"
+                and window.started_at_seconds <= 70.0
+                and window.ended_at_seconds >= 185.0
+                for window in restored
+            )
+        )
+
     def test_condensed_helpers_clip_cues_and_windows_to_boundary_duration(self) -> None:
         service = HighlightPlannerService(self.settings)
 
@@ -788,6 +1070,62 @@ class HighlightPlannerServiceTest(unittest.TestCase):
         self.assertEqual(len(windows), 2)
         self.assertEqual(windows[-1].reason, "condensed_key_event")
         self.assertEqual(windows[-1].ended_at_seconds, 180.0)
+
+    def test_condensed_clamp_preserves_short_boundary_context_windows(self) -> None:
+        service = HighlightPlannerService(self.settings)
+
+        windows = service._clamp_highlight_windows(
+            [
+                HighlightClipWindow(
+                    started_at_seconds=0.0,
+                    ended_at_seconds=1.0,
+                    reason="condensed_match_context",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=10.0,
+                    ended_at_seconds=11.0,
+                    reason="condensed_continuity",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=99.0,
+                    ended_at_seconds=100.0,
+                    reason="condensed_match_context",
+                ),
+            ],
+            100.0,
+        )
+
+        self.assertEqual(len(windows), 2)
+        self.assertEqual(windows[0].started_at_seconds, 0.0)
+        self.assertEqual(windows[0].ended_at_seconds, 1.0)
+        self.assertEqual(windows[-1].started_at_seconds, 99.0)
+        self.assertEqual(windows[-1].ended_at_seconds, 100.0)
+
+    def test_short_start_context_is_not_extended_by_opening_subtitle(self) -> None:
+        settings = self.settings.model_copy(
+            deep=True,
+            update={
+                "highlights": self.settings.highlights.model_copy(
+                    update={"condensed_start_edge_seconds": 1.0}
+                )
+            },
+        )
+        service = HighlightPlannerService(settings)
+
+        windows = service._protect_speech_boundaries(
+            [
+                HighlightClipWindow(
+                    started_at_seconds=0.0,
+                    ended_at_seconds=1.0,
+                    reason="condensed_match_context",
+                )
+            ],
+            speech_cues=[_SrtCue(0.0, 8.0, "opening low value narration")],
+            match_duration_seconds=100.0,
+        )
+
+        self.assertEqual(windows[0].started_at_seconds, 0.0)
+        self.assertEqual(windows[0].ended_at_seconds, 1.0)
 
     def test_planner_replans_when_existing_plan_boundary_is_stale(self) -> None:
         session_id = "session-highlight-stale-plan"
@@ -881,6 +1219,30 @@ class HighlightPlannerServiceTest(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         return path
+
+
+def _death_like_frame() -> np.ndarray:
+    frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    frame[:, :] = (42, 42, 42)
+    frame[0:75, 1500:1920] = 15
+    cv2.rectangle(frame, (600, 300), (1300, 670), (70, 70, 70), 3)
+    cv2.rectangle(frame, (630, 340), (1270, 630), (55, 55, 55), 2)
+    _draw_grid(frame, 600, 860, 780, 200)
+    return frame
+
+
+def _draw_grid(
+    frame: np.ndarray,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+) -> None:
+    cv2.rectangle(frame, (x, y), (x + width, y + height), (220, 220, 220), 3)
+    for offset in range(20, width, 28):
+        cv2.line(frame, (x + offset, y), (x + offset, y + height), (180, 180, 180), 2)
+    for offset in range(20, height, 28):
+        cv2.line(frame, (x, y + offset), (x + width, y + offset), (180, 180, 180), 2)
 
 
 if __name__ == "__main__":

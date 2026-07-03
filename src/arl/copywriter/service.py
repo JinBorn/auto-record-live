@@ -237,7 +237,7 @@ class CopywriterService:
         match_indices: set[int] | None,
     ) -> list[SubtitleAsset]:
         if session_ids is None and match_indices is None:
-            return subtitles
+            return self._latest_subtitles_by_match(subtitles)
         filtered: list[SubtitleAsset] = []
         for subtitle in subtitles:
             if session_ids is not None and subtitle.session_id not in session_ids:
@@ -245,7 +245,18 @@ class CopywriterService:
             if match_indices is not None and subtitle.match_index not in match_indices:
                 continue
             filtered.append(subtitle)
-        return filtered
+        return self._latest_subtitles_by_match(filtered)
+
+    @staticmethod
+    def _latest_subtitles_by_match(subtitles: list[SubtitleAsset]) -> list[SubtitleAsset]:
+        latest_by_key: dict[tuple[str, int], SubtitleAsset] = {}
+        key_order: list[tuple[str, int]] = []
+        for subtitle in subtitles:
+            key = (subtitle.session_id, subtitle.match_index)
+            if key not in latest_by_key:
+                key_order.append(key)
+            latest_by_key[key] = subtitle
+        return [latest_by_key[key] for key in key_order]
 
     def _build_outputs(
         self,

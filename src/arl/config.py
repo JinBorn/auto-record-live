@@ -13,6 +13,7 @@ DEFAULT_ASR_PREPROCESS_AUDIO_FILTER = (
 )
 
 DEFAULT_EXPORT_AUDIO_LOUDNORM_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11"
+DEFAULT_PUBLISH_BGM_LIBRARY_PATH = Path("data/bgm/library.json")
 
 
 def _load_dotenv(dotenv_path: Path) -> None:
@@ -191,6 +192,7 @@ class HighlightSettings(BaseModel):
     highlight_padding_seconds: float = 22.0
     merge_gap_seconds: float = 10.0
     keep_edge_seconds: float = 30.0
+    condensed_start_edge_seconds: float | None = None
     min_boundary_duration_seconds: float = 600.0
     min_reduction_seconds: float = 120.0
     min_retained_seconds: float = 480.0
@@ -205,19 +207,23 @@ class HighlightSettings(BaseModel):
     condensed_weight_baseline: float = 0.1
 
     # 目标时长映射
-    condensed_target_duration_range: tuple[int, int] = (6, 25)  # 分钟
+    condensed_target_duration_range: tuple[int, int] = (7, 20)  # 分钟
     condensed_high_density_threshold: float = 0.8
     condensed_low_density_threshold: float = 0.5
-    condensed_high_density_duration_range: tuple[int, int] = (20, 25)
-    condensed_mid_density_duration_range: tuple[int, int] = (12, 18)
-    condensed_low_density_duration_range: tuple[int, int] = (6, 10)
+    condensed_high_density_duration_range: tuple[int, int] = (16, 20)
+    condensed_mid_density_duration_range: tuple[int, int] = (10, 16)
+    condensed_low_density_duration_range: tuple[int, int] = (7, 11)
 
     # 窗口生成参数
     condensed_context_padding_seconds: float = 5.0
     condensed_merge_gap_seconds: float = 8.0
     condensed_min_window_duration_seconds: float = 3.0
     condensed_silent_gap_threshold_seconds: float = 60.0
-    condensed_boring_gap_threshold_seconds: float = 120.0
+    condensed_boring_gap_threshold_seconds: float = 45.0
+    condensed_composite_trim_enabled: bool = True
+    condensed_internal_gap_trim_seconds: float = 8.0
+    condensed_internal_gap_keep_seconds: float = 3.0
+    condensed_continuity_bridge_seconds: float = 3.0
     condensed_action_resolution_tail_seconds: float = 40.0
     condensed_action_resolution_gap_seconds: float = 8.0
 
@@ -245,8 +251,8 @@ class HighlightSettings(BaseModel):
     condensed_kda_min_confidence: float = 0.4
     condensed_kda_max_reading_gap_seconds: float = 120.0
     condensed_kda_max_event_delta: int = 8
-    condensed_kda_kill_preroll_seconds: float = 30.0
-    condensed_kda_death_preroll_seconds: float = 60.0
+    condensed_kda_kill_preroll_seconds: float = 15.0
+    condensed_kda_death_preroll_seconds: float = 30.0
     condensed_kda_postroll_seconds: float = 5.0
     condensed_kda_post_death_kill_suppression_seconds: float = 0.0
     condensed_kda_death_wait_trim_seconds: float = 120.0
@@ -278,6 +284,7 @@ class EditingSettings(BaseModel):
     zoom_x_anchor: float = 0.5
     zoom_y_anchor: float = 0.5
     zoom_max_segments: int = 1
+    zoom_max_duration_seconds: float = 30.0
     audio_mixing_enabled: bool = False
     skip_bgm_when_source_has_music: bool = True
     bgm_library_path: Path | None = None
@@ -402,6 +409,9 @@ def apply_publish_preset(settings: Settings) -> Settings:
         settings.export.ffmpeg_max_bitrate,
         "10000k",
     )
+    bgm_library_path = settings.editing.bgm_library_path
+    if bgm_library_path is None and settings.editing.bgm_path is None:
+        bgm_library_path = DEFAULT_PUBLISH_BGM_LIBRARY_PATH
 
     return settings.model_copy(
         deep=True,
@@ -410,6 +420,19 @@ def apply_publish_preset(settings: Settings) -> Settings:
                 update={
                     "enabled": True,
                     "mode": "condensed",
+                    "keep_edge_seconds": min(
+                        settings.highlights.keep_edge_seconds,
+                        10.0,
+                    ),
+                    "condensed_start_edge_seconds": min(
+                        (
+                            settings.highlights.condensed_start_edge_seconds
+                            if settings.highlights.condensed_start_edge_seconds
+                            is not None
+                            else settings.highlights.keep_edge_seconds
+                        ),
+                        1.0,
+                    ),
                 }
             ),
             "editing": settings.editing.model_copy(
@@ -417,6 +440,7 @@ def apply_publish_preset(settings: Settings) -> Settings:
                     "enabled": True,
                     "zoom_enabled": True,
                     "audio_mixing_enabled": True,
+                    "bgm_library_path": bgm_library_path,
                 }
             ),
             "export": settings.export.model_copy(
@@ -520,6 +544,18 @@ def _env_int_tuple4(
     if len(parts) != 4:
         raise ValueError(f"{key} must contain four comma-separated integers")
     return (int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3]))
+
+
+def _env_minute_range(key: str, default: tuple[int, int]) -> tuple[int, int]:
+    raw = os.getenv(key, "").strip()
+    if not raw:
+        return default
+    parts = [item.strip() for item in raw.split(",")]
+    if len(parts) != 2:
+        raise ValueError(f"{key} must contain two comma-separated integers")
+    lower = max(1, int(parts[0]))
+    upper = max(lower, int(parts[1]))
+    return (lower, upper)
 
 
 def _pick_indexed(values: list[str], index: int, default: str = "") -> str:
@@ -684,6 +720,22 @@ def load_settings() -> Settings:
 
     stage_keywords_path_raw = os.getenv("ARL_STAGE_KEYWORDS_PATH", "").strip()
     stage_keywords_path = Path(stage_keywords_path_raw) if stage_keywords_path_raw else None
+    condensed_target_duration_range = _env_minute_range(
+        "ARL_HIGHLIGHT_CONDENSED_TARGET_DURATION_RANGE",
+        (7, 20),
+    )
+    condensed_high_density_duration_range = _env_minute_range(
+        "ARL_HIGHLIGHT_CONDENSED_HIGH_DENSITY_DURATION_RANGE",
+        (16, 20),
+    )
+    condensed_mid_density_duration_range = _env_minute_range(
+        "ARL_HIGHLIGHT_CONDENSED_MID_DENSITY_DURATION_RANGE",
+        (10, 16),
+    )
+    condensed_low_density_duration_range = _env_minute_range(
+        "ARL_HIGHLIGHT_CONDENSED_LOW_DENSITY_DURATION_RANGE",
+        (7, 11),
+    )
 
     settings = Settings(
         douyin=douyin_settings,
@@ -836,6 +888,14 @@ def load_settings() -> Settings:
                 0.0,
                 _env_float("ARL_HIGHLIGHT_KEEP_EDGE_SECONDS", 30.0),
             ),
+            condensed_start_edge_seconds=(
+                max(
+                    0.0,
+                    _env_float("ARL_HIGHLIGHT_CONDENSED_START_EDGE_SECONDS", 0.0),
+                )
+                if os.getenv("ARL_HIGHLIGHT_CONDENSED_START_EDGE_SECONDS", "").strip()
+                else None
+            ),
             min_boundary_duration_seconds=max(
                 0.0,
                 _env_float("ARL_HIGHLIGHT_MIN_BOUNDARY_DURATION_SECONDS", 600.0),
@@ -853,11 +913,47 @@ def load_settings() -> Settings:
                 max(0.0, _env_float("ARL_HIGHLIGHT_MIN_RETAINED_FRACTION", 0.55)),
             ),
             max_windows=max(1, _env_int("ARL_HIGHLIGHT_MAX_WINDOWS", 8)),
+            condensed_target_duration_range=condensed_target_duration_range,
+            condensed_high_density_duration_range=condensed_high_density_duration_range,
+            condensed_mid_density_duration_range=condensed_mid_density_duration_range,
+            condensed_low_density_duration_range=condensed_low_density_duration_range,
             condensed_visual_sample_interval_seconds=max(
                 1.0,
                 _env_float(
                     "ARL_HIGHLIGHT_CONDENSED_VISUAL_SAMPLE_INTERVAL_SECONDS",
                     10.0,
+                ),
+            ),
+            condensed_boring_gap_threshold_seconds=max(
+                1.0,
+                _env_float(
+                    "ARL_HIGHLIGHT_CONDENSED_BORING_GAP_THRESHOLD_SECONDS",
+                    45.0,
+                ),
+            ),
+            condensed_composite_trim_enabled=_env_bool(
+                "ARL_HIGHLIGHT_CONDENSED_COMPOSITE_TRIM_ENABLED",
+                True,
+            ),
+            condensed_internal_gap_trim_seconds=max(
+                0.0,
+                _env_float(
+                    "ARL_HIGHLIGHT_CONDENSED_INTERNAL_GAP_TRIM_SECONDS",
+                    8.0,
+                ),
+            ),
+            condensed_internal_gap_keep_seconds=max(
+                0.0,
+                _env_float(
+                    "ARL_HIGHLIGHT_CONDENSED_INTERNAL_GAP_KEEP_SECONDS",
+                    3.0,
+                ),
+            ),
+            condensed_continuity_bridge_seconds=max(
+                0.0,
+                _env_float(
+                    "ARL_HIGHLIGHT_CONDENSED_CONTINUITY_BRIDGE_SECONDS",
+                    3.0,
                 ),
             ),
             condensed_action_resolution_tail_seconds=max(
@@ -909,11 +1005,11 @@ def load_settings() -> Settings:
             ),
             condensed_kda_kill_preroll_seconds=max(
                 0.0,
-                _env_float("ARL_HIGHLIGHT_CONDENSED_KDA_KILL_PREROLL_SECONDS", 30.0),
+                _env_float("ARL_HIGHLIGHT_CONDENSED_KDA_KILL_PREROLL_SECONDS", 15.0),
             ),
             condensed_kda_death_preroll_seconds=max(
                 0.0,
-                _env_float("ARL_HIGHLIGHT_CONDENSED_KDA_DEATH_PREROLL_SECONDS", 60.0),
+                _env_float("ARL_HIGHLIGHT_CONDENSED_KDA_DEATH_PREROLL_SECONDS", 30.0),
             ),
             condensed_kda_postroll_seconds=max(
                 0.0,
@@ -981,6 +1077,10 @@ def load_settings() -> Settings:
                 max(0.0, _env_float("ARL_EDIT_ZOOM_Y_ANCHOR", 0.5)),
             ),
             zoom_max_segments=max(0, _env_int("ARL_EDIT_ZOOM_MAX_SEGMENTS", 1)),
+            zoom_max_duration_seconds=max(
+                1.0,
+                _env_float("ARL_EDIT_ZOOM_MAX_DURATION_SECONDS", 30.0),
+            ),
             audio_mixing_enabled=_env_bool(
                 "ARL_EDIT_AUDIO_MIXING_ENABLED",
                 False,

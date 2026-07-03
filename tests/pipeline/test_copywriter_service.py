@@ -181,6 +181,34 @@ class CopywriterServiceTest(unittest.TestCase):
             " ".join([copy_assets[-1].title, packages[-1].recommended_title])
         )
 
+    def test_duplicate_subtitle_manifest_rows_process_once(self) -> None:
+        session_id = "session-copywriter-duplicate-subtitles"
+        subtitle_path = self._write_subtitle(
+            session_id,
+            "1\n00:00:00,000 --> 00:00:02,000\nduplicate subtitle row\n",
+        )
+        for _ in range(2):
+            append_model(
+                self.temp_root / "subtitle-assets.jsonl",
+                SubtitleAsset(
+                    session_id=session_id,
+                    match_index=1,
+                    path=str(subtitle_path),
+                    format="srt",
+                ),
+            )
+
+        CopywriterService(self.settings).run(force_reprocess=True)
+
+        copy_assets = load_models(self.temp_root / "copy-assets.jsonl", CopyAsset)
+        self.assertEqual(len(copy_assets), 1)
+        packages = load_models(self.temp_root / "publishing-packages.jsonl", PublishingPackage)
+        self.assertEqual(len(packages), 1)
+        state = CopywriterStateFile.model_validate_json(
+            (self.temp_root / "copywriter-state.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(state.processed_match_keys, [f"{session_id}:1"])
+
     def test_missing_subtitle_is_skipped_without_processing_key(self) -> None:
         session_id = "session-copywriter-missing"
         append_model(

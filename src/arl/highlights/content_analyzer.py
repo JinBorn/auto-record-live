@@ -29,9 +29,9 @@ def analyze_content_density(
     visual_sample_interval: float = 10.0,
     high_density_threshold: float = 0.8,
     low_density_threshold: float = 0.5,
-    high_density_duration_range: tuple[int, int] = (20, 25),
-    mid_density_duration_range: tuple[int, int] = (12, 18),
-    low_density_duration_range: tuple[int, int] = (6, 10),
+    high_density_duration_range: tuple[int, int] = (16, 20),
+    mid_density_duration_range: tuple[int, int] = (10, 16),
+    low_density_duration_range: tuple[int, int] = (7, 11),
 ) -> ContentDensityResult:
     """分析内容密度并计算目标时长。
 

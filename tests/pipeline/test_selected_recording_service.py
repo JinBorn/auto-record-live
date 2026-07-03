@@ -13,6 +13,13 @@ from arl.config import (
     Settings,
     StorageSettings,
 )
+from arl.orchestrator.models import (
+    OrchestratorStateFile,
+    RecordingJobRecord,
+    RecordingJobStatus,
+    SessionRecord,
+    SessionStatus,
+)
 from arl.selected_recording.service import SelectedRecordingService
 from arl.shared.contracts import LiveState, SourceType
 from arl.windows_agent.models import AgentSnapshot
@@ -178,6 +185,109 @@ class SelectedRecordingServiceTest(unittest.TestCase):
     def test_invalid_room_index_raises_clear_error(self) -> None:
         with self.assertRaisesRegex(ValueError, "valid range is 1..3"):
             SelectedRecordingService(self.settings).run(room_indices=[4])
+
+    def test_continues_with_new_cycle_when_successful_job_ends_while_live(self) -> None:
+        live_after_success = OrchestratorStateFile(
+            active_session_id_by_platform={
+                "bilibili:https://live.bilibili.com/222": "session-live"
+            },
+            sessions=[
+                SessionRecord(
+                    session_id="session-live",
+                    streamer_name="bili-b",
+                    room_url="https://live.bilibili.com/222",
+                    platform="bilibili",
+                    source_type=SourceType.DIRECT_STREAM,
+                    stream_url="https://cdn.example/live.m3u8",
+                    status=SessionStatus.LIVE,
+                    started_at=_NOW,
+                )
+            ],
+            recording_jobs=[
+                RecordingJobRecord(
+                    job_id="job-stopped",
+                    session_id="session-live",
+                    platform="bilibili",
+                    source_type=SourceType.DIRECT_STREAM,
+                    stream_url="https://cdn.example/live.m3u8",
+                    status=RecordingJobStatus.STOPPED,
+                    created_at=_NOW,
+                    ended_at=_NOW,
+                )
+            ],
+        )
+        offline_after_next_cycle = OrchestratorStateFile()
+
+        with self._patch_stages(), patch(
+            "arl.selected_recording.service.load_orchestrator_state",
+            side_effect=[live_after_success, offline_after_next_cycle],
+        ), patch("arl.selected_recording.service.time.sleep") as sleep:
+            result = SelectedRecordingService(self.settings).run(room_indices=[2])
+
+        self.assertEqual(
+            [call["name"] for call in _StageCalls.calls],
+            [
+                "agent",
+                "orchestrator",
+                "recorder",
+                "orchestrator",
+                "agent",
+                "orchestrator",
+                "recorder",
+                "orchestrator",
+            ],
+        )
+        sleep.assert_called_once_with(
+            self.settings.windows_agent.poll_interval_seconds
+        )
+        self.assertEqual(result.sessions, 1)
+        self.assertEqual(result.recording_jobs_by_status, {"stopped": 1})
+        self.assertEqual(len(result.state_dirs or []), 2)
+
+    def test_does_not_continue_after_failed_live_cycle(self) -> None:
+        failed_live_state = OrchestratorStateFile(
+            active_session_id_by_platform={
+                "bilibili:https://live.bilibili.com/222": "session-live"
+            },
+            sessions=[
+                SessionRecord(
+                    session_id="session-live",
+                    streamer_name="bili-b",
+                    room_url="https://live.bilibili.com/222",
+                    platform="bilibili",
+                    source_type=SourceType.DIRECT_STREAM,
+                    stream_url="https://cdn.example/live.m3u8",
+                    status=SessionStatus.LIVE,
+                    started_at=_NOW,
+                )
+            ],
+            recording_jobs=[
+                RecordingJobRecord(
+                    job_id="job-failed",
+                    session_id="session-live",
+                    platform="bilibili",
+                    source_type=SourceType.DIRECT_STREAM,
+                    stream_url="https://cdn.example/live.m3u8",
+                    status=RecordingJobStatus.FAILED,
+                    created_at=_NOW,
+                    ended_at=_NOW,
+                    stop_reason="http_403_forbidden",
+                )
+            ],
+        )
+
+        with self._patch_stages(), patch(
+            "arl.selected_recording.service.load_orchestrator_state",
+            return_value=failed_live_state,
+        ), patch("arl.selected_recording.service.time.sleep") as sleep:
+            result = SelectedRecordingService(self.settings).run(room_indices=[2])
+
+        self.assertEqual(
+            [call["name"] for call in _StageCalls.calls],
+            ["agent", "orchestrator", "recorder", "orchestrator"],
+        )
+        sleep.assert_not_called()
+        self.assertEqual(result.recording_jobs_by_status, {"failed": 1})
 
     def _patch_stages(self):
         return patch.multiple(
