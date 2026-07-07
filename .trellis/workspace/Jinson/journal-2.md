@@ -434,3 +434,36 @@ Added the quality-report CLI, report service, threshold config, subtitle retimin
 ### Next Steps
 
 - None - task complete
+
+
+## Session 61: LLM copywriting engine
+
+**Date**: 2026-07-07
+**Task**: LLM copywriting engine
+**Branch**: `main`
+
+### Summary
+
+Implemented the two-phase LLM copywriter: env-driven OpenAI-compatible provider, durable semantic assets, cached semantic phase before edit planning, LLM-backed publishing copy after export, teaser hint consumption, reset/status/env/spec updates, tests, and live DeepSeek smoke validation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `026bb16` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
