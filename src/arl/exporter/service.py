@@ -33,6 +33,10 @@ from arl.shared.ffmpeg_runner import rotate_stderr_logs, run_ffmpeg_attempt
 from arl.shared.jsonl_store import append_model, load_models
 from arl.shared.logging import log
 from arl.subtitles.ass import AssSubtitleStyle, SrtCue, parse_srt_cues, write_ass_from_srt
+from arl.subtitles.retime import (
+    retime_srt_cues_for_edit_plan,
+    retime_srt_cues_for_highlight_plan,
+)
 
 
 _BGM_GAIN_RANGE_DB = (-60.0, 0.0)
@@ -1882,54 +1886,14 @@ class ExporterService:
         source_cues: list[SrtCue],
         edit_plan: EditPlanAsset,
     ) -> list[SrtCue]:
-        retimed: list[SrtCue] = []
-        output_cursor = 0.0
-        for segment in edit_plan.timeline:
-            segment_start = segment.source_start_seconds
-            segment_end = segment.source_end_seconds
-            for cue in source_cues:
-                overlap_start = max(cue.started_at_seconds, segment_start)
-                overlap_end = min(cue.ended_at_seconds, segment_end)
-                if overlap_end - overlap_start <= 0.05:
-                    continue
-                retimed.append(
-                    SrtCue(
-                        started_at_seconds=output_cursor
-                        + (overlap_start - segment_start),
-                        ended_at_seconds=output_cursor
-                        + (overlap_end - segment_start),
-                        text=cue.text,
-                    )
-                )
-            output_cursor += max(0.0, segment_end - segment_start)
-        return retimed
+        return retime_srt_cues_for_edit_plan(source_cues, edit_plan)
 
     @staticmethod
     def _retime_srt_cues_for_highlight_plan(
         source_cues: list[SrtCue],
         highlight_plan: HighlightPlanAsset,
     ) -> list[SrtCue]:
-        retimed: list[SrtCue] = []
-        output_cursor = 0.0
-        for window in highlight_plan.windows:
-            window_start = window.started_at_seconds
-            window_end = window.ended_at_seconds
-            for cue in source_cues:
-                overlap_start = max(cue.started_at_seconds, window_start)
-                overlap_end = min(cue.ended_at_seconds, window_end)
-                if overlap_end - overlap_start <= 0.05:
-                    continue
-                retimed.append(
-                    SrtCue(
-                        started_at_seconds=output_cursor
-                        + (overlap_start - window_start),
-                        ended_at_seconds=output_cursor
-                        + (overlap_end - window_start),
-                        text=cue.text,
-                    )
-                )
-            output_cursor += max(0.0, window_end - window_start)
-        return retimed
+        return retime_srt_cues_for_highlight_plan(source_cues, highlight_plan)
 
     def _write_srt_cues(self, path: Path, cues: list[SrtCue]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

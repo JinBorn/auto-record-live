@@ -1206,6 +1206,109 @@ ARL_EXPORT_FFMPEG_PRESET=p7
 
 ---
 
+## Scenario: Export Quality Report CLI
+
+### 1. Scope / Trigger
+- Trigger: Publish-export acceptance now has a repeatable report stage that reads existing export/edit/subtitle/copy assets and writes per-match diagnostics without regenerating videos.
+- Trigger: This path spans CLI selection, file-backed JSONL manifests, FFprobe metadata, subtitle retiming, edit-plan audio/video annotations, and report artifacts under `storage.processed_dir`.
+
+### 2. Signatures
+- CLI:
+  ```bash
+  python -m arl.cli quality-report --session-id <session_id> --match-index <n>
+  python -m arl.cli quality-report --session-id <session_id> --match-indices 2,3,4
+  python -m arl.cli quality-report --session-ids <a,b> --all-latest --strict
+  ```
+- Report files:
+  ```text
+  data/processed/<session_id>/reports/match-NN-quality-report.md
+  data/processed/<session_id>/reports/match-NN-quality-report.json
+  ```
+- Service entrypoint:
+  ```python
+  QualityReportService(settings).run(
+      session_ids=set[str] | None,
+      match_indices=set[int] | None,
+      all_latest=bool,
+      strict=bool,
+      top_gaps=int | None,
+  )
+  ```
+
+### 3. Contracts
+- The CLI must require either `--session-id` / `--session-ids` or `--all-latest`.
+- The stage reads latest rows by `(session_id, match_index)` from:
+  - `match-boundaries.jsonl`
+  - `subtitle-assets.jsonl`
+  - `highlight-plans.jsonl`
+  - `edit-plans.jsonl`
+  - `export-assets.jsonl`
+  - `copy-assets.jsonl`
+  - `publishing-packages.jsonl`
+- It must not regenerate export videos. It may run `ffprobe` against existing export paths and best-effort KDA detection against existing recording assets.
+- Markdown and JSON reports are overwritten per match under `data/processed/<session_id>/reports/`, never under the repo root.
+- Subtitle coverage must retime source SRT cues through the same edit/highlight-plan overlap semantics used by exporter subtitle sidecars.
+- No-subtitle gap summary count is the count of "long" gaps, defaulting to gaps `>= 8.0s`; max gap still considers all subtitle-free gaps.
+- Report JSON should include copywriter data under `copywriter`, not `copy`, to avoid shadowing Pydantic `BaseModel.copy()`.
+- Environment keys:
+  - `ARL_QUALITY_REPORT_SUBTITLE_ACTIVE_RATIO_MIN` default `0.55`
+  - `ARL_QUALITY_REPORT_LONG_NO_SUBTITLE_GAP_MIN_SECONDS` default `8.0`
+  - `ARL_QUALITY_REPORT_MAX_SOURCE_GAP_SECONDS` default `45.0`
+  - `ARL_QUALITY_REPORT_TEASER_MIN_SEGMENTS` default `1`
+  - `ARL_QUALITY_REPORT_TEASER_MAX_SEGMENTS` default `3`
+  - `ARL_QUALITY_REPORT_SFX_MAX_HITS` default `6`
+  - `ARL_QUALITY_REPORT_ZOOM_MIN_SEGMENTS` default `1`
+  - `ARL_QUALITY_REPORT_ZOOM_MAX_SEGMENTS` default `4`
+  - `ARL_QUALITY_REPORT_TOP_NO_SUBTITLE_GAPS` default `5`
+
+### 4. Validation & Error Matrix
+| Condition | Behavior |
+|-----------|----------|
+| No session selector and no `--all-latest` | CLI parser error |
+| Export file missing | Emit `export_file_missing` warning and still write report artifacts |
+| `ffprobe` unavailable or invalid output | Emit `media_probe_failed`; keep other metrics |
+| Subtitle asset/file missing | Emit subtitle warning; subtitle active ratio stays `0.0` |
+| KDA detection fails | Emit `kda_detection_failed`; KDA uncovered count uses zero detected events |
+| Threshold violation and `--strict` unset | Exit `0` with warnings in Markdown/JSON |
+| Threshold violation and `--strict` set | Exit `1` with the same artifacts written |
+
+### 5. Good/Base/Bad Cases
+- Good: `quality-report --session-id session-... --match-indices 2,3,4` writes one Markdown and JSON file per selected match and prints a table whose duration/bitrate/source-gap/subtitle metrics reproduce the manual validation report within rounding tolerance.
+- Base: `quality-report --all-latest` reports the latest export asset for each `(session_id, match_index)` currently present in the export manifest.
+- Bad: The command regenerates exports, writes report files into the source tree, counts every tiny subtitle gap as a "long no-subtitle gap", or stores report JSON with a `copy` field that triggers Pydantic shadow warnings.
+
+### 6. Tests Required
+- CLI parser tests for `quality-report` selectors, `--strict`, and `--top-gaps`.
+- CLI entrypoint test asserting filters are normalized and service exit code is returned.
+- Config test asserting all `ARL_QUALITY_REPORT_*` env values load and clamp through `QualityReportSettings`.
+- Service unit test on synthetic assets with mocked media probe and KDA provider; assert metric values, warnings, and output paths.
+- Strict-mode test asserting threshold warnings produce exit code `1`.
+- Acceptance smoke against local validation sessions when assets are available:
+  - `session-20260617073649-4b5ec478` m02
+  - `session-20260617073651-cf11bf9e` m02-04
+
+### 7. Wrong vs Correct
+#### Wrong
+```python
+row = {"copy": copy_metric}
+gap_count = len(all_subtitle_free_gaps)
+Path("reports/match-02.md").write_text(markdown)
+```
+
+#### Correct
+```python
+row = QualityReportRow(copywriter=copy_metric)
+long_gap_count = sum(
+    1
+    for gap in all_subtitle_free_gaps
+    if gap.duration_seconds >= settings.quality_report.long_no_subtitle_gap_min_seconds
+)
+(settings.storage.processed_dir / session_id / "reports").mkdir(
+    parents=True,
+    exist_ok=True,
+)
+```
+
 ## Common Mistakes
 
 ### Mistake 1: Expecting CRF Mode to Preserve Quality
@@ -1478,6 +1581,15 @@ def _video_quality_args(self) -> list[str]:
 | `ARL_EXPORT_ASS_MAX_LINES` | int | 2 | Maximum ASS visual lines per Dialogue event before splitting the cue, clamped to at least 1 |
 | `ARL_EXPORT_USE_EDIT_PLANS` | bool | False | Apply teaser-before-main edit plans |
 | `ARL_EXPORT_USE_HIGHLIGHT_PLANS` | bool | False | Apply highlight condensing |
+| `ARL_QUALITY_REPORT_SUBTITLE_ACTIVE_RATIO_MIN` | float | `0.55` | Minimum subtitle active ratio before the report emits a warning |
+| `ARL_QUALITY_REPORT_LONG_NO_SUBTITLE_GAP_MIN_SECONDS` | float seconds | `8.0` | Minimum no-subtitle gap duration counted in the report's long-gap summary |
+| `ARL_QUALITY_REPORT_MAX_SOURCE_GAP_SECONDS` | float seconds | `45.0` | Maximum retained source-time gap before the report emits a warning |
+| `ARL_QUALITY_REPORT_TEASER_MIN_SEGMENTS` | int | `1` | Minimum teaser segment count before the report emits a warning |
+| `ARL_QUALITY_REPORT_TEASER_MAX_SEGMENTS` | int | `3` | Maximum teaser segment count before the report emits a warning |
+| `ARL_QUALITY_REPORT_SFX_MAX_HITS` | int | `6` | Maximum SFX hit count before the report emits a warning |
+| `ARL_QUALITY_REPORT_ZOOM_MIN_SEGMENTS` | int | `1` | Minimum zoom/punch-in segment count before the report emits a warning |
+| `ARL_QUALITY_REPORT_ZOOM_MAX_SEGMENTS` | int | `4` | Maximum zoom/punch-in segment count before the report emits a warning |
+| `ARL_QUALITY_REPORT_TOP_NO_SUBTITLE_GAPS` | int | `5` | Number of longest no-subtitle gaps included in report details |
 | `ARL_EDIT_PLANNER_ENABLED` | bool | False | Run edit-plan generation stage |
 | `ARL_EDIT_TEASER_MAX_SEGMENTS` | int | 2 | Maximum teaser segments prepended before the main match |
 | `ARL_EDIT_TEASER_MAX_TOTAL_SECONDS` | float | 45.0 | Maximum total teaser duration |

@@ -260,6 +260,23 @@ data/tmp/*.jsonl                    各阶段状态、事件和资产索引
 .\.venv\Scripts\python.exe -m arl.cli copywriter --session-id <session> --match-indices 2,3,4 --force-reprocess
 ```
 
+Generate a repeatable quality report for existing exports without regenerating
+video files:
+
+```powershell
+.\.venv\Scripts\python.exe -m arl.cli quality-report --session-id <session> --match-indices 2,3,4
+.\.venv\Scripts\python.exe -m arl.cli quality-report --all-latest --strict
+```
+
+The command prints a Markdown summary and writes per-match artifacts to:
+
+```text
+data/processed/<session>/reports/match-NN-quality-report.md
+data/processed/<session>/reports/match-NN-quality-report.json
+```
+
+`--strict` exits non-zero when configured quality thresholds emit warnings.
+
 如果 `postprocess --once` 每个阶段都显示 `processed=0`，但 `data/raw/session-*/recording-source.mp4` 或 `recording-chunks.json` 确实存在，先修复录制资产索引：
 
 ```powershell

@@ -245,6 +245,32 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
 
         self.assertEqual(settings.recording.direct_stream_finalize_headroom_seconds, 90)
 
+    def test_quality_report_threshold_envs_load(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_QUALITY_REPORT_SUBTITLE_ACTIVE_RATIO_MIN"] = "0.7"
+            os.environ["ARL_QUALITY_REPORT_LONG_NO_SUBTITLE_GAP_MIN_SECONDS"] = "12"
+            os.environ["ARL_QUALITY_REPORT_MAX_SOURCE_GAP_SECONDS"] = "30"
+            os.environ["ARL_QUALITY_REPORT_TEASER_MIN_SEGMENTS"] = "0"
+            os.environ["ARL_QUALITY_REPORT_TEASER_MAX_SEGMENTS"] = "2"
+            os.environ["ARL_QUALITY_REPORT_SFX_MAX_HITS"] = "4"
+            os.environ["ARL_QUALITY_REPORT_ZOOM_MIN_SEGMENTS"] = "0"
+            os.environ["ARL_QUALITY_REPORT_ZOOM_MAX_SEGMENTS"] = "3"
+            os.environ["ARL_QUALITY_REPORT_TOP_NO_SUBTITLE_GAPS"] = "8"
+            settings = load_settings()
+
+        self.assertEqual(settings.quality_report.subtitle_active_ratio_min, 0.7)
+        self.assertEqual(
+            settings.quality_report.long_no_subtitle_gap_min_seconds,
+            12.0,
+        )
+        self.assertEqual(settings.quality_report.max_source_gap_seconds, 30.0)
+        self.assertEqual(settings.quality_report.teaser_min_segments, 0)
+        self.assertEqual(settings.quality_report.teaser_max_segments, 2)
+        self.assertEqual(settings.quality_report.sfx_max_hits, 4)
+        self.assertEqual(settings.quality_report.zoom_min_segments, 0)
+        self.assertEqual(settings.quality_report.zoom_max_segments, 3)
+        self.assertEqual(settings.quality_report.top_no_subtitle_gaps, 8)
+
     def test_segmented_recording_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             os.environ["ARL_RECORDING_SEGMENTED_ENABLED"] = "1"

@@ -14,6 +14,7 @@ from arl.maintenance.service import MaintenanceService
 from arl.orchestrator.service import OrchestratorService
 from arl.postprocess.reset import PostProcessResetService
 from arl.postprocess.service import PostProcessService
+from arl.quality_report.service import QualityReportService
 from arl.recovery.service import RecoveryService
 from arl.recorder.asset_repair import RecordingAssetRepairService
 from arl.recorder.service import RecorderService
@@ -622,6 +623,43 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Regenerate copy and publishing package rows even when outputs already exist.",
     )
+    quality_report = subparsers.add_parser(
+        "quality-report",
+        help="Score existing publish exports and write Markdown/JSON quality reports.",
+    )
+    quality_report.add_argument(
+        "--session-id",
+        help="Only report exports for one session id.",
+    )
+    quality_report.add_argument(
+        "--session-ids",
+        help="Only report exports for comma-separated session ids.",
+    )
+    quality_report.add_argument(
+        "--match-index",
+        type=_parse_positive_int,
+        help="Only report one match index.",
+    )
+    quality_report.add_argument(
+        "--match-indices",
+        type=_parse_csv_int_values,
+        help="Only report comma-separated match indices.",
+    )
+    quality_report.add_argument(
+        "--all-latest",
+        action="store_true",
+        help="Report the latest export asset for every matched session/match.",
+    )
+    quality_report.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit non-zero when warnings are emitted.",
+    )
+    quality_report.add_argument(
+        "--top-gaps",
+        type=_parse_positive_int,
+        help="Number of longest no-subtitle gaps to include per report.",
+    )
 
     return parser
 
@@ -993,6 +1031,31 @@ def main() -> int:
             force_reprocess=args.force_reprocess,
         )
         return 0
+
+    if args.command == "quality-report":
+        report_session_ids = _collect_session_ids(args)
+        report_match_indices: set[int] | None = None
+        if args.match_index is not None or args.match_indices:
+            report_match_indices = set()
+            if args.match_index is not None:
+                report_match_indices.add(args.match_index)
+            if args.match_indices:
+                report_match_indices.update(args.match_indices)
+            if not report_match_indices:
+                report_match_indices = None
+        if not args.all_latest and report_session_ids is None:
+            parser.error(
+                "quality-report requires --session-id/--session-ids or --all-latest"
+            )
+        report = QualityReportService(settings).run(
+            session_ids=report_session_ids,
+            match_indices=report_match_indices,
+            all_latest=args.all_latest,
+            strict=args.strict,
+            top_gaps=args.top_gaps,
+        )
+        print(report.markdown.rstrip())
+        return report.exit_code
 
     parser.error(f"unsupported command: {args.command}")
     return 2

@@ -379,6 +379,43 @@ class MaintenanceSettings(BaseModel):
     archive_dir: Path = Path("data/tmp/archive")
 
 
+class QualityReportSettings(BaseModel):
+    subtitle_active_ratio_min: float = 0.55
+    long_no_subtitle_gap_min_seconds: float = 8.0
+    max_source_gap_seconds: float = 45.0
+    teaser_min_segments: int = 1
+    teaser_max_segments: int = 3
+    sfx_max_hits: int = 6
+    zoom_min_segments: int = 1
+    zoom_max_segments: int = 4
+    top_no_subtitle_gaps: int = 5
+
+    @model_validator(mode="after")
+    def _normalize_thresholds(self) -> "QualityReportSettings":
+        self.subtitle_active_ratio_min = min(
+            1.0,
+            max(0.0, self.subtitle_active_ratio_min),
+        )
+        self.long_no_subtitle_gap_min_seconds = max(
+            0.0,
+            self.long_no_subtitle_gap_min_seconds,
+        )
+        self.max_source_gap_seconds = max(0.0, self.max_source_gap_seconds)
+        self.teaser_min_segments = max(0, self.teaser_min_segments)
+        self.teaser_max_segments = max(
+            self.teaser_min_segments,
+            self.teaser_max_segments,
+        )
+        self.sfx_max_hits = max(0, self.sfx_max_hits)
+        self.zoom_min_segments = max(0, self.zoom_min_segments)
+        self.zoom_max_segments = max(
+            self.zoom_min_segments,
+            self.zoom_max_segments,
+        )
+        self.top_no_subtitle_gaps = max(1, self.top_no_subtitle_gaps)
+        return self
+
+
 class Settings(BaseModel):
     douyin: DouyinSettings = Field(default_factory=DouyinSettings)
     windows_agent: WindowsAgentSettings = Field(default_factory=WindowsAgentSettings)
@@ -393,6 +430,7 @@ class Settings(BaseModel):
     subtitles: SubtitleSettings = Field(default_factory=SubtitleSettings)
     export: ExportSettings = Field(default_factory=ExportSettings)
     maintenance: MaintenanceSettings = Field(default_factory=MaintenanceSettings)
+    quality_report: QualityReportSettings = Field(default_factory=QualityReportSettings)
 
     @model_validator(mode="after")
     def _default_platforms_from_douyin(self) -> "Settings":
@@ -1231,6 +1269,41 @@ def load_settings() -> Settings:
             ),
             archive_dir=Path(
                 os.getenv("ARL_MAINTENANCE_ARCHIVE_DIR", "data/tmp/archive")
+            ),
+        ),
+        quality_report=QualityReportSettings(
+            subtitle_active_ratio_min=_env_float(
+                "ARL_QUALITY_REPORT_SUBTITLE_ACTIVE_RATIO_MIN",
+                0.55,
+            ),
+            long_no_subtitle_gap_min_seconds=_env_float(
+                "ARL_QUALITY_REPORT_LONG_NO_SUBTITLE_GAP_MIN_SECONDS",
+                8.0,
+            ),
+            max_source_gap_seconds=_env_float(
+                "ARL_QUALITY_REPORT_MAX_SOURCE_GAP_SECONDS",
+                45.0,
+            ),
+            teaser_min_segments=_env_int(
+                "ARL_QUALITY_REPORT_TEASER_MIN_SEGMENTS",
+                1,
+            ),
+            teaser_max_segments=_env_int(
+                "ARL_QUALITY_REPORT_TEASER_MAX_SEGMENTS",
+                3,
+            ),
+            sfx_max_hits=_env_int("ARL_QUALITY_REPORT_SFX_MAX_HITS", 6),
+            zoom_min_segments=_env_int(
+                "ARL_QUALITY_REPORT_ZOOM_MIN_SEGMENTS",
+                1,
+            ),
+            zoom_max_segments=_env_int(
+                "ARL_QUALITY_REPORT_ZOOM_MAX_SEGMENTS",
+                4,
+            ),
+            top_no_subtitle_gaps=_env_int(
+                "ARL_QUALITY_REPORT_TOP_NO_SUBTITLE_GAPS",
+                5,
             ),
         ),
     )

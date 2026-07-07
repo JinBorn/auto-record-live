@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from arl.cli import build_parser, main
@@ -114,6 +115,95 @@ class CliUnattendedTest(unittest.TestCase):
         self.assertEqual(args.match_index, 2)
         self.assertEqual(args.match_indices, [3, 4])
         self.assertTrue(args.force_reprocess)
+
+    def test_quality_report_command_parses_filters(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "quality-report",
+                "--session-id",
+                "session-a",
+                "--session-ids",
+                "session-b,session-c",
+                "--match-index",
+                "2",
+                "--match-indices",
+                "3,4",
+                "--all-latest",
+                "--strict",
+                "--top-gaps",
+                "3",
+            ]
+        )
+
+        self.assertEqual(args.command, "quality-report")
+        self.assertEqual(args.session_id, "session-a")
+        self.assertEqual(args.session_ids, "session-b,session-c")
+        self.assertEqual(args.match_index, 2)
+        self.assertEqual(args.match_indices, [3, 4])
+        self.assertTrue(args.all_latest)
+        self.assertTrue(args.strict)
+        self.assertEqual(args.top_gaps, 3)
+
+    def test_quality_report_passes_filters_and_returns_service_exit_code(self) -> None:
+        captured: dict[str, object] = {}
+
+        class _QualityReportStub:
+            def __init__(self, settings: Settings) -> None:
+                return None
+
+            def run(
+                self,
+                *,
+                session_ids=None,
+                match_indices=None,
+                all_latest: bool = False,
+                strict: bool = False,
+                top_gaps: int | None = None,
+            ):
+                captured["session_ids"] = session_ids
+                captured["match_indices"] = match_indices
+                captured["all_latest"] = all_latest
+                captured["strict"] = strict
+                captured["top_gaps"] = top_gaps
+                return SimpleNamespace(markdown="## Quality Report\n", exit_code=1)
+
+        with patch(
+            "sys.argv",
+            [
+                "arl",
+                "quality-report",
+                "--session-id",
+                "session-a",
+                "--session-ids",
+                "session-b,session-c",
+                "--match-index",
+                "2",
+                "--match-indices",
+                "3,4",
+                "--all-latest",
+                "--strict",
+                "--top-gaps",
+                "3",
+            ],
+        ), patch("arl.cli.load_settings", return_value=Settings()), patch(
+            "arl.cli.QualityReportService",
+            _QualityReportStub,
+        ):
+            self.assertEqual(main(), 1)
+
+        self.assertEqual(captured["session_ids"], {"session-a", "session-b", "session-c"})
+        self.assertEqual(captured["match_indices"], {2, 3, 4})
+        self.assertTrue(captured["all_latest"])
+        self.assertTrue(captured["strict"])
+        self.assertEqual(captured["top_gaps"], 3)
+
+    def test_quality_report_requires_session_or_all_latest(self) -> None:
+        with patch("sys.argv", ["arl", "quality-report"]), patch(
+            "arl.cli.load_settings",
+            return_value=Settings(),
+        ):
+            with self.assertRaises(SystemExit):
+                main()
 
     def test_maintenance_command_parses(self) -> None:
         args = build_parser().parse_args(["maintenance", "--once"])
