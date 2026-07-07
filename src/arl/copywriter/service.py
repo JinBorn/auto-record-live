@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -11,7 +12,19 @@ from pathlib import Path
 
 from arl.config import Settings
 from arl.copywriter.cover import render_cover
-from arl.copywriter.models import CopyDraft, CopywriterStateFile, PublishingPackage
+from arl.copywriter.llm import (
+    LlmProvider,
+    LlmProviderError,
+    OpenAICompatibleProvider,
+    parse_llm_copywriting_result,
+)
+from arl.copywriter.models import (
+    CopyDraft,
+    CopywriterSemanticAsset,
+    CopywriterStateFile,
+    LlmCopywritingResult,
+    PublishingPackage,
+)
 from arl.orchestrator.models import OrchestratorStateFile
 from arl.shared.contracts import (
     CopyAsset,
@@ -49,6 +62,7 @@ class CopywriterService:
         settings: Settings,
         *,
         cover_renderer: Callable[..., bool] | None = None,
+        llm_provider: LlmProvider | None = None,
     ) -> None:
         self.settings = settings
         self.subtitle_assets_path = settings.storage.temp_dir / "subtitle-assets.jsonl"
@@ -56,12 +70,143 @@ class CopywriterService:
         self.recording_assets_path = settings.storage.temp_dir / "recording-assets.jsonl"
         self.boundaries_path = settings.storage.temp_dir / "match-boundaries.jsonl"
         self.highlight_plans_path = settings.storage.temp_dir / "highlight-plans.jsonl"
+        self.semantic_assets_path = (
+            settings.storage.temp_dir / "copywriter-semantic-assets.jsonl"
+        )
         self.copy_assets_path = settings.storage.temp_dir / "copy-assets.jsonl"
         self.publishing_packages_path = settings.storage.temp_dir / "publishing-packages.jsonl"
         self.state_path = settings.storage.temp_dir / "copywriter-state.json"
         self.cover_renderer = cover_renderer or render_cover
+        self.llm_provider = llm_provider
 
     def run(
+        self,
+        *,
+        session_ids: set[str] | None = None,
+        match_indices: set[int] | None = None,
+        force_reprocess: bool = False,
+    ) -> None:
+        self.run_semantic(
+            session_ids=session_ids,
+            match_indices=match_indices,
+            force_reprocess=force_reprocess,
+        )
+        self.run_publishing(
+            session_ids=session_ids,
+            match_indices=match_indices,
+            force_reprocess=force_reprocess,
+        )
+
+    def run_semantic(
+        self,
+        *,
+        session_ids: set[str] | None = None,
+        match_indices: set[int] | None = None,
+        force_reprocess: bool = False,
+    ) -> None:
+        if not self.settings.llm.enabled:
+            return
+        if not self.settings.llm.api_key:
+            log("copywriter", "llm semantic skipped reason=missing_api_key")
+            return
+
+        log("copywriter", "llm semantic starting")
+        all_subtitles = load_models(self.subtitle_assets_path, SubtitleAsset)
+        subtitles = self._filter_subtitles(
+            all_subtitles,
+            session_ids=session_ids,
+            match_indices=match_indices,
+        )
+        boundary_map = {
+            (item.session_id, item.match_index): item
+            for item in load_models(self.boundaries_path, MatchBoundary)
+        }
+        highlight_plan_map = {
+            (item.session_id, item.match_index): item
+            for item in load_models(self.highlight_plans_path, HighlightPlanAsset)
+        }
+        streamer_names = self._streamer_names_by_session()
+        semantic_assets = self._latest_semantic_assets_by_match(
+            load_models(self.semantic_assets_path, CopywriterSemanticAsset)
+        )
+
+        generated = 0
+        cached = 0
+        failed = 0
+        for subtitle in subtitles:
+            subtitle_path = Path(subtitle.path)
+            if not subtitle_path.exists():
+                continue
+            boundary = boundary_map.get((subtitle.session_id, subtitle.match_index))
+            highlight_plan = self._valid_highlight_plan(
+                highlight_plan_map.get((subtitle.session_id, subtitle.match_index)),
+                boundary,
+            )
+            cues = self._parse_subtitle_cues(subtitle_path)
+            if not cues:
+                continue
+            prompt_input = self._semantic_prompt_input(
+                subtitle=subtitle,
+                cues=cues,
+                boundary=boundary,
+                highlight_plan=highlight_plan,
+                streamer_name=streamer_names.get(subtitle.session_id),
+            )
+            prompt_fingerprint = self._prompt_fingerprint()
+            input_fingerprint = self._stable_fingerprint(prompt_input)
+            existing = semantic_assets.get((subtitle.session_id, subtitle.match_index))
+            if (
+                not force_reprocess
+                and existing is not None
+                and existing.model == self.settings.llm.model
+                and existing.prompt_fingerprint == prompt_fingerprint
+                and existing.input_fingerprint == input_fingerprint
+            ):
+                cached += 1
+                continue
+
+            try:
+                result, token_usage = self._generate_llm_copy(prompt_input, cues)
+            except LlmProviderError as exc:
+                failed += 1
+                log(
+                    "copywriter",
+                    "llm semantic fallback "
+                    f"session_id={subtitle.session_id} match_index={subtitle.match_index} "
+                    f"reason={exc}",
+                )
+                continue
+
+            asset = CopywriterSemanticAsset(
+                session_id=subtitle.session_id,
+                match_index=subtitle.match_index,
+                source_subtitle_path=subtitle.path,
+                provider=self.settings.llm.base_url,
+                model=self.settings.llm.model,
+                prompt_fingerprint=prompt_fingerprint,
+                input_fingerprint=input_fingerprint,
+                result=result,
+                token_usage=token_usage,
+                status="generated",
+                created_at=datetime.now(timezone.utc),
+            )
+            append_model(self.semantic_assets_path, asset)
+            semantic_assets[(asset.session_id, asset.match_index)] = asset
+            generated += 1
+            usage = ",".join(f"{key}={value}" for key, value in token_usage.items()) or "-"
+            log(
+                "copywriter",
+                "llm semantic asset written "
+                f"session_id={asset.session_id} match_index={asset.match_index} "
+                f"usage={usage}",
+            )
+
+        log(
+            "copywriter",
+            f"llm_semantic generated={generated} cached={cached} failed={failed}",
+        )
+
+    def run_publishing(
         self,
         *,
         session_ids: set[str] | None = None,
@@ -103,6 +248,9 @@ class CopywriterService:
             (item.session_id, item.match_index): item
             for item in load_models(self.highlight_plans_path, HighlightPlanAsset)
         }
+        semantic_assets = self._latest_semantic_assets_by_match(
+            load_models(self.semantic_assets_path, CopywriterSemanticAsset)
+        )
         streamer_names = self._streamer_names_by_session()
         state = self._load_state()
         processed_keys = set(state.processed_match_keys)
@@ -178,6 +326,9 @@ class CopywriterService:
                 recording=recording,
                 highlight_plan=highlight_plan,
                 streamer_name=streamer_names.get(subtitle.session_id),
+                semantic_asset=semantic_assets.get(
+                    (subtitle.session_id, subtitle.match_index)
+                ),
             )
             output_path = self._write_draft(draft)
             if force_reprocess or key not in existing_copy_row_keys:
@@ -258,6 +409,167 @@ class CopywriterService:
             latest_by_key[key] = subtitle
         return [latest_by_key[key] for key in key_order]
 
+    @staticmethod
+    def _latest_semantic_assets_by_match(
+        assets: list[CopywriterSemanticAsset],
+    ) -> dict[tuple[str, int], CopywriterSemanticAsset]:
+        latest: dict[tuple[str, int], CopywriterSemanticAsset] = {}
+        for asset in assets:
+            latest[(asset.session_id, asset.match_index)] = asset
+        return latest
+
+    def _semantic_prompt_input(
+        self,
+        *,
+        subtitle: SubtitleAsset,
+        cues: list[_SubtitleCue],
+        boundary: MatchBoundary | None,
+        highlight_plan: HighlightPlanAsset | None,
+        streamer_name: str | None,
+    ) -> dict[str, object]:
+        duration = (
+            max(0.0, boundary.ended_at_seconds - boundary.started_at_seconds)
+            if boundary is not None
+            else max((cue.ended_at_seconds for cue in cues), default=0.0)
+        )
+        selected_cues = self._select_llm_input_cues(cues, highlight_plan)
+        return {
+            "session_id": subtitle.session_id,
+            "match_index": subtitle.match_index,
+            "streamer_name": streamer_name or "",
+            "match_duration_seconds": round(duration, 3),
+            "subtitle_cues": [
+                {
+                    "start": round(cue.started_at_seconds, 3),
+                    "end": round(cue.ended_at_seconds, 3),
+                    "text": cue.text,
+                }
+                for cue in selected_cues
+            ],
+            "highlight_windows": [
+                {
+                    "start": round(window.started_at_seconds, 3),
+                    "end": round(window.ended_at_seconds, 3),
+                    "reason": window.reason,
+                }
+                for window in (highlight_plan.windows if highlight_plan is not None else [])
+            ],
+        }
+
+    def _select_llm_input_cues(
+        self,
+        cues: list[_SubtitleCue],
+        highlight_plan: HighlightPlanAsset | None,
+    ) -> list[_SubtitleCue]:
+        max_cues = self.settings.llm.max_input_cues
+        if len(cues) <= max_cues:
+            return cues
+        selected: list[_SubtitleCue] = []
+        selected_keys: set[tuple[float, float, str]] = set()
+
+        def _add(cue: _SubtitleCue) -> None:
+            key = (cue.started_at_seconds, cue.ended_at_seconds, cue.text)
+            if key in selected_keys:
+                return
+            selected.append(cue)
+            selected_keys.add(key)
+
+        head_tail = max(5, min(20, max_cues // 8))
+        for cue in cues[:head_tail]:
+            _add(cue)
+        for cue in cues[-head_tail:]:
+            _add(cue)
+
+        if highlight_plan is not None:
+            for cue in cues:
+                if len(selected) >= max_cues:
+                    break
+                if any(
+                    min(cue.ended_at_seconds, window.ended_at_seconds)
+                    > max(cue.started_at_seconds, window.started_at_seconds)
+                    for window in highlight_plan.windows
+                ):
+                    _add(cue)
+
+        index = 0
+        while len(selected) < max_cues and index < len(cues):
+            _add(cues[index])
+            index += max(1, len(cues) // max_cues)
+        return sorted(selected, key=lambda cue: cue.started_at_seconds)[:max_cues]
+
+    def _generate_llm_copy(
+        self,
+        prompt_input: dict[str, object],
+        cues: list[_SubtitleCue],
+    ) -> tuple[LlmCopywritingResult, dict[str, int]]:
+        provider = self.llm_provider or OpenAICompatibleProvider(self.settings.llm)
+        system_prompt = self._llm_system_prompt()
+        user_prompt = json.dumps(prompt_input, ensure_ascii=False, indent=2)
+        last_error: LlmProviderError | None = None
+        for attempt in range(self.settings.llm.max_retries + 1):
+            try:
+                response = provider.generate(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                )
+                result = parse_llm_copywriting_result(response.content)
+                if self._llm_title_is_raw_excerpt(result, cues):
+                    raise LlmProviderError("raw_excerpt_title")
+                return result, response.token_usage
+            except LlmProviderError as exc:
+                last_error = exc
+                if attempt < self.settings.llm.max_retries:
+                    log(
+                        "copywriter",
+                        "llm semantic retry "
+                        f"attempt={attempt + 1}/{self.settings.llm.max_retries} "
+                        f"reason={exc}",
+                    )
+        raise last_error or LlmProviderError("unknown_llm_error")
+
+    @staticmethod
+    def _llm_system_prompt() -> str:
+        return (
+            "You write concise Simplified Chinese Bilibili upload copy for League "
+            "of Legends livestream edits. Return JSON only with keys: "
+            "title_candidates (exactly 3 strings, each <=30 compact chars), "
+            "recommended_title, cover_lines (2-4 strings, each <=10 compact chars), "
+            "summary (<=96 compact chars), description (1-3 sentences), tags "
+            "(5-8 strings), hook_line, teaser_recommendations (up to 3 objects with "
+            "source_start_seconds, source_end_seconds, hook_reason). Do not copy a "
+            "raw leading subtitle line as the title; synthesize the gameplay/topic hook."
+        )
+
+    def _llm_title_is_raw_excerpt(
+        self,
+        result: LlmCopywritingResult,
+        cues: list[_SubtitleCue],
+    ) -> bool:
+        normalized_title = self._normalize_copy_text(result.recommended_title)
+        leading = [cue.text for cue in cues if not self._is_placeholder_text(cue.text)][:5]
+        candidates = [self._normalize_copy_text(text) for text in leading]
+        for count in range(2, min(4, len(leading) + 1)):
+            candidates.append(self._normalize_copy_text(" ".join(leading[:count])))
+        return normalized_title in {candidate for candidate in candidates if candidate}
+
+    @staticmethod
+    def _normalize_copy_text(value: str) -> str:
+        return re.sub(r"\s+", " ", value.strip()).strip(" .!?;:").lower()
+
+    @staticmethod
+    def _prompt_fingerprint() -> str:
+        return hashlib.sha256(CopywriterService._llm_system_prompt().encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _stable_fingerprint(payload: dict[str, object]) -> str:
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
     def _build_outputs(
         self,
         *,
@@ -266,6 +578,7 @@ class CopywriterService:
         recording: RecordingAsset | None,
         highlight_plan: HighlightPlanAsset | None,
         streamer_name: str | None,
+        semantic_asset: CopywriterSemanticAsset | None = None,
     ) -> tuple[CopyDraft, PublishingPackage]:
         cues = self._parse_subtitle_cues(Path(subtitle.path))
         signal_cues = self._select_signal_cues(cues, highlight_plan)
@@ -275,17 +588,33 @@ class CopywriterService:
             highlight_plan,
         )
         excerpt = [cue.text for cue in headline_cues[:3]]
-        title_candidates = self._title_candidates(
-            excerpt=excerpt,
-            match_index=subtitle.match_index,
-        )
-        recommended_title = title_candidates[0]
-        description = self._description(
-            excerpt=excerpt,
-            match_index=subtitle.match_index,
-        )
-        tags = self._tags(excerpt)
-        status = "generated" if excerpt else "placeholder_input"
+        llm_result = semantic_asset.result if semantic_asset is not None else None
+        if llm_result is not None:
+            title_candidates = llm_result.title_candidates
+            recommended_title = llm_result.recommended_title
+            description = llm_result.description
+            tags = llm_result.tags
+            summary = llm_result.summary
+            cover_lines = llm_result.cover_lines
+            status = "llm_generated"
+        else:
+            title_candidates = self._title_candidates(
+                excerpt=excerpt,
+                match_index=subtitle.match_index,
+            )
+            recommended_title = title_candidates[0]
+            description = self._description(
+                excerpt=excerpt,
+                match_index=subtitle.match_index,
+            )
+            tags = self._tags(excerpt)
+            summary = self._summary(excerpt, match_index=subtitle.match_index)
+            cover_lines = self._cover_lines(
+                excerpt=excerpt,
+                title=recommended_title,
+                match_index=subtitle.match_index,
+            )
+            status = "generated" if excerpt else "placeholder_input"
         created_at = datetime.now(timezone.utc)
         draft = CopyDraft(
             session_id=subtitle.session_id,
@@ -311,12 +640,8 @@ class CopywriterService:
             evidence=self._evidence(headline_cues or signal_cues),
             title_candidates=title_candidates,
             recommended_title=recommended_title,
-            summary=self._summary(excerpt, match_index=subtitle.match_index),
-            cover_lines=self._cover_lines(
-                excerpt=excerpt,
-                title=recommended_title,
-                match_index=subtitle.match_index,
-            ),
+            summary=summary,
+            cover_lines=cover_lines,
             tags=tags,
             status=status,
             created_at=created_at,

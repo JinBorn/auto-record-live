@@ -1512,6 +1512,112 @@ a short continuity snippet can still skip the actual kill/death.
 include both max-source-gap summaries and KDA uncovered counts in manual
 validation reports for regenerated exports.
 
+## Scenario: LLM Copywriter Semantic Assets
+
+### 1. Scope / Trigger
+- Trigger: Copywriting now has a cloud-LLM semantic phase before edit planning
+  and a final publishing phase after export. This spans env config, subtitle and
+  highlight inputs, a durable JSONL asset, edit-plan teaser selection, reset,
+  status, and final publishing packages.
+
+### 2. Signatures
+- Postprocess order:
+  ```text
+  stage-hints-semantic -> segmenter -> subtitles -> highlight-planner
+    -> copywriter-semantic -> edit-planner -> exporter -> copywriter
+  ```
+- Semantic manifest:
+  ```text
+  data/tmp/copywriter-semantic-assets.jsonl
+  ```
+- Service entrypoints:
+  ```python
+  CopywriterService.run_semantic(session_ids=None, match_indices=None, force_reprocess=False)
+  CopywriterService.run_publishing(session_ids=None, match_indices=None, force_reprocess=False)
+  CopywriterService.run(...)  # semantic phase, then publishing phase for CLI compatibility
+  ```
+
+### 3. Contracts
+- Env:
+  - `ARL_LLM_ENABLED`, default `0`; publish preset must not force-enable it.
+  - `ARL_LLM_BASE_URL`, default `https://api.deepseek.com/v1`.
+  - `ARL_LLM_API_KEY`, required only when `ARL_LLM_ENABLED=1`.
+  - `ARL_LLM_MODEL`, default `deepseek-chat`.
+  - `ARL_LLM_TIMEOUT_SECONDS`, clamped to at least `1.0`.
+  - `ARL_LLM_MAX_RETRIES`, clamped to at least `0`.
+  - `ARL_LLM_MAX_INPUT_CUES`, clamped to at least `20`.
+  - `ARL_LLM_TEMPERATURE`, clamped to `[0.0, 1.5]`.
+- Provider wire shape is OpenAI-compatible chat completions:
+  ```http
+  POST {base_url}/chat/completions
+  Authorization: Bearer <ARL_LLM_API_KEY>
+  Content-Type: application/json
+  ```
+- `CopywriterSemanticAsset` rows must include:
+  `session_id`, `match_index`, `source_subtitle_path`,
+  `source_highlight_plan_path`, `provider`, `model`, `prompt_fingerprint`,
+  `input_fingerprint`, `result`, `token_usage`, `status`, `created_at`.
+- `LlmCopywritingResult` constraints:
+  - exactly 3 `title_candidates`
+  - `recommended_title` <= 30 compact chars and not a raw leading subtitle copy
+  - `cover_lines` count 2-4, each <= 10 compact chars
+  - `summary` <= 96 compact chars
+  - `tags` count 5-8
+  - up to 3 `teaser_recommendations`
+- Edit-planner may consume only
+  `result.teaser_recommendations[*].source_start_seconds`,
+  `source_end_seconds`, `hook_reason`, plus optional `result.hook_line`.
+  Teaser windows must overlap an existing highlight window and be clipped or
+  expanded inside that highlight window to the configured teaser minimum.
+
+### 4. Validation & Error Matrix
+| Condition | Behavior |
+|-----------|----------|
+| `ARL_LLM_ENABLED=0` | Skip semantic generation; use existing heuristic copy path. |
+| Enabled but API key missing | Log `llm semantic skipped reason=missing_api_key`; do not crash. |
+| Network/auth/provider failure | Retry up to configured limit, log fallback, and continue with heuristics. |
+| Invalid JSON/schema from provider | Retry up to configured limit; no semantic asset is appended on exhaustion. |
+| Recommended title equals raw leading subtitle excerpt | Treat as provider failure and retry/fallback. |
+| Existing semantic asset has same model, prompt fingerprint, and input fingerprint | Reuse cache; do not re-call provider unless `force_reprocess=True`. |
+| Teaser recommendation has no highlight-window overlap | Ignore it and use the existing teaser fallback path. |
+| Postprocess reset targets a session | Remove matching semantic rows alongside edit/export/copy rows. |
+
+### 5. Good/Base/Bad Cases
+- Good: LLM enabled with a fake provider writes one semantic asset before
+  edit-planner, edit-planner emits `llm_teaser`, and final copywriter package
+  uses the LLM title, cover lines, summary, description, and tags.
+- Base: LLM disabled by default keeps previous heuristic titles and existing
+  tests unchanged.
+- Bad: Calling the provider during final publishing when a matching semantic
+  asset already exists, or letting a bad provider response crash postprocess.
+
+### 6. Tests Required
+- Config: defaults, env loading/clamping, and publish preset not enabling LLM.
+- Copywriter: fake provider success, title not raw excerpt, semantic cache,
+  `force_reprocess`, invalid schema fallback, and default disabled behavior.
+- Editing: valid semantic teaser recommendations are used; invalid/no-overlap
+  recommendations fall back to `highlight_keyword`.
+- Postprocess: stage order includes `copywriter-semantic` before
+  `edit-planner` and final `copywriter` after `exporter`.
+- Reset/status: semantic rows are removed by reset and counted by status.
+
+### 7. Wrong vs Correct
+#### Wrong
+```python
+# Final publishing re-calls the provider and edit-planner has no semantic hints.
+CopywriterService(settings).run()
+EditingPlannerService(settings).run()
+```
+
+#### Correct
+```python
+copywriter = CopywriterService(settings)
+copywriter.run_semantic()
+EditingPlannerService(settings).run()
+ExporterService(settings).run()
+copywriter.run_publishing()
+```
+
 ---
 
 ## Design Decisions
@@ -1564,6 +1670,14 @@ def _video_quality_args(self) -> list[str]:
 |----------|------|---------|---------|
 | `ARL_POSTPROCESS_PRESET` | string | "" | Set to `publish` to enable the publish edit preset during settings load |
 | `ARL_POSTPROCESS_PUBLISH_PRESET` | bool | False | Boolean alias for the publish edit preset |
+| `ARL_LLM_ENABLED` | bool | False | Enable the cloud LLM copywriter semantic phase; publish preset does not force this on |
+| `ARL_LLM_BASE_URL` | string | `https://api.deepseek.com/v1` | OpenAI-compatible provider base URL |
+| `ARL_LLM_API_KEY` | string | "" | Bearer token for the configured provider; required only when LLM is enabled |
+| `ARL_LLM_MODEL` | string | `deepseek-chat` | Provider model name |
+| `ARL_LLM_TIMEOUT_SECONDS` | float | `30.0` | Provider request timeout, clamped to at least `1.0` |
+| `ARL_LLM_MAX_RETRIES` | int | `2` | Additional retries for provider/schema failures, clamped to at least `0` |
+| `ARL_LLM_MAX_INPUT_CUES` | int | `160` | Maximum subtitle cues sent to the LLM prompt, clamped to at least `20` |
+| `ARL_LLM_TEMPERATURE` | float | `0.4` | Provider temperature, clamped to `[0.0, 1.5]` |
 | `ARL_EXPORT_FFMPEG_BITRATE` | string | None | Fixed average bitrate (e.g., "4000k") |
 | `ARL_EXPORT_FFMPEG_MAX_BITRATE` | string | None | Maximum burst bitrate (e.g., "5000k") |
 | `ARL_EXPORT_FFMPEG_CRF` | int | 18 | CRF value when bitrate not set |

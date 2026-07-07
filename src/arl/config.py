@@ -416,6 +416,28 @@ class QualityReportSettings(BaseModel):
         return self
 
 
+class LlmSettings(BaseModel):
+    enabled: bool = False
+    base_url: str = "https://api.deepseek.com/v1"
+    api_key: str = ""
+    model: str = "deepseek-chat"
+    timeout_seconds: float = 30.0
+    max_retries: int = 2
+    max_input_cues: int = 160
+    temperature: float = 0.4
+
+    @model_validator(mode="after")
+    def _normalize(self) -> "LlmSettings":
+        self.base_url = self.base_url.strip().rstrip("/")
+        self.api_key = self.api_key.strip()
+        self.model = self.model.strip() or "deepseek-chat"
+        self.timeout_seconds = max(1.0, self.timeout_seconds)
+        self.max_retries = max(0, self.max_retries)
+        self.max_input_cues = max(20, self.max_input_cues)
+        self.temperature = min(1.5, max(0.0, self.temperature))
+        return self
+
+
 class Settings(BaseModel):
     douyin: DouyinSettings = Field(default_factory=DouyinSettings)
     windows_agent: WindowsAgentSettings = Field(default_factory=WindowsAgentSettings)
@@ -431,6 +453,7 @@ class Settings(BaseModel):
     export: ExportSettings = Field(default_factory=ExportSettings)
     maintenance: MaintenanceSettings = Field(default_factory=MaintenanceSettings)
     quality_report: QualityReportSettings = Field(default_factory=QualityReportSettings)
+    llm: LlmSettings = Field(default_factory=LlmSettings)
 
     @model_validator(mode="after")
     def _default_platforms_from_douyin(self) -> "Settings":
@@ -1305,6 +1328,16 @@ def load_settings() -> Settings:
                 "ARL_QUALITY_REPORT_TOP_NO_SUBTITLE_GAPS",
                 5,
             ),
+        ),
+        llm=LlmSettings(
+            enabled=_env_bool("ARL_LLM_ENABLED", False),
+            base_url=os.getenv("ARL_LLM_BASE_URL", "https://api.deepseek.com/v1"),
+            api_key=os.getenv("ARL_LLM_API_KEY", ""),
+            model=os.getenv("ARL_LLM_MODEL", "deepseek-chat"),
+            timeout_seconds=_env_float("ARL_LLM_TIMEOUT_SECONDS", 30.0),
+            max_retries=_env_int("ARL_LLM_MAX_RETRIES", 2),
+            max_input_cues=_env_int("ARL_LLM_MAX_INPUT_CUES", 160),
+            temperature=_env_float("ARL_LLM_TEMPERATURE", 0.4),
         ),
     )
     if _postprocess_publish_preset_enabled():

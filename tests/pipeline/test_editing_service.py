@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from arl.config import EditingSettings, Settings, StorageSettings
+from arl.copywriter.models import CopywriterSemanticAsset, LlmCopywritingResult
 from arl.editing.models import EditPlannerStateFile
 from arl.editing.audio import (
     BgmLibraryTrack,
@@ -151,6 +152,71 @@ class EditingPlannerServiceTest(unittest.TestCase):
                 for segment in teaser_segments
             ],
             [(300.0, 315.0), (80.0, 95.0)],
+        )
+
+    def test_semantic_teaser_recommendation_overrides_fallback_teaser(self) -> None:
+        session_id = "session-edit-llm-teaser"
+        self.settings.editing.zoom_enabled = True
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=80.0,
+                    ended_at_seconds=95.0,
+                    reason="highlight_keyword",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=300.0,
+                    ended_at_seconds=330.0,
+                    reason="highlight_keyword",
+                ),
+            ],
+            duration=600.0,
+        )
+        self._append_semantic_asset(
+            session_id,
+            teaser_start=305.0,
+            teaser_end=313.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        teaser = [segment for segment in plan.timeline if segment.role == "teaser"]
+        self.assertEqual(len(teaser), 1)
+        self.assertEqual(teaser[0].source_start_seconds, 305.0)
+        self.assertEqual(teaser[0].source_end_seconds, 313.0)
+        self.assertEqual(teaser[0].reason, "llm_teaser")
+        self.assertIsNotNone(teaser[0].transform)
+
+    def test_invalid_semantic_teaser_recommendation_falls_back(self) -> None:
+        session_id = "session-edit-llm-invalid-teaser"
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=80.0,
+                    ended_at_seconds=95.0,
+                    reason="highlight_keyword",
+                )
+            ],
+            duration=600.0,
+        )
+        self._append_semantic_asset(
+            session_id,
+            teaser_start=300.0,
+            teaser_end=310.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        teaser = [segment for segment in plan.timeline if segment.role == "teaser"]
+        self.assertEqual(
+            [(segment.source_start_seconds, segment.source_end_seconds, segment.reason) for segment in teaser],
+            [(80.0, 95.0, "highlight_keyword")],
         )
 
     def test_zoom_enabled_marks_high_signal_segments_with_budget(self) -> None:
@@ -1578,6 +1644,47 @@ class EditingPlannerServiceTest(unittest.TestCase):
             ),
         )
         return subtitle_path
+
+    def _append_semantic_asset(
+        self,
+        session_id: str,
+        *,
+        teaser_start: float,
+        teaser_end: float,
+    ) -> None:
+        append_model(
+            self.temp_root / "copywriter-semantic-assets.jsonl",
+            CopywriterSemanticAsset(
+                session_id=session_id,
+                match_index=1,
+                source_subtitle_path=str(
+                    self.temp_root / "processed" / session_id / "match-01.srt"
+                ),
+                provider="fake",
+                model="fake-model",
+                prompt_fingerprint="prompt",
+                input_fingerprint=f"input-{session_id}",
+                result=LlmCopywritingResult(
+                    title_candidates=["神钩开团", "团战逆转", "上分名场面"],
+                    recommended_title="神钩开团",
+                    cover_lines=["神钩开团", "团战逆转"],
+                    summary="一次关键开团带动整局节奏。",
+                    description="关键团战打出优势，适合作为发布切片。",
+                    tags=["英雄联盟", "直播切片", "神钩", "团战", "上分"],
+                    hook_line="神钩开团，团战逆转",
+                    teaser_recommendations=[
+                        {
+                            "source_start_seconds": teaser_start,
+                            "source_end_seconds": teaser_end,
+                            "hook_reason": "关键开团瞬间",
+                        }
+                    ],
+                ),
+                token_usage={"total_tokens": 42},
+                status="generated",
+                created_at=datetime(2026, 6, 26, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
 
     def _write_bgm_library(self) -> tuple[Path, Path, Path]:
         library_dir = self.temp_root / "bgm-library"

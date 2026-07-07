@@ -62,6 +62,10 @@ class PostProcessService:
                 ),
             ),
             (
+                "copywriter-semantic",
+                lambda: self._run_copywriter_semantic(session_ids=session_ids),
+            ),
+            (
                 "edit-planner",
                 lambda: self._run_stage(
                     EditingPlannerService(self.settings),
@@ -74,7 +78,7 @@ class PostProcessService:
             ),
             (
                 "copywriter",
-                lambda: self._run_stage(CopywriterService(self.settings), session_ids=session_ids),
+                lambda: self._run_copywriter_publishing(session_ids=session_ids),
             ),
         ]
 
@@ -84,6 +88,20 @@ class PostProcessService:
             stage.run()
             return
         stage.run(session_ids=session_ids)
+
+    def _run_copywriter_semantic(self, *, session_ids: set[str] | None) -> None:
+        service = CopywriterService(self.settings)
+        if session_ids is None:
+            service.run_semantic()
+            return
+        service.run_semantic(session_ids=session_ids)
+
+    def _run_copywriter_publishing(self, *, session_ids: set[str] | None) -> None:
+        service = CopywriterService(self.settings)
+        if session_ids is None:
+            service.run_publishing()
+            return
+        service.run_publishing(session_ids=session_ids)
 
     def _log_unregistered_recordings(self) -> None:
         unregistered = RecordingAssetRepairService(self.settings).find_unregistered()
@@ -115,6 +133,7 @@ class PostProcessService:
             f"match_boundaries={postprocess['match_boundaries']} "
             f"subtitle_assets={postprocess['subtitle_assets']} "
             f"highlight_plans={postprocess['highlight_plans']} "
+            f"copywriter_semantic_assets={postprocess['copywriter_semantic_assets']} "
             f"edit_plans={postprocess['edit_plans']} "
             f"export_assets={postprocess['export_assets']} "
             f"copy_assets={postprocess['copy_assets']} "

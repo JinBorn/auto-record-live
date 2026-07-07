@@ -33,6 +33,24 @@ class _FilteredStageStub:
         self.calls.append((self.name, session_ids))
 
 
+class _CopywriterStageStub:
+    def __init__(self, calls, *, filtered: bool = False) -> None:
+        self.calls = calls
+        self.filtered = filtered
+
+    def run_semantic(self, *, session_ids: set[str] | None = None) -> None:
+        if self.filtered:
+            self.calls.append(("copywriter-semantic", session_ids))
+        else:
+            self.calls.append("copywriter-semantic")
+
+    def run_publishing(self, *, session_ids: set[str] | None = None) -> None:
+        if self.filtered:
+            self.calls.append(("copywriter", session_ids))
+        else:
+            self.calls.append("copywriter")
+
+
 class PostProcessServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -65,7 +83,7 @@ class PostProcessServiceTest(unittest.TestCase):
             side_effect=lambda _: _StageStub(calls, "exporter"),
         ), patch(
             "arl.postprocess.service.CopywriterService",
-            side_effect=lambda _: _StageStub(calls, "copywriter"),
+            side_effect=lambda _: _CopywriterStageStub(calls),
         ):
             PostProcessService(settings).run_once()
 
@@ -76,6 +94,7 @@ class PostProcessServiceTest(unittest.TestCase):
                 "segmenter",
                 "subtitles",
                 "highlight-planner",
+                "copywriter-semantic",
                 "edit-planner",
                 "exporter",
                 "copywriter",
@@ -106,7 +125,7 @@ class PostProcessServiceTest(unittest.TestCase):
             side_effect=lambda _: _FilteredStageStub(calls, "exporter"),
         ), patch(
             "arl.postprocess.service.CopywriterService",
-            side_effect=lambda _: _FilteredStageStub(calls, "copywriter"),
+            side_effect=lambda _: _CopywriterStageStub(calls, filtered=True),
         ):
             PostProcessService(settings).run_once(session_ids={"session-a", "session-b"})
 
@@ -117,6 +136,7 @@ class PostProcessServiceTest(unittest.TestCase):
                 ("segmenter", {"session-a", "session-b"}),
                 ("subtitles", {"session-a", "session-b"}),
                 ("highlight-planner", {"session-a", "session-b"}),
+                ("copywriter-semantic", {"session-a", "session-b"}),
                 ("edit-planner", {"session-a", "session-b"}),
                 ("exporter", {"session-a", "session-b"}),
                 ("copywriter", {"session-a", "session-b"}),
@@ -187,7 +207,7 @@ class PostProcessServiceTest(unittest.TestCase):
             ),
             EditingPlannerService=lambda _: _FilteredStageStub(calls, "edit-planner"),
             ExporterService=lambda _: _FilteredStageStub(calls, "exporter"),
-            CopywriterService=lambda _: _FilteredStageStub(calls, "copywriter"),
+            CopywriterService=lambda _: _CopywriterStageStub(calls, filtered=True),
         )
 
 

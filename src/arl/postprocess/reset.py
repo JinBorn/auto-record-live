@@ -7,7 +7,11 @@ from typing import Callable, TypeVar
 from pydantic import BaseModel, Field, ValidationError
 
 from arl.config import Settings
-from arl.copywriter.models import CopywriterStateFile, PublishingPackage
+from arl.copywriter.models import (
+    CopywriterSemanticAsset,
+    CopywriterStateFile,
+    PublishingPackage,
+)
 from arl.editing.models import EditPlannerStateFile
 from arl.exporter.models import ExporterStateFile
 from arl.highlights.models import HighlightPlannerStateFile
@@ -126,6 +130,12 @@ class PostProcessResetService:
         self._rewrite_jsonl(
             self.temp_dir / "edit-plans.jsonl",
             EditPlanAsset,
+            lambda item: item.session_id in session_ids,
+            result.removed_rows_by_file,
+        )
+        self._rewrite_jsonl(
+            self.temp_dir / "copywriter-semantic-assets.jsonl",
+            CopywriterSemanticAsset,
             lambda item: item.session_id in session_ids,
             result.removed_rows_by_file,
         )

@@ -9,7 +9,12 @@ from unittest.mock import patch
 
 from arl.config import OrchestratorSettings, Settings, StorageSettings
 from arl.copywriter.cover import _draw_cover_text, render_cover
-from arl.copywriter.models import CopywriterStateFile, PublishingPackage
+from arl.copywriter.llm import LlmProviderResponse
+from arl.copywriter.models import (
+    CopywriterSemanticAsset,
+    CopywriterStateFile,
+    PublishingPackage,
+)
 from arl.copywriter.service import CopywriterService
 from arl.orchestrator.models import (
     OrchestratorStateFile,
@@ -228,6 +233,153 @@ class CopywriterServiceTest(unittest.TestCase):
             (self.temp_root / "copywriter-state.json").read_text(encoding="utf-8")
         )
         self.assertEqual(state.processed_match_keys, [])
+
+    def test_llm_semantic_asset_drives_publishing_copy_and_uses_cache(self) -> None:
+        session_id = "session-copywriter-llm"
+        self.settings.llm.enabled = True
+        self.settings.llm.api_key = "test-key"
+        subtitle_path = self._write_subtitle(
+            session_id,
+            "1\n00:00:00,000 --> 00:00:02,000\nraw leading subtitle\n\n"
+            "2\n00:01:00,000 --> 00:01:05,000\n关键团战一钩直接打开局面\n",
+        )
+        export_path = self._write_export(session_id)
+        append_model(
+            self.temp_root / "subtitle-assets.jsonl",
+            SubtitleAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(subtitle_path),
+                format="srt",
+            ),
+        )
+        append_model(
+            self.temp_root / "match-boundaries.jsonl",
+            MatchBoundary(
+                session_id=session_id,
+                match_index=1,
+                started_at_seconds=0.0,
+                ended_at_seconds=120.0,
+                confidence=0.95,
+            ),
+        )
+        append_model(
+            self.temp_root / "highlight-plans.jsonl",
+            HighlightPlanAsset(
+                session_id=session_id,
+                match_index=1,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=120.0,
+                windows=[
+                    HighlightClipWindow(
+                        started_at_seconds=60.0,
+                        ended_at_seconds=70.0,
+                        reason="highlight_keyword",
+                    )
+                ],
+                created_at=self._now(),
+            ),
+        )
+        append_model(
+            self.temp_root / "export-assets.jsonl",
+            ExportAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(export_path),
+                subtitle_path=str(subtitle_path),
+                created_at=self._now(),
+            ),
+        )
+        provider = _FakeLlmProvider(_llm_payload("神钩开团逆转"))
+
+        service = CopywriterService(self.settings, llm_provider=provider)
+        service.run()
+        service.run()
+
+        self.assertEqual(len(provider.calls), 1)
+        semantic_assets = load_models(
+            self.temp_root / "copywriter-semantic-assets.jsonl",
+            CopywriterSemanticAsset,
+        )
+        self.assertEqual(len(semantic_assets), 1)
+        self.assertEqual(semantic_assets[0].token_usage["total_tokens"], 42)
+        copy_assets = load_models(self.temp_root / "copy-assets.jsonl", CopyAsset)
+        self.assertEqual(copy_assets[0].title, "神钩开团逆转")
+        self.assertNotEqual(copy_assets[0].title, "raw leading subtitle")
+        packages = load_models(self.temp_root / "publishing-packages.jsonl", PublishingPackage)
+        self.assertEqual(packages[0].recommended_title, "神钩开团逆转")
+        self.assertEqual(packages[0].cover_lines, ["神钩开团", "团战逆转"])
+        self.assertIn("英雄联盟", packages[0].tags)
+
+    def test_llm_semantic_force_reprocess_bypasses_cache(self) -> None:
+        session_id = "session-copywriter-llm-force"
+        self.settings.llm.enabled = True
+        self.settings.llm.api_key = "test-key"
+        subtitle_path = self._write_subtitle(
+            session_id,
+            "1\n00:00:00,000 --> 00:00:02,000\n第一版团战素材\n",
+        )
+        append_model(
+            self.temp_root / "subtitle-assets.jsonl",
+            SubtitleAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(subtitle_path),
+                format="srt",
+            ),
+        )
+        provider = _FakeLlmProvider(
+            _llm_payload("神钩开团逆转"),
+            _llm_payload("丝血反打名场面"),
+        )
+        service = CopywriterService(self.settings, llm_provider=provider)
+
+        service.run_semantic()
+        service.run_semantic(force_reprocess=True)
+
+        self.assertEqual(len(provider.calls), 2)
+        semantic_assets = load_models(
+            self.temp_root / "copywriter-semantic-assets.jsonl",
+            CopywriterSemanticAsset,
+        )
+        self.assertEqual(
+            [asset.result.recommended_title for asset in semantic_assets],
+            ["神钩开团逆转", "丝血反打名场面"],
+        )
+
+    def test_llm_schema_failure_falls_back_to_heuristic_copy(self) -> None:
+        session_id = "session-copywriter-llm-fallback"
+        self.settings.llm.enabled = True
+        self.settings.llm.api_key = "test-key"
+        self.settings.llm.max_retries = 0
+        subtitle_path = self._write_subtitle(
+            session_id,
+            "1\n00:00:00,000 --> 00:00:02,000\nfallback subtitle title\n",
+        )
+        append_model(
+            self.temp_root / "subtitle-assets.jsonl",
+            SubtitleAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(subtitle_path),
+                format="srt",
+            ),
+        )
+        provider = _FakeLlmProvider('{"recommended_title": "broken"}')
+
+        CopywriterService(self.settings, llm_provider=provider).run()
+
+        self.assertEqual(len(provider.calls), 1)
+        self.assertEqual(
+            load_models(
+                self.temp_root / "copywriter-semantic-assets.jsonl",
+                CopywriterSemanticAsset,
+            ),
+            [],
+        )
+        copy_assets = load_models(self.temp_root / "copy-assets.jsonl", CopyAsset)
+        self.assertEqual(len(copy_assets), 1)
+        self.assertNotEqual(copy_assets[0].title, "broken")
 
     def test_filters_by_session_ids(self) -> None:
         for session_id in ["session-copywriter-filter-a", "session-copywriter-filter-b"]:
@@ -1033,6 +1185,46 @@ class _FakeCoverDraw:
                 "stroke_width": stroke_width,
             }
         )
+
+
+class _FakeLlmProvider:
+    def __init__(self, *contents: str) -> None:
+        self.contents = list(contents)
+        self.calls: list[tuple[str, str]] = []
+
+    def generate(self, *, system_prompt: str, user_prompt: str) -> LlmProviderResponse:
+        self.calls.append((system_prompt, user_prompt))
+        index = min(len(self.calls) - 1, len(self.contents) - 1)
+        return LlmProviderResponse(
+            content=self.contents[index],
+            token_usage={"prompt_tokens": 20, "completion_tokens": 22, "total_tokens": 42},
+        )
+
+
+def _llm_payload(recommended_title: str) -> str:
+    return json.dumps(
+        {
+            "title_candidates": [
+                recommended_title,
+                "团战逆转全局",
+                "上分名场面",
+            ],
+            "recommended_title": recommended_title,
+            "cover_lines": ["神钩开团", "团战逆转"],
+            "summary": "关键团战一波打开局面，适合作为发布切片。",
+            "description": "这局通过关键开团建立优势，后续节奏连续滚起。",
+            "tags": ["英雄联盟", "直播切片", "神钩", "团战", "上分"],
+            "hook_line": "神钩开团，团战逆转",
+            "teaser_recommendations": [
+                {
+                    "source_start_seconds": 60.0,
+                    "source_end_seconds": 68.0,
+                    "hook_reason": "关键开团瞬间",
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
 
 
 if __name__ == "__main__":

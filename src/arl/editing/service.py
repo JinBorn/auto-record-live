@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from arl.config import Settings
+from arl.copywriter.models import CopywriterSemanticAsset
 from arl.editing.audio import (
     BgmLibraryLoadReport,
     BgmLibraryTrack,
@@ -46,7 +47,12 @@ _REASON_PRIORITY = {
 }
 
 _PRIMARY_TEASER_REASONS = {"highlight_keyword"}
-_ZOOM_REASONS = {"highlight_keyword", "condensed_key_event", "condensed_tactical"}
+_ZOOM_REASONS = {
+    "highlight_keyword",
+    "condensed_key_event",
+    "condensed_tactical",
+    "llm_teaser",
+}
 _SFX_REASONS = {"highlight_keyword", "condensed_key_event"}
 _SFX_MIN_INTERVAL_SECONDS = 20.0
 _SFX_MAX_HITS = 4
@@ -78,6 +84,9 @@ class EditingPlannerService:
         self.settings = settings
         self.boundaries_path = settings.storage.temp_dir / "match-boundaries.jsonl"
         self.highlight_plans_path = settings.storage.temp_dir / "highlight-plans.jsonl"
+        self.semantic_assets_path = (
+            settings.storage.temp_dir / "copywriter-semantic-assets.jsonl"
+        )
         self.subtitle_assets_path = settings.storage.temp_dir / "subtitle-assets.jsonl"
         self.recording_assets_path = settings.storage.temp_dir / "recording-assets.jsonl"
         self.edit_plans_path = settings.storage.temp_dir / "edit-plans.jsonl"
@@ -129,6 +138,10 @@ class EditingPlannerService:
             (asset.session_id, asset.match_index): asset
             for asset in load_models(self.subtitle_assets_path, SubtitleAsset)
         }
+        semantic_map = {
+            (asset.session_id, asset.match_index): asset
+            for asset in load_models(self.semantic_assets_path, CopywriterSemanticAsset)
+        }
         streamer_names = self._streamer_names_by_session()
         existing_edit_plan_map = {
             (plan.session_id, plan.match_index): plan
@@ -162,6 +175,7 @@ class EditingPlannerService:
                 recording,
                 highlight_plan_map.get((boundary.session_id, boundary.match_index)),
                 subtitle_map.get((boundary.session_id, boundary.match_index)),
+                semantic_map.get((boundary.session_id, boundary.match_index)),
                 streamer_names.get(boundary.session_id),
             )
             if key in processed_keys and existing_plan_matches and not force_reprocess:
@@ -220,6 +234,7 @@ class EditingPlannerService:
                 highlight_plan,
                 recording,
                 subtitle_map.get((boundary.session_id, boundary.match_index)),
+                semantic_map.get((boundary.session_id, boundary.match_index)),
                 streamer_names.get(boundary.session_id),
             )
             if plan is None:
@@ -259,6 +274,7 @@ class EditingPlannerService:
         highlight_plan: HighlightPlanAsset,
         recording: RecordingAsset | None,
         subtitle: SubtitleAsset | None,
+        semantic_asset: CopywriterSemanticAsset | None,
         streamer_name: str | None,
     ) -> EditPlanAsset | None:
         duration = boundary.ended_at_seconds - boundary.started_at_seconds
@@ -279,6 +295,7 @@ class EditingPlannerService:
             highlight_plan.windows,
             duration,
             subtitle=subtitle,
+            semantic_asset=semantic_asset,
         )
         if not teaser_windows:
             log(
@@ -840,7 +857,15 @@ class EditingPlannerService:
         duration: float,
         *,
         subtitle: SubtitleAsset | None = None,
+        semantic_asset: CopywriterSemanticAsset | None = None,
     ) -> list[HighlightClipWindow]:
+        semantic_windows = self._semantic_teaser_windows(
+            windows,
+            duration,
+            semantic_asset=semantic_asset,
+        )
+        if semantic_windows:
+            return semantic_windows
         subtitle_cues = self._subtitle_cues(subtitle)
         candidates = self._teaser_candidates(
             windows,
@@ -880,6 +905,86 @@ class EditingPlannerService:
             )
             total_seconds += end - start
         return selected
+
+    def _semantic_teaser_windows(
+        self,
+        windows: list[HighlightClipWindow],
+        duration: float,
+        *,
+        semantic_asset: CopywriterSemanticAsset | None,
+    ) -> list[HighlightClipWindow]:
+        if semantic_asset is None:
+            return []
+        candidates: list[HighlightClipWindow] = []
+        for recommendation in semantic_asset.result.teaser_recommendations:
+            snapped = self._snap_semantic_teaser_window(
+                windows,
+                duration,
+                recommendation.source_start_seconds,
+                recommendation.source_end_seconds,
+            )
+            if snapped is None:
+                continue
+            candidates.append(snapped)
+        selected: list[HighlightClipWindow] = []
+        total_seconds = 0.0
+        for window in candidates:
+            if len(selected) >= self.settings.editing.teaser_max_segments:
+                break
+            remaining = self.settings.editing.teaser_max_total_seconds - total_seconds
+            if remaining < self.settings.editing.teaser_min_segment_seconds:
+                break
+            end = min(window.ended_at_seconds, window.started_at_seconds + remaining)
+            if end - window.started_at_seconds < self.settings.editing.teaser_min_segment_seconds:
+                continue
+            selected.append(
+                HighlightClipWindow(
+                    started_at_seconds=window.started_at_seconds,
+                    ended_at_seconds=end,
+                    reason="llm_teaser",
+                )
+            )
+            total_seconds += end - window.started_at_seconds
+        return selected
+
+    def _snap_semantic_teaser_window(
+        self,
+        windows: list[HighlightClipWindow],
+        duration: float,
+        start_seconds: float,
+        end_seconds: float,
+    ) -> HighlightClipWindow | None:
+        requested_start = max(0.0, start_seconds)
+        requested_end = min(duration, end_seconds)
+        if requested_end <= requested_start:
+            return None
+        best: tuple[float, HighlightClipWindow] | None = None
+        for window in windows:
+            overlap = min(requested_end, window.ended_at_seconds) - max(
+                requested_start,
+                window.started_at_seconds,
+            )
+            if overlap <= 0.0:
+                continue
+            start = max(requested_start, window.started_at_seconds)
+            end = min(requested_end, window.ended_at_seconds)
+            min_duration = self.settings.editing.teaser_min_segment_seconds
+            if end - start < min_duration:
+                center = (start + end) / 2.0
+                start = max(window.started_at_seconds, center - min_duration / 2.0)
+                end = min(window.ended_at_seconds, start + min_duration)
+                start = max(window.started_at_seconds, end - min_duration)
+            candidate = HighlightClipWindow(
+                started_at_seconds=start,
+                ended_at_seconds=end,
+                reason="llm_teaser",
+            )
+            if not self._valid_teaser_window(candidate, duration):
+                continue
+            score = overlap / max(0.001, requested_end - requested_start)
+            if best is None or score > best[0]:
+                best = (score, candidate)
+        return best[1] if best is not None else None
 
     @staticmethod
     def _subtitle_cues(subtitle: SubtitleAsset | None) -> list[SrtCue]:
@@ -1076,6 +1181,7 @@ class EditingPlannerService:
         recording: RecordingAsset | None,
         highlight_plan: HighlightPlanAsset | None,
         subtitle: SubtitleAsset | None,
+        semantic_asset: CopywriterSemanticAsset | None,
         streamer_name: str | None,
     ) -> bool:
         if plan is None:
@@ -1093,6 +1199,7 @@ class EditingPlannerService:
             highlight_plan,
             duration,
             subtitle,
+            semantic_asset,
         ) and self._edit_plan_has_current_zoom_shape(plan)
         if not matches_shape:
             return False
@@ -1206,12 +1313,14 @@ class EditingPlannerService:
         highlight_plan: HighlightPlanAsset | None,
         duration: float,
         subtitle: SubtitleAsset | None,
+        semantic_asset: CopywriterSemanticAsset | None,
     ) -> bool:
         expected_windows = (
             self._select_teaser_windows(
                 highlight_plan.windows,
                 duration,
                 subtitle=subtitle,
+                semantic_asset=semantic_asset,
             )
             if highlight_plan is not None
             else []

@@ -7,7 +7,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from arl.config import Settings, StorageSettings
-from arl.copywriter.models import CopywriterStateFile, PublishingPackage
+from arl.copywriter.models import (
+    CopywriterSemanticAsset,
+    CopywriterStateFile,
+    LlmCopywritingResult,
+    PublishingPackage,
+)
 from arl.editing.models import EditPlannerStateFile
 from arl.exporter.models import ExporterStateFile
 from arl.highlights.models import HighlightPlannerStateFile
@@ -221,6 +226,10 @@ class PostProcessResetServiceTest(unittest.TestCase):
         self.assertEqual(self._session_ids("subtitle-assets.jsonl", SubtitleAsset), [other])
         self.assertEqual(self._session_ids("highlight-plans.jsonl", HighlightPlanAsset), [other])
         self.assertEqual(self._session_ids("edit-plans.jsonl", EditPlanAsset), [other])
+        self.assertEqual(
+            self._session_ids("copywriter-semantic-assets.jsonl", CopywriterSemanticAsset),
+            [other],
+        )
         self.assertEqual(self._session_ids("export-assets.jsonl", ExportAsset), [other])
         self.assertEqual(self._session_ids("copy-assets.jsonl", CopyAsset), [other])
         self.assertEqual(
@@ -400,6 +409,31 @@ class PostProcessResetServiceTest(unittest.TestCase):
                         reason="full_validated_match",
                     ),
                 ],
+                created_at=created_at,
+            ),
+        )
+        append_model(
+            self.temp_root / "copywriter-semantic-assets.jsonl",
+            CopywriterSemanticAsset(
+                session_id=session_id,
+                match_index=1,
+                source_subtitle_path=str(subtitle_path),
+                source_highlight_plan_path=None,
+                provider="fake",
+                model="fake-model",
+                prompt_fingerprint="prompt",
+                input_fingerprint=f"input-{session_id}",
+                result=LlmCopywritingResult(
+                    title_candidates=["神钩开团", "团战逆转", "上分名场面"],
+                    recommended_title="神钩开团",
+                    cover_lines=["神钩开团", "团战逆转"],
+                    summary="一次关键开团带动整局节奏。",
+                    description="关键团战打出优势，适合作为发布切片。",
+                    tags=["英雄联盟", "直播切片", "神钩", "团战", "上分"],
+                    hook_line="神钩开团，团战逆转",
+                ),
+                token_usage={"total_tokens": 42},
+                status="generated",
                 created_at=created_at,
             ),
         )

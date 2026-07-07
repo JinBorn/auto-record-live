@@ -1,1 +1,5 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Verify semantic asset persistence, cache, and reset handling follow JSONL conventions."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Check typed models, fallback resilience, explicit UTF-8 IO, and test coverage."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Check provider failure/retry/cache/token logs stay compact and non-secret."}
+{"file": ".trellis/spec/backend/export-configuration.md", "reason": "Verify publish stage ordering, teaser hint contract, and quality-report acceptance compatibility."}
+{"file": ".trellis/tasks/archive/2026-07/07-02-condensed-highlight-duration-tightening/validation-report.md", "reason": "Compare post-change validation outputs against known copywriter failure cases."}

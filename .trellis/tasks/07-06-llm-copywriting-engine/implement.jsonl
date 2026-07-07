@@ -1,1 +1,6 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Module ownership for copywriter-local provider/model code, config wiring, and avoiding generic helpers."}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "File-backed JSONL persistence rules for semantic assets, cache rows, and reset behavior."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Typed durable payloads, UTF-8 file IO, fallback behavior, and test expectations."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Compact operator logs for provider failures, retries, cache hits, and token usage."}
+{"file": ".trellis/spec/backend/export-configuration.md", "reason": "Publish edit pipeline order, quality-report acceptance metrics, and teaser/copywriter integration constraints."}
+{"file": ".trellis/tasks/archive/2026-07/07-02-condensed-highlight-duration-tightening/validation-report.md", "reason": "Ground truth examples showing raw-excerpt title failure and target quality-report outputs."}

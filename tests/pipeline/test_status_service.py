@@ -11,7 +11,11 @@ from arl.config import (
     Settings,
     StorageSettings,
 )
-from arl.copywriter.models import CopywriterStateFile
+from arl.copywriter.models import (
+    CopywriterSemanticAsset,
+    CopywriterStateFile,
+    LlmCopywritingResult,
+)
 from arl.editing.models import EditPlannerStateFile
 from arl.exporter.models import ExporterAuditEvent, ExporterStateFile
 from arl.highlights.models import HighlightPlannerStateFile
@@ -153,6 +157,30 @@ class StatusServiceTest(unittest.TestCase):
             ),
         )
         append_model(
+            self.temp_root / "copywriter-semantic-assets.jsonl",
+            CopywriterSemanticAsset(
+                session_id=session_id,
+                match_index=1,
+                source_subtitle_path=str(subtitle_path),
+                provider="fake",
+                model="fake-model",
+                prompt_fingerprint="prompt",
+                input_fingerprint="input",
+                result=LlmCopywritingResult(
+                    title_candidates=["神钩开团", "团战逆转", "上分名场面"],
+                    recommended_title="神钩开团",
+                    cover_lines=["神钩开团", "团战逆转"],
+                    summary="一次关键开团带动整局节奏。",
+                    description="关键团战打出优势，适合作为发布切片。",
+                    tags=["英雄联盟", "直播切片", "神钩", "团战", "上分"],
+                    hook_line="神钩开团，团战逆转",
+                ),
+                token_usage={"total_tokens": 42},
+                status="generated",
+                created_at=self._now(),
+            ),
+        )
+        append_model(
             self.temp_root / "export-assets.jsonl",
             ExportAsset(
                 session_id=session_id,
@@ -203,6 +231,7 @@ class StatusServiceTest(unittest.TestCase):
         self.assertEqual(status["postprocess"]["match_boundaries"], 1)
         self.assertEqual(status["postprocess"]["subtitle_assets"], 1)
         self.assertEqual(status["postprocess"]["highlight_plans"], 1)
+        self.assertEqual(status["postprocess"]["copywriter_semantic_assets"], 1)
         self.assertEqual(status["postprocess"]["edit_plans"], 1)
         self.assertEqual(status["postprocess"]["export_assets"], 1)
         self.assertEqual(status["postprocess"]["copy_assets"], 1)
@@ -212,6 +241,7 @@ class StatusServiceTest(unittest.TestCase):
         self.assertEqual(status["editing"]["plans"], 1)
         self.assertEqual(status["editing"]["processed_matches"], 1)
         self.assertEqual(status["copywriter"]["processed_matches"], 1)
+        self.assertEqual(status["copywriter"]["semantic_assets"], 1)
 
     def test_subtitle_fallback_and_missing_outputs_are_degraded(self) -> None:
         session_id = "session-status-degraded"

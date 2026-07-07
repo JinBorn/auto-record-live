@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from arl.config import Settings
-from arl.copywriter.models import CopywriterStateFile
+from arl.copywriter.models import CopywriterSemanticAsset, CopywriterStateFile
 from arl.editing.models import EditPlannerStateFile
 from arl.exporter.models import ExporterAuditEvent, ExporterStateFile
 from arl.highlights.models import HighlightPlannerStateFile
@@ -58,6 +58,10 @@ class StatusService:
             HighlightPlanAsset,
         )
         edit_plans = load_models(self.temp_dir / "edit-plans.jsonl", EditPlanAsset)
+        semantic_assets = load_models(
+            self.temp_dir / "copywriter-semantic-assets.jsonl",
+            CopywriterSemanticAsset,
+        )
         recorder_events = load_models(
             self.settings.orchestrator.recorder_event_log_path,
             RecorderAuditEvent,
@@ -169,6 +173,7 @@ class StatusService:
                 "incomplete_match_boundaries": len(boundaries) - len(complete_boundaries),
                 "subtitle_assets": len(subtitle_assets),
                 "highlight_plans": len(highlight_plans),
+                "copywriter_semantic_assets": len(semantic_assets),
                 "edit_plans": len(edit_plans),
                 "export_assets": len(export_assets),
                 "copy_assets": len(copy_assets),
@@ -201,6 +206,7 @@ class StatusService:
             },
             "copywriter": {
                 "processed_matches": len(copywriter_state.processed_match_keys),
+                "semantic_assets": len(semantic_assets),
             },
             "recovery": {
                 "pending_actions": recovery_summary.get("actions_pending", 0),

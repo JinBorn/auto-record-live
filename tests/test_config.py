@@ -344,6 +344,30 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertFalse(settings.editing.zoom_enabled)
         self.assertFalse(settings.editing.audio_mixing_enabled)
         self.assertEqual(settings.editing.bgm_gain_db, -28.0)
+        self.assertFalse(settings.llm.enabled)
+        self.assertEqual(settings.llm.base_url, "https://api.deepseek.com/v1")
+        self.assertEqual(settings.llm.model, "deepseek-chat")
+
+    def test_llm_envs_load_and_clamp(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_LLM_ENABLED"] = "1"
+            os.environ["ARL_LLM_BASE_URL"] = " https://example.test/v1/ "
+            os.environ["ARL_LLM_API_KEY"] = " secret "
+            os.environ["ARL_LLM_MODEL"] = " custom-model "
+            os.environ["ARL_LLM_TIMEOUT_SECONDS"] = "0"
+            os.environ["ARL_LLM_MAX_RETRIES"] = "-1"
+            os.environ["ARL_LLM_MAX_INPUT_CUES"] = "4"
+            os.environ["ARL_LLM_TEMPERATURE"] = "3"
+            settings = load_settings()
+
+        self.assertTrue(settings.llm.enabled)
+        self.assertEqual(settings.llm.base_url, "https://example.test/v1")
+        self.assertEqual(settings.llm.api_key, "secret")
+        self.assertEqual(settings.llm.model, "custom-model")
+        self.assertEqual(settings.llm.timeout_seconds, 1.0)
+        self.assertEqual(settings.llm.max_retries, 0)
+        self.assertEqual(settings.llm.max_input_cues, 20)
+        self.assertEqual(settings.llm.temperature, 1.5)
 
     def test_postprocess_publish_preset_env_enables_publish_pipeline(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
@@ -368,6 +392,7 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(settings.export.ffmpeg_bitrate, "8000k")
         self.assertEqual(settings.export.ffmpeg_max_bitrate, "10000k")
         self.assertTrue(settings.export.audio_loudnorm_enabled)
+        self.assertFalse(settings.llm.enabled)
 
     def test_postprocess_publish_preset_bool_env_enables_publish_pipeline(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
