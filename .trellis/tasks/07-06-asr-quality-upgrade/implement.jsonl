@@ -1,1 +1,9 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"Stage ownership, config placement, and avoiding generic shared helpers."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Subtitle assets/audit/state are file-backed durable contracts requiring typed models and UTF-8 persistence."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Existing ASR fallback, word timestamp, clip_timestamps, and subtitle-audit mistakes that must not regress."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Compact warning/log conventions and avoiding secret/raw transcript dumps."}
+{"file":".trellis/spec/backend/orchestration-contracts.md","reason":"Current subtitle CLI, env, fallback, audit, and downstream SRT contract."}
+{"file":".trellis/spec/backend/export-configuration.md","reason":"ASS/export/copywriter downstream behavior depends on canonical SRT subtitle text."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Config/helper additions require search-first and reuse of existing patterns."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"ASR output flows into stage signals, highlights, copywriter, edit plans, and exporter."}
+{"file":".trellis/tasks/archive/2026-06/05-14-faster-whisper-production-hardening/design.md","reason":"Historical faster-whisper hardening design, cache/dependency/fallback baseline."}

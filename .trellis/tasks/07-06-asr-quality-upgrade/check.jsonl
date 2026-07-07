@@ -1,1 +1,5 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Quality gate must verify ASR fallback safety, word timestamp precision, clip scoping, and subtitle audit shape."}
+{"file":".trellis/spec/backend/orchestration-contracts.md","reason":"Check env/CLI/audit/subtitle asset contract stays synchronized with implementation."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Check all JSON/JSONL persistence remains typed and UTF-8 encoded."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Check warnings for missing OpenCC/invalid term maps are compact and do not leak raw transcript/secrets."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Check normalized SRT text survives downstream consumers without schema drift."}
