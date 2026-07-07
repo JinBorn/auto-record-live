@@ -401,3 +401,36 @@ Tightened publish-mode condensed highlight duration selection, audio/zoom behavi
 ### Next Steps
 
 - None - task complete
+
+
+## Session 60: Export quality report CLI
+
+**Date**: 2026-07-07
+**Task**: Export quality report CLI
+**Branch**: `main`
+
+### Summary
+
+Added the quality-report CLI, report service, threshold config, subtitle retiming reuse, tests, README usage, and backend spec contract. Verified with full pytest and local validation sessions.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d0d8548` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

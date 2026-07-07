@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 59
-- **Last Active**: 2026-07-03
+- **Total Sessions**: 60
+- **Last Active**: 2026-07-07
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~403 | Active |
+| `journal-2.md` | ~436 | Active |
 | `journal-1.md` | ~1986 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 60 | 2026-07-07 | Export quality report CLI | `d0d8548` | `main` |
 | 59 | 2026-07-03 | Condensed publish editing tightening | `b25c7b7` | `main` |
 | 58 | 2026-06-30 | Full quality check | - | `main` |
 | 57 | 2026-06-30 | Finalize publish editing refinements | `a0d5ae0` | `main` |
