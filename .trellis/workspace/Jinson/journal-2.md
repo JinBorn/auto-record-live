@@ -467,3 +467,36 @@ Implemented the two-phase LLM copywriter: env-driven OpenAI-compatible provider,
 ### Next Steps
 
 - None - task complete
+
+
+## Session 62: SFX precision and multi-kill variants
+
+**Date**: 2026-07-08
+**Task**: SFX precision and multi-kill variants
+**Branch**: `main`
+
+### Summary
+
+Implemented KDA-aligned kill SFX scheduling, SFX library variants, config/docs/spec updates, and regression coverage for death-only, trimmed gaps, teaser mapping, and multi-kill assets.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b727f4e` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
