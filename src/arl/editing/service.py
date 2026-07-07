@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
+import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,11 +13,14 @@ from arl.editing.audio import (
     BgmLibraryTrack,
     BgmSelectionContext,
     SourceMusicDetection,
+    SfxLibraryLoadReport,
+    SfxLibraryTrack,
     detect_source_background_music,
     detect_source_background_music_spans,
     ensure_default_editing_audio_assets,
     infer_bgm_context_tags,
     load_bgm_library_report,
+    load_sfx_library_report,
     select_bgm_tracks,
 )
 from arl.editing.models import EditPlannerStateFile
@@ -56,10 +60,20 @@ _ZOOM_REASONS = {
     "teaser_fallback_top_scored",
 }
 _SFX_REASONS = {"highlight_keyword", "condensed_key_event"}
-_SFX_MIN_INTERVAL_SECONDS = 20.0
-_SFX_MAX_HITS = 4
 _SEGMENT_TOLERANCE_SECONDS = 0.001
 _BGM_SWITCH_MIN_DURATION_SECONDS = 120.0
+_KDA_KILLS_RE = re.compile(r"\bkills=(\d+)->(\d+)")
+_KDA_CURRENT_AT_RE = re.compile(r"\bcurrent_at=([0-9]+(?:\.[0-9]+)?)")
+_MULTIKILL_KEYWORDS = (
+    "double kill",
+    "triple kill",
+    "quadra kill",
+    "penta kill",
+    "\u53cc\u6740",
+    "\u4e09\u6740",
+    "\u56db\u6740",
+    "\u4e94\u6740",
+)
 _TEASER_SIGNAL_KEYWORDS = (
     (("kda_change",), 36),
     (("单杀", "solo kill"), 34),
@@ -74,6 +88,21 @@ _TEASER_SIGNAL_KEYWORDS = (
     (("韩服", "千分", "套路"), 10),
     (("粉丝", "认出来", "认出"), 8),
 )
+
+
+@dataclass(frozen=True)
+class _KdaKillEvent:
+    source_timestamp_seconds: float
+    kill_delta: int
+    is_multi_kill: bool
+
+
+@dataclass(frozen=True)
+class _SfxCandidate:
+    at_seconds: float
+    reason: str
+    category: str
+    segment_index: int
 
 
 class EditingPlannerService:
@@ -96,6 +125,7 @@ class EditingPlannerService:
         self.source_bgm_detector = source_bgm_detector or detect_source_background_music
         self._source_music_cache: dict[tuple[str, int], SourceMusicDetection] = {}
         self._bgm_library_tracks: list[BgmLibraryTrack] | None = None
+        self._sfx_library_tracks: list[SfxLibraryTrack] | None = None
 
     def run(
         self,
@@ -491,26 +521,33 @@ class EditingPlannerService:
             )
 
         configured_sfx_path = self.settings.editing.sfx_path
-        sfx_path = (
-            configured_sfx_path
-            if configured_sfx_path is not None
-            else default_assets.get("coin_sfx")
-        )
-        if sfx_path is None:
-            return audio_beds, sound_effects
-        if not sfx_path.is_file():
-            if configured_sfx_path is not None:
-                log(
-                    "editing",
-                    "skip configured sfx asset "
-                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
-                    f"path={sfx_path} reason=missing_file",
-                )
-            return audio_beds, sound_effects
+        configured_sfx_missing = False
+        if configured_sfx_path is not None and not configured_sfx_path.is_file():
+            log(
+                "editing",
+                "skip configured sfx asset "
+                f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                f"path={configured_sfx_path} reason=missing_file",
+            )
+            configured_sfx_missing = True
+            configured_sfx_path = None
 
-        timeline_cursor = 0.0
-        last_sfx_at: float | None = None
+        sfx_candidates = (
+            []
+            if configured_sfx_missing
+            else self._sound_effect_candidates(
+                timeline,
+                subtitle=subtitle,
+            )
+        )
+        kill_sfx_hits = self._sound_effect_hits_from_candidates(
+            sfx_candidates,
+            configured_sfx_path=configured_sfx_path,
+            default_sfx_path=default_assets.get("coin_sfx"),
+        )
+
         transition_sfx_path = self._transition_sfx_path()
+        timeline_cursor = 0.0
         for segment in timeline:
             segment_duration = self._segment_duration(segment)
             if segment.role == "transition" and transition_sfx_path is not None:
@@ -522,23 +559,9 @@ class EditingPlannerService:
                         reason=segment.reason,
                     )
                 )
-            if self._should_emit_sound_effect(
-                segment,
-                at_seconds=timeline_cursor,
-                emitted_count=len(sound_effects),
-                last_sfx_at=last_sfx_at,
-            ):
-                at_seconds = round(timeline_cursor, 3)
-                sound_effects.append(
-                    SoundEffectHit(
-                        source_path=str(sfx_path),
-                        at_seconds=at_seconds,
-                        gain_db=self.settings.editing.sfx_gain_db,
-                        reason=segment.reason,
-                    )
-                )
-                last_sfx_at = at_seconds
             timeline_cursor += max(0.0, segment_duration)
+        sound_effects.extend(kill_sfx_hits)
+        sound_effects.sort(key=lambda hit: hit.at_seconds)
         return audio_beds, sound_effects
 
     def _source_music_detection(
@@ -620,52 +643,342 @@ class EditingPlannerService:
             "persistent_music_like_audio" if has_music else "no_persistent_music_bed",
         )
 
-    @staticmethod
-    def _should_emit_sound_effect(
-        segment: TimelineSegment,
+    def _sound_effect_candidates(
+        self,
+        timeline: list[TimelineSegment],
         *,
-        at_seconds: float,
-        emitted_count: int,
-        last_sfx_at: float | None,
-    ) -> bool:
-        if emitted_count >= _SFX_MAX_HITS:
-            return False
+        subtitle: SubtitleAsset | None,
+    ) -> list[_SfxCandidate]:
+        if self.settings.editing.sfx_max_hits <= 0:
+            return []
+        kda_events = (
+            self._kda_kill_events(subtitle)
+            if self.settings.editing.sfx_kda_alignment_enabled
+            else []
+        )
+        kda_timestamps = (
+            self._kda_event_timestamps(subtitle)
+            if self.settings.editing.sfx_kda_alignment_enabled
+            else []
+        )
+        mapped = self._map_kda_events_to_timeline(timeline, kda_events)
+        segment_output_starts = self._timeline_output_starts(timeline)
+        candidates: list[_SfxCandidate] = []
+        segments_with_kda = self._timeline_segments_containing_kda_timestamps(
+            timeline,
+            kda_timestamps,
+        )
+        for segment_index, event, at_seconds in mapped:
+            candidates.append(
+                _SfxCandidate(
+                    at_seconds=self._clamped_sfx_time(
+                        segment_output_starts[segment_index],
+                        self._segment_duration(timeline[segment_index]),
+                        at_seconds + self.settings.editing.sfx_timing_offset_seconds,
+                    ),
+                    reason=timeline[segment_index].reason,
+                    category="multi_kill" if event.is_multi_kill else "kill_coin",
+                    segment_index=segment_index,
+                )
+            )
+
+        timeline_cursor = 0.0
+        for segment_index, segment in enumerate(timeline):
+            segment_duration = self._segment_duration(segment)
+            if (
+                segment_index not in segments_with_kda
+                and self._segment_is_sfx_eligible(segment)
+            ):
+                candidates.append(
+                    _SfxCandidate(
+                        at_seconds=round(timeline_cursor, 3),
+                        reason=segment.reason,
+                        category="kill_coin",
+                        segment_index=segment_index,
+                    )
+                )
+            timeline_cursor += max(0.0, segment_duration)
+
+        candidates.sort(
+            key=lambda candidate: (
+                candidate.at_seconds,
+                candidate.segment_index,
+                0 if candidate.category == "multi_kill" else 1,
+            )
+        )
+        selected: list[_SfxCandidate] = []
+        last_sfx_at: float | None = None
+        for candidate in candidates:
+            if len(selected) >= self.settings.editing.sfx_max_hits:
+                break
+            if (
+                last_sfx_at is not None
+                and candidate.at_seconds - last_sfx_at
+                < self.settings.editing.sfx_min_interval_seconds
+            ):
+                continue
+            selected.append(candidate)
+            last_sfx_at = candidate.at_seconds
+        return selected
+
+    def _sound_effect_hits_from_candidates(
+        self,
+        candidates: list[_SfxCandidate],
+        *,
+        configured_sfx_path: Path | None,
+        default_sfx_path: Path | None,
+    ) -> list[SoundEffectHit]:
+        hits: list[SoundEffectHit] = []
+        for candidate in candidates:
+            track = self._sfx_track_for_category(
+                candidate.category,
+                configured_sfx_path=configured_sfx_path,
+                default_sfx_path=default_sfx_path,
+            )
+            if track is None:
+                continue
+            path, gain_db = track
+            hits.append(
+                SoundEffectHit(
+                    source_path=str(path),
+                    at_seconds=round(candidate.at_seconds, 3),
+                    gain_db=gain_db,
+                    reason=candidate.reason,
+                )
+            )
+        return hits
+
+    @staticmethod
+    def _segment_is_sfx_eligible(segment: TimelineSegment) -> bool:
         if segment.role not in {"teaser", "main"}:
             return False
-        if segment.reason not in _SFX_REASONS:
-            return False
-        if last_sfx_at is None:
-            return True
-        return at_seconds - last_sfx_at >= _SFX_MIN_INTERVAL_SECONDS
+        return segment.reason in _SFX_REASONS
 
     def _transition_sfx_path(self) -> Path | None:
         configured = self.settings.editing.transition_sfx_path
         if configured is not None:
             return configured if configured.is_file() else None
-        library_path = self.settings.storage.temp_dir.parent / "sfx" / "library.json"
-        if not library_path.is_file():
-            library_path = Path("data/sfx/library.json")
-        if not library_path.is_file():
-            return None
-        try:
-            payload = json.loads(library_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            return None
-        tracks = payload.get("tracks")
-        if not isinstance(tracks, list):
-            return None
-        for row in tracks:
-            if not isinstance(row, dict) or row.get("category") != "transition_whoosh":
-                continue
-            raw_path = row.get("path")
-            if not isinstance(raw_path, str) or not raw_path.strip():
-                continue
-            candidate = Path(raw_path)
-            if not candidate.is_absolute():
-                candidate = library_path.parent / candidate
-            if candidate.is_file():
-                return candidate
+        track = self._first_sfx_library_track("transition_whoosh")
+        return track.path if track is not None else None
+
+    def _sfx_track_for_category(
+        self,
+        category: str,
+        *,
+        configured_sfx_path: Path | None,
+        default_sfx_path: Path | None,
+    ) -> tuple[Path, float] | None:
+        if configured_sfx_path is not None:
+            return configured_sfx_path, self.settings.editing.sfx_gain_db
+        category_order = [category]
+        if category != "kill_coin":
+            category_order.append("kill_coin")
+        for candidate_category in category_order:
+            track = self._first_sfx_library_track(candidate_category)
+            if track is not None:
+                gain_db = self.settings.editing.sfx_gain_db
+                if track.gain_db is not None:
+                    gain_db = min(6.0, max(-60.0, track.gain_db))
+                return track.path, gain_db
+        if default_sfx_path is not None and default_sfx_path.is_file():
+            return default_sfx_path, self.settings.editing.sfx_gain_db
         return None
+
+    def _first_sfx_library_track(self, category: str) -> SfxLibraryTrack | None:
+        for track in self._sfx_library():
+            if track.category == category:
+                return track
+        return None
+
+    def _sfx_library(self) -> list[SfxLibraryTrack]:
+        if self._sfx_library_tracks is None:
+            report = load_sfx_library_report(self.settings.editing.sfx_library_path)
+            self._log_sfx_library_report(report)
+            self._sfx_library_tracks = list(report.tracks)
+        return self._sfx_library_tracks
+
+    def _log_sfx_library_report(self, report: SfxLibraryLoadReport) -> None:
+        if report.manifest_path is None:
+            return
+        if report.missing_manifest:
+            return
+        if report.parse_error is not None:
+            log(
+                "editing",
+                "sfx library unavailable "
+                f"path={report.manifest_path} reason=parse_error error={report.parse_error}",
+            )
+            return
+        if report.invalid_schema:
+            log(
+                "editing",
+                f"sfx library unavailable path={report.manifest_path} reason=invalid_schema",
+            )
+            return
+        log(
+            "editing",
+            "sfx library loaded "
+            f"path={report.manifest_path} tracks={len(report.tracks)} "
+            f"total_items={report.total_items} "
+            f"skipped_non_object={report.skipped_non_object_count} "
+            f"skipped_missing_category={report.skipped_missing_category_count} "
+            f"skipped_missing_path={report.skipped_missing_path_count} "
+            f"skipped_missing_file={report.skipped_missing_file_count}",
+        )
+
+    def _kda_kill_events(self, subtitle: SubtitleAsset | None) -> list[_KdaKillEvent]:
+        cues = self._subtitle_cues(subtitle)
+        events: list[_KdaKillEvent] = []
+        for cue in cues:
+            if not cue.text.startswith("kda_change "):
+                continue
+            event = self._kda_kill_event_from_cue(cue, cues)
+            if event is not None:
+                events.append(event)
+        events.sort(key=lambda event: event.source_timestamp_seconds)
+        return events
+
+    def _kda_event_timestamps(self, subtitle: SubtitleAsset | None) -> list[float]:
+        timestamps: list[float] = []
+        for cue in self._subtitle_cues(subtitle):
+            if cue.text.startswith("kda_change "):
+                timestamps.append(self._kda_event_timestamp(cue))
+        timestamps.sort()
+        return timestamps
+
+    def _kda_kill_event_from_cue(
+        self,
+        cue: SrtCue,
+        cues: list[SrtCue],
+    ) -> _KdaKillEvent | None:
+        kills_match = _KDA_KILLS_RE.search(cue.text)
+        if kills_match is None:
+            return None
+        previous_kills = int(kills_match.group(1))
+        current_kills = int(kills_match.group(2))
+        kill_delta = current_kills - previous_kills
+        if kill_delta <= 0:
+            return None
+        timestamp = self._kda_event_timestamp(cue)
+        return _KdaKillEvent(
+            source_timestamp_seconds=timestamp,
+            kill_delta=kill_delta,
+            is_multi_kill=kill_delta >= 2
+            or self._has_multikill_keyword_near(cues, timestamp),
+        )
+
+    @staticmethod
+    def _kda_event_timestamp(cue: SrtCue) -> float:
+        match = _KDA_CURRENT_AT_RE.search(cue.text)
+        if match is not None:
+            return float(match.group(1))
+        if cue.ended_at_seconds > cue.started_at_seconds:
+            return (cue.started_at_seconds + cue.ended_at_seconds) / 2.0
+        return cue.started_at_seconds
+
+    def _has_multikill_keyword_near(
+        self,
+        cues: list[SrtCue],
+        timestamp: float,
+    ) -> bool:
+        window = self.settings.editing.sfx_multikill_window_seconds
+        for cue in cues:
+            if cue.started_at_seconds > timestamp + window:
+                continue
+            if cue.ended_at_seconds < timestamp - window:
+                continue
+            normalized = cue.text.lower()
+            if any(keyword in normalized for keyword in _MULTIKILL_KEYWORDS):
+                return True
+        return False
+
+    @classmethod
+    def _map_kda_events_to_timeline(
+        cls,
+        timeline: list[TimelineSegment],
+        events: list[_KdaKillEvent],
+    ) -> list[tuple[int, _KdaKillEvent, float]]:
+        mapped: list[tuple[int, _KdaKillEvent, float]] = []
+        output_cursor = 0.0
+        unmapped = list(events)
+        for segment_index, segment in enumerate(timeline):
+            duration = cls._segment_duration(segment)
+            if segment.role == "transition":
+                output_cursor += duration
+                continue
+            remaining: list[_KdaKillEvent] = []
+            for event in unmapped:
+                if cls._source_timestamp_in_segment(
+                    event.source_timestamp_seconds,
+                    segment,
+                ):
+                    at_seconds = output_cursor + (
+                        event.source_timestamp_seconds - segment.source_start_seconds
+                    )
+                    mapped.append(
+                        (segment_index, event, round(max(0.0, at_seconds), 3))
+                    )
+                else:
+                    remaining.append(event)
+            unmapped = remaining
+            output_cursor += duration
+        return mapped
+
+    @classmethod
+    def _timeline_segments_containing_kda_timestamps(
+        cls,
+        timeline: list[TimelineSegment],
+        timestamps: list[float],
+    ) -> set[int]:
+        segments: set[int] = set()
+        for segment_index, segment in enumerate(timeline):
+            if not cls._segment_is_sfx_eligible(segment):
+                continue
+            if any(
+                cls._source_timestamp_in_segment(
+                    timestamp,
+                    segment,
+                )
+                for timestamp in timestamps
+            ):
+                segments.add(segment_index)
+        return segments
+
+    @staticmethod
+    def _source_timestamp_in_segment(
+        source_timestamp_seconds: float,
+        segment: TimelineSegment,
+    ) -> bool:
+        if segment.role not in {"teaser", "main"}:
+            return False
+        return (
+            segment.source_start_seconds - _SEGMENT_TOLERANCE_SECONDS
+            <= source_timestamp_seconds
+            <= segment.source_end_seconds + _SEGMENT_TOLERANCE_SECONDS
+        )
+
+    @staticmethod
+    def _clamped_sfx_time(
+        segment_output_start_seconds: float,
+        segment_duration_seconds: float,
+        at_seconds: float,
+    ) -> float:
+        return round(
+            max(
+                segment_output_start_seconds,
+                min(at_seconds, segment_output_start_seconds + segment_duration_seconds),
+            ),
+            3,
+        )
+
+    @classmethod
+    def _timeline_output_starts(cls, timeline: list[TimelineSegment]) -> list[float]:
+        starts: list[float] = []
+        output_cursor = 0.0
+        for segment in timeline:
+            starts.append(output_cursor)
+            output_cursor += cls._segment_duration(segment)
+        return starts
 
     def _default_audio_assets(self, boundary: MatchBoundary) -> dict[str, Path]:
         try:

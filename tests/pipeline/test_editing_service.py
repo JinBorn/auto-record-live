@@ -52,6 +52,7 @@ class EditingPlannerServiceTest(unittest.TestCase):
                 teaser_max_segments=2,
                 teaser_max_total_seconds=45.0,
                 teaser_min_segment_seconds=3.0,
+                sfx_library_path=root / "sfx" / "library.json",
             ),
         )
         self.boundaries_path = self.temp_root / "match-boundaries.jsonl"
@@ -604,6 +605,156 @@ class EditingPlannerServiceTest(unittest.TestCase):
 
         plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
         self.assertEqual(plan.sound_effects, [])
+
+    def test_audio_mixing_aligns_sfx_to_kda_kill_timestamp(self) -> None:
+        session_id = "session-edit-kda-sfx"
+        sfx_path = self.temp_root / "audio" / "coin.wav"
+        sfx_path.parent.mkdir(parents=True, exist_ok=True)
+        sfx_path.write_text("fake sfx", encoding="utf-8")
+        self.settings.editing.audio_mixing_enabled = True
+        self.settings.editing.sfx_path = sfx_path
+        self.settings.editing.teaser_max_segments = 0
+        self._append_subtitle(
+            session_id,
+            "1\n00:02:04,000 --> 00:02:06,000\n"
+            "kda_change kills=2->3 deaths=0->0 previous_at=110.000 current_at=125.000\n",
+        )
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=100.0,
+                    ended_at_seconds=150.0,
+                    reason="condensed_key_event",
+                )
+            ],
+            duration=600.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        self.assertEqual(len(plan.sound_effects), 1)
+        self.assertEqual(plan.sound_effects[0].source_path, str(sfx_path))
+        self.assertEqual(plan.sound_effects[0].at_seconds, 55.0)
+        self.assertEqual(plan.sound_effects[0].reason, "condensed_key_event")
+
+    def test_audio_mixing_does_not_emit_sfx_for_death_only_kda(self) -> None:
+        session_id = "session-edit-death-only-sfx"
+        sfx_path = self.temp_root / "audio" / "coin.wav"
+        sfx_path.parent.mkdir(parents=True, exist_ok=True)
+        sfx_path.write_text("fake sfx", encoding="utf-8")
+        self.settings.editing.audio_mixing_enabled = True
+        self.settings.editing.sfx_path = sfx_path
+        self.settings.editing.teaser_max_segments = 0
+        self._append_subtitle(
+            session_id,
+            "1\n00:02:04,000 --> 00:02:06,000\n"
+            "kda_change kills=2->2 deaths=0->1 previous_at=110.000 current_at=125.000\n",
+        )
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=100.0,
+                    ended_at_seconds=150.0,
+                    reason="condensed_key_event",
+                )
+            ],
+            duration=600.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        self.assertEqual(plan.sound_effects, [])
+
+    def test_audio_mixing_does_not_map_sfx_for_kda_in_trimmed_gap(self) -> None:
+        session_id = "session-edit-gap-kda-sfx"
+        sfx_path = self.temp_root / "audio" / "coin.wav"
+        sfx_path.parent.mkdir(parents=True, exist_ok=True)
+        sfx_path.write_text("fake sfx", encoding="utf-8")
+        self.settings.editing.audio_mixing_enabled = True
+        self.settings.editing.sfx_path = sfx_path
+        self.settings.editing.teaser_max_segments = 0
+        self._append_subtitle(
+            session_id,
+            "1\n00:05:00,000 --> 00:05:02,000\n"
+            "kda_change kills=2->3 deaths=0->0 previous_at=280.000 current_at=300.000\n",
+        )
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(session_id, windows=[], duration=600.0)
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        self.assertEqual(plan.sound_effects, [])
+
+    def test_audio_mixing_selects_multikill_sfx_variant(self) -> None:
+        session_id = "session-edit-multikill-sfx"
+        library_path, kill_path, multi_path = self._write_sfx_library()
+        self.settings.editing.audio_mixing_enabled = True
+        self.settings.editing.sfx_library_path = library_path
+        self.settings.editing.teaser_max_segments = 0
+        self._append_subtitle(
+            session_id,
+            "1\n00:02:04,000 --> 00:02:06,000\n"
+            "kda_change kills=2->4 deaths=0->0 previous_at=110.000 current_at=125.000\n",
+        )
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=100.0,
+                    ended_at_seconds=150.0,
+                    reason="condensed_key_event",
+                )
+            ],
+            duration=600.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        self.assertEqual(len(plan.sound_effects), 1)
+        self.assertEqual(plan.sound_effects[0].source_path, str(multi_path))
+        self.assertNotEqual(plan.sound_effects[0].source_path, str(kill_path))
+        self.assertEqual(plan.sound_effects[0].gain_db, -7.0)
+
+    def test_audio_mixing_maps_repeated_kda_event_to_first_rendered_occurrence(self) -> None:
+        session_id = "session-edit-teaser-main-kda-sfx"
+        sfx_path = self.temp_root / "audio" / "coin.wav"
+        sfx_path.parent.mkdir(parents=True, exist_ok=True)
+        sfx_path.write_text("fake sfx", encoding="utf-8")
+        self.settings.editing.audio_mixing_enabled = True
+        self.settings.editing.sfx_path = sfx_path
+        self._append_subtitle(
+            session_id,
+            "1\n00:02:04,000 --> 00:02:06,000\n"
+            "kda_change kills=2->3 deaths=0->0 previous_at=100.000 current_at=110.000\n",
+        )
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=100.0,
+                    ended_at_seconds=150.0,
+                    reason="highlight_keyword",
+                )
+            ],
+            duration=600.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        self.assertEqual(len(plan.sound_effects), 1)
+        self.assertEqual(plan.sound_effects[0].at_seconds, 10.0)
+        self.assertEqual(plan.timeline[0].role, "teaser")
 
     def test_audio_mixing_uses_generated_default_bgm_when_paths_are_unset(self) -> None:
         session_id = "session-edit-default-audio"
@@ -1864,6 +2015,34 @@ class EditingPlannerServiceTest(unittest.TestCase):
             encoding="utf-8",
         )
         return library_path, early_path, climax_path
+
+    def _write_sfx_library(self) -> tuple[Path, Path, Path]:
+        library_dir = self.temp_root / "sfx-library"
+        library_dir.mkdir(parents=True, exist_ok=True)
+        kill_path = library_dir / "coin.wav"
+        multi_path = library_dir / "multi.wav"
+        kill_path.write_text("fake kill", encoding="utf-8")
+        multi_path.write_text("fake multi", encoding="utf-8")
+        library_path = library_dir / "library.json"
+        library_path.write_text(
+            json.dumps(
+                {
+                    "tracks": [
+                        {
+                            "category": "kill_coin",
+                            "path": kill_path.name,
+                        },
+                        {
+                            "category": "multi_kill",
+                            "path": multi_path.name,
+                            "gain_db": -7.0,
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        return library_path, kill_path, multi_path
 
     def _write_chinese_bgm_library(self) -> tuple[Path, Path, Path]:
         library_dir = self.temp_root / "bgm-library-cn"

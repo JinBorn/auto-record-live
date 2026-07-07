@@ -14,6 +14,7 @@ DEFAULT_ASR_PREPROCESS_AUDIO_FILTER = (
 
 DEFAULT_EXPORT_AUDIO_LOUDNORM_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11"
 DEFAULT_PUBLISH_BGM_LIBRARY_PATH = Path("data/bgm/library.json")
+DEFAULT_SFX_LIBRARY_PATH = Path("data/sfx/library.json")
 
 
 def _load_dotenv(dotenv_path: Path) -> None:
@@ -316,6 +317,12 @@ class EditingSettings(BaseModel):
     bgm_gain_db: float = -28.0
     sfx_path: Path | None = None
     sfx_gain_db: float = -12.0
+    sfx_library_path: Path | None = DEFAULT_SFX_LIBRARY_PATH
+    sfx_timing_offset_seconds: float = 0.0
+    sfx_min_interval_seconds: float = 20.0
+    sfx_max_hits: int = 6
+    sfx_kda_alignment_enabled: bool = True
+    sfx_multikill_window_seconds: float = 8.0
 
     @model_validator(mode="after")
     def _normalize_editing_settings(self) -> "EditingSettings":
@@ -368,6 +375,12 @@ class EditingSettings(BaseModel):
             )
         )
         self.teaser_candidate_reasons = candidate_reasons or ("highlight_keyword",)
+        self.sfx_min_interval_seconds = max(0.0, self.sfx_min_interval_seconds)
+        self.sfx_max_hits = max(0, self.sfx_max_hits)
+        self.sfx_multikill_window_seconds = max(
+            0.0,
+            self.sfx_multikill_window_seconds,
+        )
         return self
 
 
@@ -1301,6 +1314,27 @@ def load_settings() -> Settings:
             sfx_gain_db=min(
                 6.0,
                 max(-60.0, _env_float("ARL_EDIT_SFX_GAIN_DB", -12.0)),
+            ),
+            sfx_library_path=_env_optional_path(
+                "ARL_EDIT_SFX_LIBRARY_PATH",
+                DEFAULT_SFX_LIBRARY_PATH,
+            ),
+            sfx_timing_offset_seconds=_env_float(
+                "ARL_EDIT_SFX_TIMING_OFFSET_SECONDS",
+                0.0,
+            ),
+            sfx_min_interval_seconds=max(
+                0.0,
+                _env_float("ARL_EDIT_SFX_MIN_INTERVAL_SECONDS", 20.0),
+            ),
+            sfx_max_hits=max(0, _env_int("ARL_EDIT_SFX_MAX_HITS", 6)),
+            sfx_kda_alignment_enabled=_env_bool(
+                "ARL_EDIT_SFX_KDA_ALIGNMENT_ENABLED",
+                True,
+            ),
+            sfx_multikill_window_seconds=max(
+                0.0,
+                _env_float("ARL_EDIT_SFX_MULTIKILL_WINDOW_SECONDS", 8.0),
             ),
         ),
         recording=RecordingSettings(

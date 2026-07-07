@@ -534,6 +534,12 @@ windows = bridge_highlight_windows(windows, bridge_window_seconds=3.0)
   ARL_EDIT_BGM_GAIN_DB=-28
   ARL_EDIT_SFX_PATH=
   ARL_EDIT_SFX_GAIN_DB=-12
+  ARL_EDIT_SFX_LIBRARY_PATH=data/sfx/library.json
+  ARL_EDIT_SFX_TIMING_OFFSET_SECONDS=0
+  ARL_EDIT_SFX_MIN_INTERVAL_SECONDS=20
+  ARL_EDIT_SFX_MAX_HITS=6
+  ARL_EDIT_SFX_KDA_ALIGNMENT_ENABLED=1
+  ARL_EDIT_SFX_MULTIKILL_WINDOW_SECONDS=8
   ARL_EXPORT_USE_EDIT_PLANS=1
   ```
 - Defaults must keep current exports unchanged:
@@ -640,16 +646,31 @@ windows = bridge_highlight_windows(windows, bridge_window_seconds=3.0)
     has no positive match; long edit plans should split BGM into a playful early
     bed and a higher-energy later bed
   - `SoundEffectHit` rows may use either an explicit existing
-    `ARL_EDIT_SFX_PATH` file or the deterministic generated default
-    `data/tmp/editing-audio/coin.wav` when SFX is unconfigured. The default SFX
-    must be a short coin/gold accent, not a generic `wow.wav` transition sound,
-    because transition noise can make gameplay cuts feel artificial, especially
-    before death screens or while the streamer is still talking.
-  - SFX hits may be placed at teaser and main output starts only for concrete
-    highlight-event reasons: `highlight_keyword` and `condensed_key_event`.
-    `condensed_tactical` setup windows must stay SFX-free by default. The
-    planner must rate-limit generated SFX hits so they stay occasional emphasis
-    points instead of playing on every retained window.
+    `ARL_EDIT_SFX_PATH` file, local SFX library tracks from
+    `ARL_EDIT_SFX_LIBRARY_PATH`, or the deterministic generated default
+    `data/tmp/editing-audio/coin.wav` when no usable kill SFX library track is
+    available. The default SFX must be a short coin/gold accent, not a generic
+    `wow.wav` transition sound, because transition noise can make gameplay cuts
+    feel artificial, especially before death screens or while the streamer is
+    still talking.
+  - The SFX library manifest may be a list of track objects or
+    `{"tracks": [...]}`. Each track supports `category`, `path` relative to the
+    manifest or absolute, and optional `gain_db`. Supported v1 categories are
+    `kill_coin`, `multi_kill`, `transition_whoosh`, and `teaser_impact`.
+    Missing, invalid, or malformed manifests must not block edit planning.
+  - Kill SFX should align to `kda_change` cue timestamps when
+    `ARL_EDIT_SFX_KDA_ALIGNMENT_ENABLED=1`. The planner parses kill increases,
+    maps `current_at` source seconds onto the rendered teaser/main timeline,
+    applies `ARL_EDIT_SFX_TIMING_OFFSET_SECONDS`, and selects `multi_kill` when
+    the kill delta is at least 2 or nearby subtitle text contains a multi-kill
+    announcement. Death-only KDA changes must not emit coin SFX.
+  - Segment-start SFX is only a fallback for eligible teaser/main segments
+    (`highlight_keyword` and `condensed_key_event`) with no `kda_change` cue
+    inside the segment. `condensed_tactical` setup windows must stay SFX-free by
+    default. The planner must rate-limit kill SFX with
+    `ARL_EDIT_SFX_MIN_INTERVAL_SECONDS` and cap kill hits with
+    `ARL_EDIT_SFX_MAX_HITS`; transition whoosh hits are independent of that
+    kill-SFX rate limit.
 - BGM starts at the first main segment, not at the beginning of optional
   leading teaser or transition segments. For teaser-first timelines, every BGM
   `AudioBed` must be offset by the total leading non-main duration; for
@@ -724,8 +745,10 @@ livestream recording, it skips both configured and default BGM for that match
 | `ARL_EDIT_BGM_LIBRARY_PATH` is set and contains matching local tracks | Edit planner emits library-backed `AudioBed` rows before falling back to generated default BGM |
 | BGM library manifest contains malformed rows or missing local files | Edit planner logs loaded/skipped counts once, ignores invalid rows, and keeps processing valid tracks |
 | `ARL_EDIT_BGM_LIBRARY_PATH` is missing, invalid JSON, has missing files, or has no positive match | Edit planner keeps the normal generated default BGM behavior |
-| `ARL_EDIT_AUDIO_MIXING_ENABLED=1`, BGM path/library are unset, and `ARL_EDIT_SFX_PATH` is unset | Edit planner may generate deterministic default BGM WAV assets plus default `coin.wav`, and emits rate-limited SFX only for `highlight_keyword` / `condensed_key_event` segments |
-| `ARL_EDIT_AUDIO_MIXING_ENABLED=1` and `ARL_EDIT_SFX_PATH` points at an existing file | Edit planner may emit rate-limited `SoundEffectHit` rows from the configured file only for `highlight_keyword` / `condensed_key_event` segments |
+| `ARL_EDIT_AUDIO_MIXING_ENABLED=1`, BGM path/library are unset, and `ARL_EDIT_SFX_PATH` is unset | Edit planner may generate deterministic default BGM WAV assets plus default `coin.wav`, and emits KDA-aligned/rate-limited SFX only for kill events or fallback `highlight_keyword` / `condensed_key_event` segments |
+| `ARL_EDIT_AUDIO_MIXING_ENABLED=1`, `ARL_EDIT_SFX_LIBRARY_PATH` contains `kill_coin` and/or `multi_kill` tracks | Edit planner uses library tracks for kill SFX before falling back to generated `coin.wav`; malformed/missing rows are skipped with compact logs |
+| `ARL_EDIT_AUDIO_MIXING_ENABLED=1` and `ARL_EDIT_SFX_PATH` points at an existing file | Edit planner may emit KDA-aligned/rate-limited `SoundEffectHit` rows from the configured file for kill events or eligible fallback segments |
+| A `kda_change` cue increases deaths only | Edit planner emits no coin SFX for that KDA segment |
 | `ARL_EDIT_AUDIO_MIXING_ENABLED=1` and a segment reason is `condensed_tactical` | Edit planner must not emit SFX for that segment; tactical/setup windows are not sound-effect moments by default |
 | Source recording audio already has a persistent music bed and skip-source-music protection is enabled | Edit planner emits no BGM `AudioBed` for that match, may keep eligible configured/default `SoundEffectHit` rows, and logs the skip confidence |
 | Source recording is segmented | Source-music detection resolves chunk spans and samples chunk-local windows before deciding whether to skip BGM |
@@ -1780,6 +1803,12 @@ def _video_quality_args(self) -> list[str]:
 | `ARL_EDIT_BGM_GAIN_DB` | float | -28.0 | BGM gain in dB, clamped to `[-60.0, 0.0]` |
 | `ARL_EDIT_SFX_PATH` | path | None | Explicit local sound-effect file path; when unset, audio mixing can use generated `coin.wav` for eligible SFX hits |
 | `ARL_EDIT_SFX_GAIN_DB` | float | -12.0 | SFX gain in dB, clamped to `[-60.0, 6.0]` |
+| `ARL_EDIT_SFX_LIBRARY_PATH` | path | `data/sfx/library.json` | Optional JSON manifest for local SFX categories (`kill_coin`, `multi_kill`, `transition_whoosh`, `teaser_impact`) |
+| `ARL_EDIT_SFX_TIMING_OFFSET_SECONDS` | float | `0.0` | Offset applied after mapping a KDA source timestamp into rendered timeline seconds |
+| `ARL_EDIT_SFX_MIN_INTERVAL_SECONDS` | float | `20.0` | Minimum interval between kill SFX hits, clamped to at least 0 |
+| `ARL_EDIT_SFX_MAX_HITS` | int | `6` | Maximum kill SFX hits per edit plan, clamped to at least 0 |
+| `ARL_EDIT_SFX_KDA_ALIGNMENT_ENABLED` | bool | True | Align kill SFX to parsed `kda_change` timestamps before falling back to segment starts |
+| `ARL_EDIT_SFX_MULTIKILL_WINDOW_SECONDS` | float | `8.0` | Subtitle keyword search window around a KDA kill event for multi-kill variant selection |
 | `ARL_HIGHLIGHT_PLANNER_ENABLED` | bool | False | Run highlight detection stage |
 | `ARL_HIGHLIGHT_CONDENSED_TARGET_DURATION_RANGE` | `min,max` minutes | `7,20` | Global dynamic condensed target span and max continuous content cap |
 | `ARL_HIGHLIGHT_CONDENSED_HIGH_DENSITY_DURATION_RANGE` | `min,max` minutes | `16,20` | Target duration range for high composite density matches |

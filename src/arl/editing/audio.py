@@ -103,6 +103,27 @@ class BgmLibraryLoadReport:
 
 
 @dataclass(frozen=True)
+class SfxLibraryTrack:
+    path: Path
+    category: str
+    gain_db: float | None = None
+
+
+@dataclass(frozen=True)
+class SfxLibraryLoadReport:
+    manifest_path: Path | None
+    tracks: tuple[SfxLibraryTrack, ...] = ()
+    total_items: int = 0
+    skipped_non_object_count: int = 0
+    skipped_missing_path_count: int = 0
+    skipped_missing_file_count: int = 0
+    skipped_missing_category_count: int = 0
+    missing_manifest: bool = False
+    invalid_schema: bool = False
+    parse_error: str | None = None
+
+
+@dataclass(frozen=True)
 class BgmSelectionContext:
     tags: tuple[str, ...]
     highlight_reasons: tuple[str, ...]
@@ -207,6 +228,70 @@ def load_bgm_library_report(manifest_path: Path | None) -> BgmLibraryLoadReport:
         skipped_non_object_count=skipped_non_object_count,
         skipped_missing_path_count=skipped_missing_path_count,
         skipped_missing_file_count=skipped_missing_file_count,
+    )
+
+
+def load_sfx_library_report(manifest_path: Path | None) -> SfxLibraryLoadReport:
+    if manifest_path is None or not manifest_path.is_file():
+        return SfxLibraryLoadReport(
+            manifest_path=manifest_path,
+            missing_manifest=manifest_path is not None,
+        )
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return SfxLibraryLoadReport(
+            manifest_path=manifest_path,
+            parse_error=exc.__class__.__name__,
+        )
+    raw_tracks = payload.get("tracks") if isinstance(payload, dict) else payload
+    if not isinstance(raw_tracks, list):
+        return SfxLibraryLoadReport(
+            manifest_path=manifest_path,
+            invalid_schema=True,
+        )
+
+    tracks: list[SfxLibraryTrack] = []
+    skipped_non_object_count = 0
+    skipped_missing_path_count = 0
+    skipped_missing_file_count = 0
+    skipped_missing_category_count = 0
+    base_dir = manifest_path.parent
+    for item in raw_tracks:
+        if not isinstance(item, dict):
+            skipped_non_object_count += 1
+            continue
+        raw_category = item.get("category")
+        if not isinstance(raw_category, str) or not raw_category.strip():
+            skipped_missing_category_count += 1
+            continue
+        raw_path = item.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            skipped_missing_path_count += 1
+            continue
+        track_path = Path(raw_path)
+        if not track_path.is_absolute():
+            track_path = base_dir / track_path
+        if not track_path.is_file():
+            skipped_missing_file_count += 1
+            continue
+        raw_gain = item.get("gain_db")
+        gain_db = float(raw_gain) if isinstance(raw_gain, (int, float)) else None
+        tracks.append(
+            SfxLibraryTrack(
+                path=track_path,
+                category=raw_category.strip(),
+                gain_db=gain_db,
+            )
+        )
+    return SfxLibraryLoadReport(
+        manifest_path=manifest_path,
+        tracks=tuple(tracks),
+        total_items=len(raw_tracks),
+        skipped_non_object_count=skipped_non_object_count,
+        skipped_missing_path_count=skipped_missing_path_count,
+        skipped_missing_file_count=skipped_missing_file_count,
+        skipped_missing_category_count=skipped_missing_category_count,
     )
 
 

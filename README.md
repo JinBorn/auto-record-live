@@ -309,6 +309,23 @@ ARL_EDIT_BGM_LIBRARY_PATH=data/bgm/library.json
 ARL_EDIT_SKIP_BGM_WHEN_SOURCE_HAS_MUSIC=1
 ```
 
+SFX library example:
+
+```env
+ARL_EDIT_SFX_LIBRARY_PATH=data/sfx/library.json
+ARL_EDIT_SFX_TIMING_OFFSET_SECONDS=0
+ARL_EDIT_SFX_MIN_INTERVAL_SECONDS=20
+ARL_EDIT_SFX_MAX_HITS=6
+ARL_EDIT_SFX_KDA_ALIGNMENT_ENABLED=1
+```
+
+Put sound files under `data/sfx/tracks/` and reference them from
+`data/sfx/library.json`. Supported categories are `kill_coin`, `multi_kill`,
+`transition_whoosh`, and `teaser_impact`. Kill SFX is aligned to `kda_change`
+timestamps when available; death-only KDA changes do not trigger coin hits.
+If the manifest is missing, invalid, or lacks a usable kill category, the edit
+planner falls back to the generated `coin.wav`.
+
 如果你只想导出完整对局，不使用浓缩剪辑：
 
 ```env
