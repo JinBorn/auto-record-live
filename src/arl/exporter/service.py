@@ -1536,20 +1536,50 @@ class ExporterService:
         ]
         text = (segment.text or "").strip()
         if text:
-            video_filters.append(
-                "drawtext="
-                f"text='{self._drawtext_escape(text)}':"
-                "fontcolor=white:"
-                "fontsize=54:"
-                "x=(w-text_w)/2:"
-                "y=(h-text_h)/2"
-            )
+            drawtext = self._transition_drawtext_filter(text)
+            if drawtext is not None:
+                video_filters.append(drawtext)
         return [
             f"{','.join(video_filters)}[{video_label}]",
             "anullsrc=channel_layout=stereo:sample_rate=48000,"
             f"atrim=start=0.000:duration={duration:.3f},"
             f"asetpts=PTS-STARTPTS[{audio_label}]",
         ]
+
+    def _transition_drawtext_filter(self, text: str) -> str | None:
+        font_path = self._transition_font_path()
+        if font_path is None:
+            return None
+        return (
+            "drawtext="
+            f"fontfile='{self._ffmpeg_filter_path(font_path)}':"
+            f"text='{self._drawtext_escape(text)}':"
+            "fontcolor=white:"
+            "fontsize=54:"
+            "x=(w-text_w)/2:"
+            "y=(h-text_h)/2"
+        )
+
+    @staticmethod
+    def _transition_font_path() -> Path | None:
+        for candidate in (
+            Path("C:/Windows/Fonts/msyh.ttc"),
+            Path("C:/Windows/Fonts/simhei.ttf"),
+            Path("C:/Windows/Fonts/arial.ttf"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        ):
+            if candidate.is_file():
+                return candidate
+        return None
+
+    @staticmethod
+    def _ffmpeg_filter_path(path: Path) -> str:
+        return (
+            path.as_posix()
+            .replace("\\", "/")
+            .replace(":", r"\:")
+            .replace("'", r"\'")
+        )
 
     @staticmethod
     def _drawtext_escape(text: str) -> str:

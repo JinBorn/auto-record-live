@@ -133,6 +133,9 @@
   regenerated 3 complete matches; all 3 latest edit plans include teaser
   segments and one black-card transition. Two other matched boundaries were
   skipped as incomplete.
-- `quality-report --session-id session-20260702092321-bc90812b --all-latest`
-  timed out locally before producing a report, so rendered media spot-check is
-  still a follow-up validation item.
+- `quality-report --session-id session-20260702092321-bc90812b --match-index N --all-latest`
+  passed for matches 1, 2, and 3. Reported teaser counts were 1, 2, and 1.
+- Runtime exporter validation passed for
+  `session-20260702092321-bc90812b` match 2 after adding explicit Windows
+  `drawtext` fontfile handling. The black-card transition screenshot at output
+  45.625s showed centered `Back to match start` text.

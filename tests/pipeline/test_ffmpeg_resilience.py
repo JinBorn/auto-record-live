@@ -3924,7 +3924,9 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         filter_complex = command[command.index("-filter_complex") + 1]
         self.assertIn("trim=start=90.000:end=105.000,setpts=PTS-STARTPTS[v0]", filter_complex)
         self.assertIn("color=c=black:s=1920x1080:r=30:d=1.250", filter_complex)
-        self.assertIn("drawtext=text='Back to match start'", filter_complex)
+        self.assertIn("drawtext=", filter_complex)
+        self.assertIn("text='Back to match start'", filter_complex)
+        self.assertIn("fontfile=", filter_complex)
         self.assertIn("anullsrc=channel_layout=stereo:sample_rate=48000", filter_complex)
         self.assertIn("atrim=start=0.000:duration=1.250,asetpts=PTS-STARTPTS[a1]", filter_complex)
         self.assertIn(

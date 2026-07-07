@@ -593,7 +593,11 @@ windows = bridge_highlight_windows(windows, bridge_window_seconds=3.0)
   transforms with `kind in {"none", "punch_in"}`. `transition` segments are
   rendered as generated black video plus silent audio inside the same concat
   filtergraph; they do not add media inputs and therefore must not shift BGM/SFX
-  input indexes.
+  input indexes. On Windows, transition `drawtext` must specify a concrete
+  `fontfile` such as `C:/Windows/Fonts/msyh.ttc`; relying on Fontconfig's
+  default discovery can fail with `Cannot load default config file` and force an
+  otherwise valid export into fallback placeholder behavior. If no known font
+  file exists, render a plain black card instead of failing the export.
 - Punch-in zoom is opt-in at planner time. When `ARL_EDIT_ZOOM_ENABLED=1`, the
   planner may apply `TimelineVideoTransform(kind="punch_in")` to high-signal
   `teaser` or `main` segments with reasons `highlight_keyword`,
