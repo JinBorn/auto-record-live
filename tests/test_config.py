@@ -392,6 +392,7 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(settings.export.ffmpeg_bitrate, "8000k")
         self.assertEqual(settings.export.ffmpeg_max_bitrate, "10000k")
         self.assertTrue(settings.export.audio_loudnorm_enabled)
+        self.assertEqual(settings.subtitles.model_size, "medium")
         self.assertFalse(settings.llm.enabled)
 
     def test_postprocess_publish_preset_bool_env_enables_publish_pipeline(self) -> None:
@@ -424,6 +425,23 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(published.export.ffmpeg_bitrate, "8000k")
         self.assertEqual(published.export.ffmpeg_max_bitrate, "10000k")
         self.assertTrue(published.export.audio_loudnorm_enabled)
+        self.assertEqual(settings.subtitles.model_size, "small")
+        self.assertEqual(published.subtitles.model_size, "medium")
+
+    def test_apply_publish_preset_keeps_cpu_subtitle_model_small(self) -> None:
+        settings = Settings(subtitles={"device": "cpu"})
+
+        published = apply_publish_preset(settings)
+
+        self.assertEqual(published.subtitles.model_size, "small")
+
+    def test_publish_preset_preserves_explicit_whisper_model_env(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_POSTPROCESS_PRESET"] = "publish"
+            os.environ["ARL_WHISPER_MODEL_SIZE"] = "small"
+            settings = load_settings()
+
+        self.assertEqual(settings.subtitles.model_size, "small")
 
     def test_apply_publish_preset_raises_low_existing_bitrate_settings(self) -> None:
         settings = Settings(
@@ -777,6 +795,14 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             os.environ["ARL_ASR_PREPROCESS_AUDIO"] = "1"
             os.environ["ARL_ASR_PREPROCESS_AUDIO_FILTER"] = "highpass=f=120,loudnorm"
             os.environ["ARL_ASR_PREPROCESS_TIMEOUT_SECONDS"] = "45"
+            os.environ["ARL_ASR_INITIAL_PROMPT_PATH"] = "data/asr/custom-prompt.txt"
+            os.environ["ARL_ASR_INITIAL_PROMPT_MAX_CHARS"] = "-5"
+            os.environ["ARL_ASR_TERM_FIXES_PATH"] = "data/asr/custom-fixes.json"
+            os.environ["ARL_ASR_OPENCC_ENABLED"] = "0"
+            os.environ["ARL_WHISPER_BEAM_SIZE"] = "0"
+            os.environ["ARL_WHISPER_VAD_FILTER"] = "0"
+            os.environ["ARL_WHISPER_VAD_MIN_SILENCE_DURATION_MS"] = "-1"
+            os.environ["ARL_WHISPER_VAD_SPEECH_PAD_MS"] = "-2"
             settings = load_settings()
 
         self.assertEqual(
@@ -791,6 +817,17 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertTrue(settings.subtitles.preprocess_audio)
         self.assertEqual(settings.subtitles.preprocess_audio_filter, "highpass=f=120,loudnorm")
         self.assertEqual(settings.subtitles.preprocess_timeout_seconds, 45)
+        self.assertEqual(
+            settings.subtitles.initial_prompt_path,
+            Path("data/asr/custom-prompt.txt"),
+        )
+        self.assertEqual(settings.subtitles.initial_prompt_max_chars, 0)
+        self.assertEqual(settings.subtitles.term_fixes_path, Path("data/asr/custom-fixes.json"))
+        self.assertFalse(settings.subtitles.opencc_enabled)
+        self.assertEqual(settings.subtitles.beam_size, 1)
+        self.assertFalse(settings.subtitles.vad_filter)
+        self.assertEqual(settings.subtitles.vad_min_silence_duration_ms, 0)
+        self.assertEqual(settings.subtitles.vad_speech_pad_ms, 0)
 
     def test_segmenter_template_fallback_env_loads(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):

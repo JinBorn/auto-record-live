@@ -147,6 +147,7 @@ class SubtitleSettings(BaseModel):
     enabled: bool = True
     provider: str = "faster-whisper"
     model_size: str = "small"
+    model_size_explicit: bool = Field(default=False, exclude=True)
     language: str = "zh"
     model_cache_dir: Path = Path("data/tmp/whisper-models")
     min_language_probability: float = 0.5
@@ -157,6 +158,14 @@ class SubtitleSettings(BaseModel):
     preprocess_audio: bool = False
     preprocess_audio_filter: str = DEFAULT_ASR_PREPROCESS_AUDIO_FILTER
     preprocess_timeout_seconds: int = 120
+    initial_prompt_path: Path | None = Path("data/asr/initial-prompt.txt")
+    initial_prompt_max_chars: int = 1200
+    term_fixes_path: Path | None = Path("data/asr/term-fixes.json")
+    opencc_enabled: bool = True
+    beam_size: int = 5
+    vad_filter: bool = True
+    vad_min_silence_duration_ms: int = 300
+    vad_speech_pad_ms: int = 250
 
 
 class SegmenterSettings(BaseModel):
@@ -473,6 +482,13 @@ def apply_publish_preset(settings: Settings) -> Settings:
     bgm_library_path = settings.editing.bgm_library_path
     if bgm_library_path is None and settings.editing.bgm_path is None:
         bgm_library_path = DEFAULT_PUBLISH_BGM_LIBRARY_PATH
+    subtitles = settings.subtitles
+    if (
+        not subtitles.model_size_explicit
+        and subtitles.device in {"auto", "cuda"}
+        and subtitles.model_size == "small"
+    ):
+        subtitles = subtitles.model_copy(update={"model_size": "medium"})
 
     return settings.model_copy(
         deep=True,
@@ -521,6 +537,7 @@ def apply_publish_preset(settings: Settings) -> Settings:
                     "audio_loudnorm_enabled": True,
                 }
             ),
+            "subtitles": subtitles,
         },
     )
 
@@ -625,9 +642,9 @@ def _pick_indexed(values: list[str], index: int, default: str = "") -> str:
     return default
 
 
-def _env_optional_path(key: str) -> Path | None:
+def _env_optional_path(key: str, default: Path | None = None) -> Path | None:
     raw = os.getenv(key, "").strip()
-    return Path(raw) if raw else None
+    return Path(raw) if raw else default
 
 
 def _load_douyin_settings() -> DouyinSettings:
@@ -857,6 +874,7 @@ def load_settings() -> Settings:
             enabled=os.getenv("ARL_SUBTITLES_ENABLED", "1") != "0",
             provider=os.getenv("ARL_SUBTITLE_PROVIDER", "faster-whisper"),
             model_size=os.getenv("ARL_WHISPER_MODEL_SIZE", "small"),
+            model_size_explicit="ARL_WHISPER_MODEL_SIZE" in os.environ,
             language=os.getenv("ARL_SUBTITLE_LANGUAGE", "zh"),
             model_cache_dir=Path(
                 os.getenv(
@@ -892,6 +910,29 @@ def load_settings() -> Settings:
             preprocess_timeout_seconds=max(
                 10,
                 _env_int("ARL_ASR_PREPROCESS_TIMEOUT_SECONDS", 120),
+            ),
+            initial_prompt_path=_env_optional_path(
+                "ARL_ASR_INITIAL_PROMPT_PATH",
+                Path("data/asr/initial-prompt.txt"),
+            ),
+            initial_prompt_max_chars=max(
+                0,
+                _env_int("ARL_ASR_INITIAL_PROMPT_MAX_CHARS", 1200),
+            ),
+            term_fixes_path=_env_optional_path(
+                "ARL_ASR_TERM_FIXES_PATH",
+                Path("data/asr/term-fixes.json"),
+            ),
+            opencc_enabled=_env_bool("ARL_ASR_OPENCC_ENABLED", True),
+            beam_size=max(1, _env_int("ARL_WHISPER_BEAM_SIZE", 5)),
+            vad_filter=_env_bool("ARL_WHISPER_VAD_FILTER", True),
+            vad_min_silence_duration_ms=max(
+                0,
+                _env_int("ARL_WHISPER_VAD_MIN_SILENCE_DURATION_MS", 300),
+            ),
+            vad_speech_pad_ms=max(
+                0,
+                _env_int("ARL_WHISPER_VAD_SPEECH_PAD_MS", 250),
             ),
         ),
         segmenter=SegmenterSettings(

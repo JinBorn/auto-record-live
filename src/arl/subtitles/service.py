@@ -19,6 +19,7 @@ from arl.shared.contracts import MatchBoundary, MediaSpan, RecordingAsset, Subti
 from arl.shared.jsonl_store import append_model, load_models
 from arl.shared.logging import log
 from arl.subtitles.models import SubtitleAuditEvent, SubtitleStateFile
+from arl.subtitles.normalization import SubtitleTextNormalizer
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class TranscribeOutcome:
 
 @dataclass(frozen=True)
 class WhisperModelConfig:
+    model_size: str
     device: str
     compute_type: str
 
@@ -80,6 +82,12 @@ class SubtitleService:
         self._current_whisper_model_config: WhisperModelConfig | None = None
         self._disabled_whisper_configs: set[WhisperModelConfig] = set()
         self._cuda_disabled_for_batch = False
+        self._text_normalizer = SubtitleTextNormalizer(
+            settings.subtitles,
+            warn=lambda message: log("subtitles", message),
+        )
+        self._initial_prompt_cache: str | None = None
+        self._initial_prompt_loaded = False
 
     def run(
         self,
@@ -361,13 +369,14 @@ class SubtitleService:
                     reason="model_unavailable",
                     reason_detail=(
                         "load_whisper_model_returned_none "
+                        f"model={model_config.model_size} "
                         f"device={model_config.device} compute_type={model_config.compute_type}"
                     ),
                 )
                 if model_config.device == "cuda":
                     self._cuda_disabled_for_batch = True
                     continue
-                return last_failure
+                continue
 
             outcome = self._transcribe_with_model(
                 model,
@@ -391,6 +400,8 @@ class SubtitleService:
             last_failure = outcome
             if model_config.device == "cuda" and self._should_retry_cpu_after_cuda_failure():
                 self._cuda_disabled_for_batch = True
+                continue
+            if self._should_try_next_whisper_candidate(outcome):
                 continue
             return outcome
 
@@ -422,7 +433,19 @@ class SubtitleService:
             transcribe_kwargs: dict[str, Any] = {
                 "language": self.settings.subtitles.language or None,
                 "word_timestamps": True,
+                "beam_size": self.settings.subtitles.beam_size,
+                "vad_filter": self.settings.subtitles.vad_filter,
             }
+            initial_prompt = self._initial_prompt()
+            if initial_prompt:
+                transcribe_kwargs["initial_prompt"] = initial_prompt
+            if self.settings.subtitles.vad_filter:
+                transcribe_kwargs["vad_parameters"] = {
+                    "min_silence_duration_ms": (
+                        self.settings.subtitles.vad_min_silence_duration_ms
+                    ),
+                    "speech_pad_ms": self.settings.subtitles.vad_speech_pad_ms,
+                }
             if transcription_input.clip_timestamps is not None:
                 transcribe_kwargs["clip_timestamps"] = transcription_input.clip_timestamps
             segments, info = model.transcribe(
@@ -435,6 +458,7 @@ class SubtitleService:
                 (
                     "transcribe failed "
                     f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    f"model={model_config.model_size} "
                     f"device={model_config.device} compute_type={model_config.compute_type} "
                     f"reason={exc}"
                 ),
@@ -452,6 +476,7 @@ class SubtitleService:
                 reason="transcribe_failed",
                 reason_detail=(
                     f"transcribe_exc:{exc.__class__.__name__}:{exc} "
+                    f"model={model_config.model_size} "
                     f"device={model_config.device} compute_type={model_config.compute_type}"
                 ),
             )
@@ -470,6 +495,7 @@ class SubtitleService:
                 "subtitles",
                 "low language confidence "
                 f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                f"model={model_config.model_size} "
                 f"language={language or 'unknown'} "
                 f"probability={language_probability} threshold={threshold}",
             )
@@ -483,6 +509,7 @@ class SubtitleService:
                 reason_detail=(
                     f"language={language or 'unknown'} "
                     f"probability={language_probability} threshold={threshold} "
+                    f"model={model_config.model_size} "
                     f"device={model_config.device} compute_type={model_config.compute_type}"
                 ),
             )
@@ -501,13 +528,15 @@ class SubtitleService:
                 )
                 if entry is None:
                     continue
-                entries.append(entry)
+                start, end, text = entry
+                entries.append((start, end, self._text_normalizer.normalize(text)))
         except Exception as exc:
             log(
                 "subtitles",
                 (
                     "transcribe failed "
                     f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    f"model={model_config.model_size} "
                     f"device={model_config.device} compute_type={model_config.compute_type} "
                     f"reason={exc}"
                 ),
@@ -527,6 +556,7 @@ class SubtitleService:
                 reason="transcribe_failed",
                 reason_detail=(
                     f"transcribe_exc:{exc.__class__.__name__}:{exc} "
+                    f"model={model_config.model_size} "
                     f"device={model_config.device} compute_type={model_config.compute_type}"
                 ),
             )
@@ -540,6 +570,7 @@ class SubtitleService:
                 reason="no_transcript_segments",
                 reason_detail=(
                     "no_segments_with_text_inside_boundary "
+                    f"model={model_config.model_size} "
                     f"device={model_config.device} compute_type={model_config.compute_type}"
                 ),
             )
@@ -923,14 +954,59 @@ class SubtitleService:
             cuda_compute_type = compute_type
         resolved_cpu_compute_type = cpu_compute_type if compute_type == "auto" else compute_type
 
+        device_candidates: list[tuple[str, str]]
         if device == "cpu":
-            return [WhisperModelConfig("cpu", resolved_cpu_compute_type)]
-        if device == "cuda":
-            return [WhisperModelConfig("cuda", cuda_compute_type)]
-        return [
-            WhisperModelConfig("cuda", cuda_compute_type),
-            WhisperModelConfig("cpu", resolved_cpu_compute_type),
-        ]
+            device_candidates = [("cpu", resolved_cpu_compute_type)]
+        elif device == "cuda":
+            device_candidates = [("cuda", cuda_compute_type)]
+        else:
+            device_candidates = [
+                ("cuda", cuda_compute_type),
+                ("cpu", resolved_cpu_compute_type),
+            ]
+
+        candidates: list[WhisperModelConfig] = []
+        seen: set[WhisperModelConfig] = set()
+        for model_size in self._whisper_model_size_candidates():
+            for candidate_device, candidate_compute_type in device_candidates:
+                candidate = WhisperModelConfig(
+                    model_size,
+                    candidate_device,
+                    candidate_compute_type,
+                )
+                if candidate in seen:
+                    continue
+                candidates.append(candidate)
+                seen.add(candidate)
+        return candidates
+
+    def _whisper_model_size_candidates(self) -> list[str]:
+        configured = self.settings.subtitles.model_size.strip() or "small"
+        candidates = [configured]
+        if configured != "small":
+            candidates.extend(["medium", "small"])
+        return list(dict.fromkeys(candidates))
+
+    def _initial_prompt(self) -> str | None:
+        if self._initial_prompt_loaded:
+            return self._initial_prompt_cache
+        self._initial_prompt_loaded = True
+        path = self.settings.subtitles.initial_prompt_path
+        if path is None or not path.exists():
+            self._initial_prompt_cache = None
+            return None
+        try:
+            prompt = path.read_text(encoding="utf-8").strip()
+        except Exception as exc:
+            log("subtitles", f"initial prompt skipped path={path} reason={exc}")
+            self._initial_prompt_cache = None
+            return None
+        max_chars = self.settings.subtitles.initial_prompt_max_chars
+        if max_chars <= 0:
+            self._initial_prompt_cache = None
+            return None
+        self._initial_prompt_cache = prompt[:max_chars] if prompt else None
+        return self._initial_prompt_cache
 
     def _should_retry_cpu_after_cuda_failure(self) -> bool:
         return self.settings.subtitles.device == "auto"
@@ -982,6 +1058,22 @@ class SubtitleService:
         if model_config.device == "cuda":
             return True
         return False
+
+    def _should_try_next_whisper_candidate(self, outcome: TranscribeOutcome) -> bool:
+        if outcome.reason != "transcribe_failed":
+            return False
+        reason_detail = (outcome.reason_detail or "").lower()
+        media_specific_markers = {
+            "filenotfounderror",
+            "invalid data found",
+            "moov atom not found",
+            "no such file or directory",
+            "recording_path_not_found",
+            "could not open",
+            "failed to open",
+            "permission denied",
+        }
+        return not any(marker in reason_detail for marker in media_specific_markers)
 
     def _disable_whisper_model_config(self, model_config: WhisperModelConfig) -> None:
         self._disabled_whisper_configs.add(model_config)
@@ -1040,7 +1132,7 @@ class SubtitleService:
 
         try:
             model = WhisperModel(
-                self.settings.subtitles.model_size,
+                model_config.model_size,
                 device=model_config.device,
                 compute_type=model_config.compute_type,
             )
@@ -1049,6 +1141,7 @@ class SubtitleService:
                 "subtitles",
                 (
                     "failed to initialize faster-whisper model "
+                    f"model={model_config.model_size} "
                     f"device={model_config.device} compute_type={model_config.compute_type} "
                     f"reason={exc}"
                 ),

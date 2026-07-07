@@ -375,6 +375,36 @@ ARL_EXPORT_BURN_SUBTITLES=0
 
 `ARL_ASR_PREPROCESS_AUDIO=1` 会先抽取并降噪音频再交给 Whisper。预处理失败时会回退到原媒体输入，不会直接中断后处理。
 
+ASR quality controls:
+
+```env
+# Publish preset uses medium on CUDA/auto unless this is explicitly set.
+# CPU-only runs keep small by default. large-v3 is opt-in and may fall back.
+ARL_WHISPER_MODEL_SIZE=medium
+ARL_WHISPER_BEAM_SIZE=5
+ARL_WHISPER_VAD_FILTER=1
+ARL_WHISPER_VAD_MIN_SILENCE_DURATION_MS=300
+ARL_WHISPER_VAD_SPEECH_PAD_MS=250
+ARL_ASR_OPENCC_ENABLED=1
+ARL_ASR_INITIAL_PROMPT_PATH=data/asr/initial-prompt.txt
+ARL_ASR_INITIAL_PROMPT_MAX_CHARS=1200
+ARL_ASR_TERM_FIXES_PATH=data/asr/term-fixes.json
+```
+
+`data/asr/initial-prompt.txt` is a UTF-8 text file for LoL names, streamer
+phrases, champion names, item names, and broadcast terms. It is passed to
+faster-whisper as `initial_prompt` when present.
+
+`data/asr/term-fixes.json` is an exact string replacement map applied after
+OpenCC zh-Hans conversion and before writing SRT:
+
+```json
+{
+  "wrong term": "correct term",
+  "bad champion name": "correct champion name"
+}
+```
+
 ## 状态检查和排查
 
 查看整体状态：

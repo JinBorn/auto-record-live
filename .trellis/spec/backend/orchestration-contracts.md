@@ -1618,3 +1618,146 @@ else:
 - Full-match export remains the default and produces a boundary from game entry to match end.
 - Highlight condensation is an explicit opt-in via `ARL_EXPORT_USE_HIGHLIGHT_PLANS=1`.
 - Default real-SRT exports preserve source video/audio by stream-copying and muxing subtitles as `mov_text`.
+
+## Scenario: Subtitle ASR quality controls
+
+### 1. Scope / Trigger
+
+- Trigger: Subtitle ASR settings affect downstream SRT text consumed by
+  stage-signal ingest, highlight planning, editing, exporting, and copywriting.
+- Trigger: The subtitle stage adds environment-backed faster-whisper parameters
+  plus user-editable prompt and term-fix files.
+- Trigger: Missing optional ASR dependencies must not break postprocess.
+
+### 2. Signatures
+
+- Config model in `src/arl/config.py`:
+
+```python
+class SubtitleSettings(BaseModel):
+    model_size: str = "small"
+    model_size_explicit: bool = Field(default=False, exclude=True)
+    initial_prompt_path: Path | None = Path("data/asr/initial-prompt.txt")
+    initial_prompt_max_chars: int = 1200
+    term_fixes_path: Path | None = Path("data/asr/term-fixes.json")
+    opencc_enabled: bool = True
+    beam_size: int = 5
+    vad_filter: bool = True
+    vad_min_silence_duration_ms: int = 300
+    vad_speech_pad_ms: int = 250
+```
+
+- Whisper candidate key in `src/arl/subtitles/service.py`:
+
+```python
+@dataclass(frozen=True)
+class WhisperModelConfig:
+    model_size: str
+    device: str
+    compute_type: str
+```
+
+- Term-fix JSON shape:
+
+```json
+{
+  "wrong term": "correct term"
+}
+```
+
+### 3. Contracts
+
+- `ARL_POSTPROCESS_PRESET=publish` defaults `subtitles.model_size` to
+  `medium` when `subtitles.device` is `auto` or `cuda` and
+  `model_size_explicit` is false. `load_settings()` sets this flag when
+  `ARL_WHISPER_MODEL_SIZE` is present. CPU-only runs keep `small`.
+- `large-v3` is opt-in only. It is never selected by the publish preset.
+- Model fallback order is configured model -> `medium` -> `small`, deduplicated
+  and combined with the existing CUDA -> CPU device fallback.
+- `model.transcribe(...)` must pass `word_timestamps=True`, `beam_size`,
+  `vad_filter`, optional `vad_parameters`, optional `clip_timestamps`, and
+  optional `initial_prompt`.
+- `data/asr/initial-prompt.txt` is UTF-8 text. Missing or empty file means no
+  prompt is passed.
+- `data/asr/term-fixes.json` is UTF-8 JSON object of exact string replacements.
+  Missing file means no replacements.
+- Text normalization order is OpenCC `t2s` conversion first, then exact term
+  fixes, before SRT persistence.
+- Subtitle output remains the durable interchange contract:
+  `data/processed/<session>/match-NN.srt` plus `subtitle-assets.jsonl`.
+
+### 4. Validation & Error Matrix
+
+- Missing `faster-whisper` or model initialization failure -> try next
+  candidate; if exhausted, write placeholder SRT and append
+  `subtitle_fallback_placeholder`.
+- CUDA model/runtime failure in `device=auto` -> disable CUDA for the batch and
+  retry CPU candidates.
+- Media/path-specific transcribe failure -> do not keep retrying other models;
+  write placeholder SRT with `reason=transcribe_failed`.
+- Missing OpenCC or conversion failure -> log one `subtitles` warning per
+  service instance and continue with unconverted text.
+- Missing prompt file -> no log, no prompt.
+- Invalid prompt read -> compact `initial prompt skipped` log and continue.
+- Missing term-fix file -> no log, empty map.
+- Invalid term-fix JSON/schema -> compact `term fixes skipped` log and continue.
+
+### 5. Good/Base/Bad Cases
+
+- Good: publish preset on CUDA/auto with no explicit model env uses `medium`,
+  passes VAD/beam kwargs, normalizes text, writes real SRT.
+- Base: CPU-only local run keeps `small` and still uses prompt/term-fix files
+  when present.
+- Bad: OpenCC import failure raises out of subtitle generation or logs raw
+  transcript text.
+- Bad: explicit `ARL_WHISPER_MODEL_SIZE=large-v3` is overwritten by publish
+  preset.
+
+### 6. Tests Required
+
+- Unit: config env parsing clamps prompt max chars, beam size, and VAD
+  durations.
+- Unit: publish preset sets CUDA/auto ASR model to `medium`, keeps CPU `small`,
+  and preserves explicit `ARL_WHISPER_MODEL_SIZE`.
+- Unit: subtitle service passes prompt, `beam_size`, `vad_filter`, and
+  `vad_parameters` to the faster-whisper stub.
+- Unit: subtitle service applies term fixes before SRT persistence.
+- Unit: missing OpenCC logs once and still writes subtitle output.
+- Unit: model fallback attempts configured model, then `medium`, then `small`
+  without downloading real models.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+segments, info = model.transcribe(path, language="zh")
+text = segment.text
+subtitle_path.write_text(text)
+```
+
+- Drops word timestamps and clip windows.
+- Skips prompt, VAD, OpenCC, term fixes, and explicit UTF-8 persistence.
+
+#### Correct
+
+```python
+segments, info = model.transcribe(
+    str(path),
+    language=settings.subtitles.language or None,
+    word_timestamps=True,
+    beam_size=settings.subtitles.beam_size,
+    vad_filter=settings.subtitles.vad_filter,
+    vad_parameters={
+        "min_silence_duration_ms": settings.subtitles.vad_min_silence_duration_ms,
+        "speech_pad_ms": settings.subtitles.vad_speech_pad_ms,
+    },
+    initial_prompt=prompt,
+    clip_timestamps=clip_timestamps,
+)
+text = normalizer.normalize(segment_text)
+subtitle_path.write_text(build_srt(entries), encoding="utf-8")
+```
+
+- Keeps cue timing precise, makes ASR tuning operator-controlled, and preserves
+  the subtitle stage's degrade-to-placeholder contract.

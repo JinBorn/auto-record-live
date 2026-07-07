@@ -168,16 +168,17 @@ class _WhisperModelStub:
         *,
         word_timestamps: bool = False,
         clip_timestamps: list[float] | None = None,
+        **kwargs: object,
     ):
         self.transcribe_calls += 1
-        self.transcribe_kwargs.append(
-            {
-                "path": path,
-                "language": language,
-                "word_timestamps": word_timestamps,
-                "clip_timestamps": clip_timestamps,
-            }
-        )
+        transcribe_kwargs = {
+            "path": path,
+            "language": language,
+            "word_timestamps": word_timestamps,
+            "clip_timestamps": clip_timestamps,
+        }
+        transcribe_kwargs.update(kwargs)
+        self.transcribe_kwargs.append(transcribe_kwargs)
         if self.raises is not None:
             raise self.raises
         if self.lazy_raises is not None:
@@ -200,9 +201,11 @@ class _WhisperModelFactory:
         self,
         *,
         fail_init_devices: set[str] | None = None,
+        fail_init_models: set[str] | None = None,
         lazy_fail_devices: set[str] | None = None,
     ) -> None:
         self.fail_init_devices = fail_init_devices or set()
+        self.fail_init_models = fail_init_models or set()
         self.lazy_fail_devices = lazy_fail_devices or set()
         self.calls: list[dict[str, str]] = []
 
@@ -216,6 +219,8 @@ class _WhisperModelFactory:
         )
         if device in self.fail_init_devices:
             raise RuntimeError(f"{device} init failed")
+        if model_size in self.fail_init_models:
+            raise RuntimeError(f"{model_size} init failed")
         return _WhisperModelStub(
             language_probability=0.95,
             language="zh",
@@ -238,6 +243,7 @@ class _IntermittentFileFailureModel:
         *,
         word_timestamps: bool = False,
         clip_timestamps: list[float] | None = None,
+        **kwargs: object,
     ):
         self.transcribe_calls += 1
         if self.transcribe_calls == 1:
@@ -312,7 +318,11 @@ class SubtitleServiceTest(unittest.TestCase):
                 export_dir=self.export_root,
                 temp_dir=self.temp_root,
             ),
-            subtitles=SubtitleSettings(enabled=True, provider="faster-whisper"),
+            subtitles=SubtitleSettings(
+                enabled=True,
+                provider="faster-whisper",
+                opencc_enabled=False,
+            ),
         )
 
     def tearDown(self) -> None:
@@ -478,6 +488,109 @@ class SubtitleServiceTest(unittest.TestCase):
         self.assertEqual(model.transcribe_calls, 1)
         self.assertEqual(model.transcribe_kwargs[0]["clip_timestamps"], [10.0, 40.0])
         self.assertTrue(model.transcribe_kwargs[0]["word_timestamps"])
+        self.assertEqual(model.transcribe_kwargs[0]["beam_size"], 5)
+        self.assertTrue(model.transcribe_kwargs[0]["vad_filter"])
+        self.assertEqual(
+            model.transcribe_kwargs[0]["vad_parameters"],
+            {"min_silence_duration_ms": 300, "speech_pad_ms": 250},
+        )
+
+    def test_transcribe_passes_initial_prompt_and_vad_settings(self) -> None:
+        self._seed_single_media_boundary(session_id="session-subtitle-asr-tuning")
+        prompt_path = self.temp_root / "initial-prompt.txt"
+        prompt_path.write_text("Aatrox\nBaron Nashor\nDragon fight", encoding="utf-8")
+        settings = self.settings.model_copy(deep=True)
+        settings.subtitles.device = "cpu"
+        settings.subtitles.initial_prompt_path = prompt_path
+        settings.subtitles.initial_prompt_max_chars = 12
+        settings.subtitles.beam_size = 7
+        settings.subtitles.vad_min_silence_duration_ms = 200
+        settings.subtitles.vad_speech_pad_ms = 150
+        model = _WhisperModelStub(language_probability=0.95)
+        service = SubtitleService(settings)
+        service._load_whisper_model = lambda: model
+
+        service.run()
+
+        transcribe_kwargs = model.transcribe_kwargs[0]
+        self.assertEqual(transcribe_kwargs["initial_prompt"], "Aatrox\nBaron")
+        self.assertEqual(transcribe_kwargs["beam_size"], 7)
+        self.assertTrue(transcribe_kwargs["vad_filter"])
+        self.assertEqual(
+            transcribe_kwargs["vad_parameters"],
+            {"min_silence_duration_ms": 200, "speech_pad_ms": 150},
+        )
+
+    def test_transcribe_can_disable_vad_kwargs(self) -> None:
+        self._seed_single_media_boundary(session_id="session-subtitle-vad-disabled")
+        settings = self.settings.model_copy(deep=True)
+        settings.subtitles.device = "cpu"
+        settings.subtitles.vad_filter = False
+        model = _WhisperModelStub(language_probability=0.95)
+        service = SubtitleService(settings)
+        service._load_whisper_model = lambda: model
+
+        service.run()
+
+        transcribe_kwargs = model.transcribe_kwargs[0]
+        self.assertFalse(transcribe_kwargs["vad_filter"])
+        self.assertNotIn("vad_parameters", transcribe_kwargs)
+
+    def test_term_fixes_apply_before_srt_persistence(self) -> None:
+        self._seed_single_media_boundary(session_id="session-subtitle-term-fixes")
+        fixes_path = self.temp_root / "term-fixes.json"
+        fixes_path.write_text(
+            json.dumps({"bad dragon": "Elder Dragon"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        settings = self.settings.model_copy(deep=True)
+        settings.subtitles.device = "cpu"
+        settings.subtitles.opencc_enabled = False
+        settings.subtitles.term_fixes_path = fixes_path
+        service = SubtitleService(settings)
+        service._load_whisper_model = lambda: _WhisperModelStub(
+            language_probability=0.95,
+            segments=[_Segment(0.0, 1.5, "bad dragon fight")],
+        )
+
+        service.run()
+
+        subtitle_assets = _read_jsonl(self.subtitle_assets_path)
+        subtitle_text = Path(subtitle_assets[0]["path"]).read_text(encoding="utf-8")
+        self.assertIn("Elder Dragon fight", subtitle_text)
+        self.assertNotIn("bad dragon", subtitle_text)
+
+    def test_missing_opencc_warns_once_and_keeps_subtitle_output(self) -> None:
+        self._seed_single_media_boundary(session_id="session-subtitle-opencc-missing")
+        settings = self.settings.model_copy(deep=True)
+        settings.subtitles.device = "cpu"
+        settings.subtitles.opencc_enabled = True
+        model = _WhisperModelStub(
+            language_probability=0.95,
+            segments=[
+                _Segment(0.0, 1.0, "first line"),
+                _Segment(1.0, 2.0, "second line"),
+            ],
+        )
+        service = SubtitleService(settings)
+        service._load_whisper_model = lambda: model
+        real_import = __import__
+
+        def _fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "opencc":
+                raise ModuleNotFoundError("No module named 'opencc'")
+            return real_import(name, globals, locals, fromlist, level)
+
+        output = StringIO()
+        with patch("builtins.__import__", side_effect=_fake_import), redirect_stdout(output):
+            service.run()
+
+        logs = output.getvalue()
+        self.assertEqual(logs.count("opencc unavailable"), 1)
+        subtitle_assets = _read_jsonl(self.subtitle_assets_path)
+        subtitle_text = Path(subtitle_assets[0]["path"]).read_text(encoding="utf-8")
+        self.assertIn("first line", subtitle_text)
+        self.assertIn("second line", subtitle_text)
 
     def test_low_language_probability_falls_back_to_placeholder(self) -> None:
         self._seed_single_media_boundary()
@@ -653,11 +766,36 @@ class SubtitleServiceTest(unittest.TestCase):
 
         self.assertEqual(
             [
-                (candidate.device, candidate.compute_type)
+                (candidate.model_size, candidate.device, candidate.compute_type)
                 for candidate in service._whisper_model_candidates()
             ],
-            [("cuda", "int8_float16"), ("cpu", "int8")],
+            [("small", "cuda", "int8_float16"), ("small", "cpu", "int8")],
         )
+
+    def test_model_size_falls_back_to_medium_then_small(self) -> None:
+        self._seed_single_media_boundary(session_id="session-subtitle-model-chain")
+        settings = self.settings.model_copy(deep=True)
+        settings.subtitles.device = "cpu"
+        settings.subtitles.model_size = "large-v3"
+        service = SubtitleService(settings)
+        factory = _WhisperModelFactory(fail_init_models={"large-v3", "medium"})
+
+        self._run_with_fake_faster_whisper(service, factory)
+
+        self.assertEqual(
+            [
+                (call["model_size"], call["device"], call["compute_type"])
+                for call in factory.calls
+            ],
+            [
+                ("large-v3", "cpu", "int8"),
+                ("medium", "cpu", "int8"),
+                ("small", "cpu", "int8"),
+            ],
+        )
+        audit_rows = _read_jsonl(self.temp_root / "subtitles-events.jsonl")
+        self.assertEqual(audit_rows[0]["event_type"], "subtitle_transcribe_succeeded")
+        self.assertEqual(audit_rows[0]["device"], "cpu")
 
     def test_explicit_cuda_does_not_fallback_to_cpu(self) -> None:
         self._seed_single_media_boundary(session_id="session-subtitle-cuda-only")

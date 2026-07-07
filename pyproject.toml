@@ -16,6 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 subtitles = [
   "faster-whisper>=1.0,<2",
+  "opencc-python-reimplemented>=0.1.7,<1",
 ]
 vision = [
   "opencv-python>=4.8,<5",
