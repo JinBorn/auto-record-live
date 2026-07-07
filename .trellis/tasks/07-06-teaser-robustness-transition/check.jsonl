@@ -1,1 +1,5 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Final check must verify idempotency, stale plan regeneration, explicit UTF-8, and no unsafe fallback regressions."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Final check must verify new teaser/transition logs are compact and component-scoped."}
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "Final check must verify EditPlanAsset and exporter command contracts remain documented and tested."}
+{"file": ".trellis/spec/backend/export-configuration.md", "reason": "Final check must verify FFmpeg filtergraph and subtitle burn-in behavior remain compatible."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Final check must trace config -> planner -> manifest -> exporter -> quality-report behavior."}

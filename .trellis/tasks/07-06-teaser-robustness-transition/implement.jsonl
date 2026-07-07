@@ -1,1 +1,11 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Keep teaser planning/export changes inside existing editing/exporter stage boundaries."}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Edit plans and state are file-backed JSON/JSONL contracts requiring explicit UTF-8 and additive compatibility."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Preserve stage idempotency, stale-output regeneration, and fallback behavior while changing edit-plan shape."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "New fallback/non-empty teaser and transition behavior needs compact component-scoped logs without dumping transcript text."}
+{"file": ".trellis/spec/backend/orchestration-contracts.md", "reason": "EditPlanAsset, exporter edit-plan rendering, subtitle retiming, and postprocess order are cross-stage executable contracts."}
+{"file": ".trellis/spec/backend/export-configuration.md", "reason": "Exporter command construction, subtitle burn-in, and hardware encode settings are affected by transition card rendering."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing EditPlanAsset/exporter concat and audio mix paths instead of introducing a parallel renderer."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Change spans config, edit planner, shared contracts, exporter, quality report, and docs."}
+{"file": ".trellis/tasks/archive/2026-06/06-26-edit-plan-teaser-rendering/design.md", "reason": "Baseline design for teaser-before-main edit plans and exporter validation to extend safely."}
+{"file": ".trellis/tasks/archive/2026-06/06-26-edit-plan-teaser-rendering/implement.md", "reason": "Baseline implementation checklist and validation commands for existing edit-plan renderer."}
+{"file": ".trellis/tasks/07-06-demo2-quality-parity/prd.md", "reason": "Parent task defines cross-child quality targets and demo2 parity constraints."}
