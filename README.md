@@ -297,6 +297,13 @@ data/processed/<session>/reports/match-NN-quality-report.json
 
 BGM 库示例路径：
 
+Publish edit defaults in current builds:
+
+- Teaser candidates come from `highlight_keyword`, `condensed_key_event`, and valid LLM teaser recommendations. If no candidate clears the text-signal threshold but a valid key-event window exists, the edit planner can use the top-scored fallback teaser.
+- Teaser duration is dynamic: roughly 8-12% of planned edit duration, clamped by the configured min/max budget and still bounded by `ARL_EDIT_TEASER_MAX_TOTAL_SECONDS`.
+- Publish preset inserts a short `black_card` transition between teaser and main content unless `ARL_EDIT_TRANSITION_MODE` is explicitly set. The card text uses the LLM `hook_line` when available, otherwise `ARL_EDIT_TRANSITION_TEXT`.
+- If a teaser and transition exist, BGM starts at the first main segment, after both leading pieces. It does not cover the teaser or transition card.
+
 ```env
 ARL_EDIT_BGM_LIBRARY_PATH=data/bgm/library.json
 ARL_EDIT_SKIP_BGM_WHEN_SOURCE_HAS_MUSIC=1

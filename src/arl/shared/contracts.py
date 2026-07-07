@@ -117,10 +117,12 @@ class TimelineVideoTransform(BaseModel):
 class TimelineSegment(BaseModel):
     role: str
     source_path: str | None = None
-    source_start_seconds: float
-    source_end_seconds: float
+    source_start_seconds: float = 0.0
+    source_end_seconds: float = 0.0
     transform: TimelineVideoTransform | None = None
     reason: str
+    text: str | None = None
+    duration_seconds: float | None = None
 
 
 class AudioBed(BaseModel):

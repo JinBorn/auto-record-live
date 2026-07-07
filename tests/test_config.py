@@ -404,6 +404,14 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertTrue(settings.editing.enabled)
         self.assertTrue(settings.export.use_edit_plans)
 
+    def test_publish_preset_preserves_explicit_transition_mode_env(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_POSTPROCESS_PRESET"] = "publish"
+            os.environ["ARL_EDIT_TRANSITION_MODE"] = "none"
+            settings = load_settings()
+
+        self.assertEqual(settings.editing.transition_mode, "none")
+
     def test_apply_publish_preset_does_not_mutate_source_settings(self) -> None:
         settings = Settings()
 
@@ -420,6 +428,7 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             published.editing.bgm_library_path,
             Path("data/bgm/library.json"),
         )
+        self.assertEqual(published.editing.transition_mode, "black_card")
         self.assertTrue(published.export.use_edit_plans)
         self.assertEqual(published.export.ffmpeg_video_codec, "h264")
         self.assertEqual(published.export.ffmpeg_bitrate, "8000k")
@@ -567,12 +576,41 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             os.environ["ARL_EDIT_TEASER_MAX_SEGMENTS"] = "0"
             os.environ["ARL_EDIT_TEASER_MAX_TOTAL_SECONDS"] = "0"
             os.environ["ARL_EDIT_TEASER_MIN_SEGMENT_SECONDS"] = "0"
+            os.environ["ARL_EDIT_TEASER_DYNAMIC_BUDGET_ENABLED"] = "0"
+            os.environ["ARL_EDIT_TEASER_BUDGET_FRACTION_MIN"] = "0.15"
+            os.environ["ARL_EDIT_TEASER_BUDGET_FRACTION_MAX"] = "0.10"
+            os.environ["ARL_EDIT_TEASER_BUDGET_MIN_SECONDS"] = "0"
+            os.environ["ARL_EDIT_TEASER_BUDGET_MAX_SECONDS"] = "5"
+            os.environ["ARL_EDIT_TEASER_CANDIDATE_REASONS"] = (
+                "highlight_keyword,condensed_key_event,highlight_keyword"
+            )
+            os.environ["ARL_EDIT_TEASER_FALLBACK_ENABLED"] = "0"
+            os.environ["ARL_EDIT_TRANSITION_MODE"] = "black-card"
+            os.environ["ARL_EDIT_TRANSITION_DURATION_SECONDS"] = "20"
+            os.environ["ARL_EDIT_TRANSITION_TEXT"] = "  Back now  "
+            os.environ["ARL_EDIT_TRANSITION_SFX_PATH"] = "C:/audio/whoosh.wav"
+            os.environ["ARL_EDIT_TRANSITION_SFX_GAIN_DB"] = "12"
             settings = load_settings()
 
         self.assertTrue(settings.editing.enabled)
         self.assertEqual(settings.editing.teaser_max_segments, 1)
         self.assertEqual(settings.editing.teaser_max_total_seconds, 1.0)
         self.assertEqual(settings.editing.teaser_min_segment_seconds, 0.1)
+        self.assertFalse(settings.editing.teaser_dynamic_budget_enabled)
+        self.assertEqual(settings.editing.teaser_budget_fraction_min, 0.15)
+        self.assertEqual(settings.editing.teaser_budget_fraction_max, 0.15)
+        self.assertEqual(settings.editing.teaser_budget_min_seconds, 0.1)
+        self.assertEqual(settings.editing.teaser_budget_max_seconds, 5.0)
+        self.assertEqual(
+            settings.editing.teaser_candidate_reasons,
+            ("highlight_keyword", "condensed_key_event"),
+        )
+        self.assertFalse(settings.editing.teaser_fallback_enabled)
+        self.assertEqual(settings.editing.transition_mode, "black_card")
+        self.assertEqual(settings.editing.transition_duration_seconds, 10.0)
+        self.assertEqual(settings.editing.transition_text, "Back now")
+        self.assertEqual(settings.editing.transition_sfx_path, Path("C:/audio/whoosh.wav"))
+        self.assertEqual(settings.editing.transition_sfx_gain_db, 6.0)
 
     def test_edit_audio_mixing_envs_load_and_clamp(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):

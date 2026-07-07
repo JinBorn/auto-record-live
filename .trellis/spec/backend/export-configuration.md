@@ -454,12 +454,14 @@ windows = bridge_highlight_windows(windows, bridge_window_seconds=3.0)
       target: str | None = None
 
   class TimelineSegment(BaseModel):
-      role: str  # "teaser" | "main" | future "insert"
+      role: str  # "teaser" | "transition" | "main"
       source_path: str | None = None
-      source_start_seconds: float
-      source_end_seconds: float
+      source_start_seconds: float = 0.0
+      source_end_seconds: float = 0.0
       transform: TimelineVideoTransform | None = None
       reason: str
+      text: str | None = None
+      duration_seconds: float | None = None
 
   class AudioBed(BaseModel):
       source_path: str
@@ -507,6 +509,18 @@ windows = bridge_highlight_windows(windows, bridge_window_seconds=3.0)
   ARL_EDIT_TEASER_MAX_SEGMENTS=2
   ARL_EDIT_TEASER_MAX_TOTAL_SECONDS=45
   ARL_EDIT_TEASER_MIN_SEGMENT_SECONDS=3
+  ARL_EDIT_TEASER_DYNAMIC_BUDGET_ENABLED=1
+  ARL_EDIT_TEASER_BUDGET_FRACTION_MIN=0.08
+  ARL_EDIT_TEASER_BUDGET_FRACTION_MAX=0.12
+  ARL_EDIT_TEASER_BUDGET_MIN_SECONDS=20
+  ARL_EDIT_TEASER_BUDGET_MAX_SECONDS=90
+  ARL_EDIT_TEASER_CANDIDATE_REASONS=highlight_keyword,condensed_key_event
+  ARL_EDIT_TEASER_FALLBACK_ENABLED=1
+  ARL_EDIT_TRANSITION_MODE=none
+  ARL_EDIT_TRANSITION_DURATION_SECONDS=1.25
+  ARL_EDIT_TRANSITION_TEXT="Back to match start"
+  ARL_EDIT_TRANSITION_SFX_PATH=
+  ARL_EDIT_TRANSITION_SFX_GAIN_DB=-12
   ARL_EDIT_ZOOM_ENABLED=0
   ARL_EDIT_ZOOM_TARGET=chat
   ARL_EDIT_ZOOM_SCALE=1.2
@@ -545,6 +559,27 @@ windows = bridge_highlight_windows(windows, bridge_window_seconds=3.0)
   (`韩服千分套路`), and recognition/punchline cues should outrank an earlier
   generic setup subtitle. If no candidate has a positive subtitle/event score,
   keep the deterministic chronological fallback.
+- Current teaser rule: candidate reasons are configured by
+  `ARL_EDIT_TEASER_CANDIDATE_REASONS` (default
+  `highlight_keyword,condensed_key_event`), and LLM semantic teaser
+  recommendations may override heuristic ranking when they overlap an existing
+  highlight window. `highlight_keyword` keeps tie priority.
+- Current teaser budget rule: when
+  `ARL_EDIT_TEASER_DYNAMIC_BUDGET_ENABLED=1`, use the midpoint of the configured
+  8-12% fraction range against planned edit duration, clamp to
+  `ARL_EDIT_TEASER_BUDGET_MIN_SECONDS` /
+  `ARL_EDIT_TEASER_BUDGET_MAX_SECONDS`, then apply
+  `ARL_EDIT_TEASER_MAX_TOTAL_SECONDS` as an operator cap.
+- Current fallback rule: if no candidate has a positive subtitle/event score
+  and fallback is enabled, select the top valid candidate with reason
+  `teaser_fallback_top_scored`.
+- Current transition rule: when `ARL_EDIT_TRANSITION_MODE=black_card` and a
+  teaser exists, insert one `transition` segment between the final teaser and
+  first main segment. Its `duration_seconds` is clamped, `reason` is
+  `transition_black_card`, and `text` is
+  `CopywriterSemanticAsset.result.hook_line` when present or
+  `ARL_EDIT_TRANSITION_TEXT` otherwise. `crossfade` is reserved and must not be
+  treated as an implicit black-card mode.
 - Planner segment times are always relative to the validated match boundary.
   Do not mutate `MatchBoundary` or treat teaser windows as canonical match
   starts.
@@ -554,8 +589,11 @@ windows = bridge_highlight_windows(windows, bridge_window_seconds=3.0)
      the highlight plan.
   3. Else render the full validated boundary.
 - Renderer supports local timeline segments (`source_path is None`), roles
-  `teaser` and `main`, optional local audio instructions, and transforms with
-  `kind in {"none", "punch_in"}`.
+  `teaser`, `transition`, and `main`, optional local audio instructions, and
+  transforms with `kind in {"none", "punch_in"}`. `transition` segments are
+  rendered as generated black video plus silent audio inside the same concat
+  filtergraph; they do not add media inputs and therefore must not shift BGM/SFX
+  input indexes.
 - Punch-in zoom is opt-in at planner time. When `ARL_EDIT_ZOOM_ENABLED=1`, the
   planner may apply `TimelineVideoTransform(kind="punch_in")` to high-signal
   `teaser` or `main` segments with reasons `highlight_keyword`,
@@ -608,11 +646,12 @@ windows = bridge_highlight_windows(windows, bridge_window_seconds=3.0)
     `condensed_tactical` setup windows must stay SFX-free by default. The
     planner must rate-limit generated SFX hits so they stay occasional emphasis
     points instead of playing on every retained window.
-- BGM starts at the first main segment, not at the beginning of an optional
-  leading teaser. For teaser-first timelines, every BGM `AudioBed` must be
-  offset by the total leading teaser duration; for main-only timelines, BGM
-  starts at `0.0`. This preserves the demo2 convention where the cold-open
-  teaser has no added BGM and the music enters with the main video.
+- BGM starts at the first main segment, not at the beginning of optional
+  leading teaser or transition segments. For teaser-first timelines, every BGM
+  `AudioBed` must be offset by the total leading non-main duration; for
+  main-only timelines, BGM starts at `0.0`. This preserves the demo2 convention
+  where the cold-open teaser/card has no added BGM and the music enters with
+  the main video.
 - When `ARL_EDIT_SKIP_BGM_WHEN_SOURCE_HAS_MUSIC=1` (default), the planner must
   inspect the matching source `RecordingAsset` audio before adding any BGM bed.
   If multiple sampled windows indicate a persistent music-like bed in the
@@ -653,7 +692,8 @@ livestream recording, it skips both configured and default BGM for that match
 | Boundary incomplete or confidence `<0.8` | Edit planner skips; exporter already skips incomplete boundaries |
 | Missing or stale highlight plan | Edit planner skips without marking the match processed |
 | Highlight window is negative, reversed, out of bounds, or shorter than teaser minimum | Window is ignored for teaser selection |
-| No `highlight_keyword` teaser exists but valid high-signal condensed key/tactical windows exist | Edit planner keeps those windows in the main timeline only and writes a main-only edit plan |
+| No `highlight_keyword` teaser exists and fallback/candidate expansion is disabled | Edit planner keeps condensed key/tactical windows in the main timeline only and writes a main-only edit plan |
+| No candidate clears the teaser signal threshold but fallback is enabled and a valid candidate exists | Edit planner emits the top valid candidate as `teaser_fallback_top_scored` |
 | No valid teaser candidates remain but main windows are valid | Edit planner writes a main-only edit plan and marks processed |
 | Highlight windows do not cover both source start and source end | Edit planner writes no edit plan and does not mark processed |
 | Highlight windows collapse to one full-boundary main segment | Edit planner writes no edit plan; use full/highlight export instead |
@@ -662,10 +702,12 @@ livestream recording, it skips both configured and default BGM for that match
 | Existing edit plan no longer matches current zoom settings or lacks required high-signal main punch-ins | Edit planner treats it as stale and can append a replacement |
 | Existing edit plan has a transformed `main` segment longer than `ARL_EDIT_ZOOM_MAX_DURATION_SECONDS` | Edit planner treats it as stale and can append a replacement without that long transform |
 | Existing edit plan teaser segments differ from current strict `highlight_keyword` teaser selection and subtitle/event scoring | Edit planner treats it as stale and can append a replacement |
+| Existing edit plan lacks the expected `transition` segment or has stale transition text/duration | Edit planner treats it as stale and can append a replacement |
 | Existing edit plan audio instructions differ from the current timeline/library/source-music decision in path, start/end timing, gain, loop, or reason | Edit planner treats it as stale and can append a replacement so BGM starts at the first main segment, after any leading teaser |
 | `--force-reprocess` is used | Edit planner appends a replacement row; downstream latest row wins |
 | Edit plan source boundary differs from current boundary by more than 1 second | Exporter ignores the edit plan and falls back |
 | Timeline has no main segment or teaser appears after main | Exporter ignores the edit plan and falls back |
+| Transition role is malformed, appears after main, appears before any teaser, has source media, transform, unknown reason, or non-positive duration | Exporter ignores the edit plan and falls back |
 | Timeline starts with main and contains only main segments | Exporter accepts the main-only edit plan |
 | Main segment sequence lacks a segment starting at `0.0` or ending at boundary duration | Exporter ignores the edit plan and falls back |
 | Main segment sequence is a single full-boundary `full_validated_match` segment | Exporter ignores the edit plan and falls back |
@@ -1708,6 +1750,18 @@ def _video_quality_args(self) -> list[str]:
 | `ARL_EDIT_TEASER_MAX_SEGMENTS` | int | 2 | Maximum teaser segments prepended before the main match |
 | `ARL_EDIT_TEASER_MAX_TOTAL_SECONDS` | float | 45.0 | Maximum total teaser duration |
 | `ARL_EDIT_TEASER_MIN_SEGMENT_SECONDS` | float | 3.0 | Minimum retained teaser segment duration |
+| `ARL_EDIT_TEASER_DYNAMIC_BUDGET_ENABLED` | bool | True | Compute teaser budget from planned edit duration before applying max-total cap |
+| `ARL_EDIT_TEASER_BUDGET_FRACTION_MIN` | float | 0.08 | Lower bound of dynamic teaser budget fraction |
+| `ARL_EDIT_TEASER_BUDGET_FRACTION_MAX` | float | 0.12 | Upper bound of dynamic teaser budget fraction |
+| `ARL_EDIT_TEASER_BUDGET_MIN_SECONDS` | float | 20.0 | Minimum dynamic teaser budget before operator max-total cap |
+| `ARL_EDIT_TEASER_BUDGET_MAX_SECONDS` | float | 90.0 | Maximum dynamic teaser budget before operator max-total cap |
+| `ARL_EDIT_TEASER_CANDIDATE_REASONS` | CSV | `highlight_keyword,condensed_key_event` | Highlight window reasons eligible for teaser selection |
+| `ARL_EDIT_TEASER_FALLBACK_ENABLED` | bool | True | Use the top valid candidate when no teaser candidate clears the signal threshold |
+| `ARL_EDIT_TRANSITION_MODE` | string | `none` | `none`, `black_card`, or reserved `crossfade`; publish preset defaults to `black_card` when unset |
+| `ARL_EDIT_TRANSITION_DURATION_SECONDS` | float | 1.25 | Black-card transition duration, clamped to `[0.1, 10.0]` |
+| `ARL_EDIT_TRANSITION_TEXT` | string | `Back to match start` | Fallback transition card text when LLM hook line is unavailable |
+| `ARL_EDIT_TRANSITION_SFX_PATH` | path | None | Optional whoosh SFX file for transition start |
+| `ARL_EDIT_TRANSITION_SFX_GAIN_DB` | float | -12.0 | Transition SFX gain in dB, clamped to `[-60.0, 6.0]` |
 | `ARL_EDIT_ZOOM_ENABLED` | bool | False | Emit safe punch-in transforms for high-signal teaser/main segments |
 | `ARL_EDIT_ZOOM_TARGET` | string | "chat" | Punch-in target preset: `chat`, `center`, or `custom` |
 | `ARL_EDIT_ZOOM_SCALE` | float | 1.2 | Static punch-in scale, clamped to `[1.0, 1.5]` |

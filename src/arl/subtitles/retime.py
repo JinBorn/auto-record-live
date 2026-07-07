@@ -20,6 +20,9 @@ def retime_srt_cues_for_edit_plan(
     retimed: list[SrtCue] = []
     output_cursor = 0.0
     for segment in edit_plan.timeline:
+        if segment.role == "transition":
+            output_cursor += max(0.0, segment.duration_seconds or 0.0)
+            continue
         segment_start = segment.source_start_seconds
         segment_end = segment.source_end_seconds
         for cue in source_cues:

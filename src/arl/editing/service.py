@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,18 +41,19 @@ from arl.subtitles.ass import SrtCue, parse_srt_cues
 
 
 _REASON_PRIORITY = {
-    "condensed_key_event": 0,
-    "highlight_keyword": 1,
-    "condensed_tactical": 2,
-    "condensed_context": 3,
+    "highlight_keyword": 0,
+    "condensed_key_event": 1,
+    "teaser_fallback_top_scored": 2,
+    "condensed_tactical": 3,
+    "condensed_context": 4,
 }
 
-_PRIMARY_TEASER_REASONS = {"highlight_keyword"}
 _ZOOM_REASONS = {
     "highlight_keyword",
     "condensed_key_event",
     "condensed_tactical",
     "llm_teaser",
+    "teaser_fallback_top_scored",
 }
 _SFX_REASONS = {"highlight_keyword", "condensed_key_event"}
 _SFX_MIN_INTERVAL_SECONDS = 20.0
@@ -294,6 +296,7 @@ class EditingPlannerService:
         teaser_windows = self._select_teaser_windows(
             highlight_plan.windows,
             duration,
+            planned_export_duration=self._timeline_duration(main_segments),
             subtitle=subtitle,
             semantic_asset=semantic_asset,
         )
@@ -314,6 +317,12 @@ class EditingPlannerService:
             )
             for window in teaser_windows
         ]
+        transition_segment = self._build_transition_segment(
+            semantic_asset=semantic_asset,
+            has_teaser=bool(teaser_windows),
+        )
+        if transition_segment is not None:
+            timeline.append(transition_segment)
         timeline.extend(main_segments)
         self._apply_zoom_transforms(timeline)
         audio_beds, sound_effects = self._build_audio_instructions(
@@ -333,6 +342,41 @@ class EditingPlannerService:
             audio_beds=audio_beds,
             sound_effects=sound_effects,
             created_at=datetime.now(timezone.utc),
+        )
+
+    def _build_transition_segment(
+        self,
+        *,
+        semantic_asset: CopywriterSemanticAsset | None,
+        has_teaser: bool,
+    ) -> TimelineSegment | None:
+        if not has_teaser:
+            return None
+        if self.settings.editing.transition_mode != "black_card":
+            if self.settings.editing.transition_mode == "crossfade":
+                log("editing", "skip transition reason=crossfade_reserved")
+            return None
+        return TimelineSegment(
+            role="transition",
+            source_start_seconds=0.0,
+            source_end_seconds=0.0,
+            duration_seconds=self._transition_duration_seconds(),
+            reason="transition_black_card",
+            text=self._transition_text(semantic_asset),
+        )
+
+    def _transition_text(
+        self,
+        semantic_asset: CopywriterSemanticAsset | None,
+    ) -> str:
+        if semantic_asset is not None and semantic_asset.result.hook_line:
+            return semantic_asset.result.hook_line.strip()
+        return self.settings.editing.transition_text
+
+    def _transition_duration_seconds(self) -> float:
+        return round(
+            min(10.0, max(0.1, self.settings.editing.transition_duration_seconds)),
+            3,
         )
 
     def _apply_zoom_transforms(self, timeline: list[TimelineSegment]) -> None:
@@ -396,7 +440,7 @@ class EditingPlannerService:
         audio_beds: list[AudioBed] = []
         sound_effects: list[SoundEffectHit] = []
         rendered_duration = self._timeline_duration(timeline)
-        bgm_start_seconds = self._leading_teaser_duration(timeline)
+        bgm_start_seconds = self._leading_non_main_duration(timeline)
         bgm_duration = max(0.0, rendered_duration - bgm_start_seconds)
         source_music = self._source_music_detection(boundary, recording)
         skip_bgm = source_music.has_music
@@ -466,8 +510,18 @@ class EditingPlannerService:
 
         timeline_cursor = 0.0
         last_sfx_at: float | None = None
+        transition_sfx_path = self._transition_sfx_path()
         for segment in timeline:
-            segment_duration = segment.source_end_seconds - segment.source_start_seconds
+            segment_duration = self._segment_duration(segment)
+            if segment.role == "transition" and transition_sfx_path is not None:
+                sound_effects.append(
+                    SoundEffectHit(
+                        source_path=str(transition_sfx_path),
+                        at_seconds=round(timeline_cursor, 3),
+                        gain_db=self.settings.editing.transition_sfx_gain_db,
+                        reason=segment.reason,
+                    )
+                )
             if self._should_emit_sound_effect(
                 segment,
                 at_seconds=timeline_cursor,
@@ -583,6 +637,35 @@ class EditingPlannerService:
         if last_sfx_at is None:
             return True
         return at_seconds - last_sfx_at >= _SFX_MIN_INTERVAL_SECONDS
+
+    def _transition_sfx_path(self) -> Path | None:
+        configured = self.settings.editing.transition_sfx_path
+        if configured is not None:
+            return configured if configured.is_file() else None
+        library_path = self.settings.storage.temp_dir.parent / "sfx" / "library.json"
+        if not library_path.is_file():
+            library_path = Path("data/sfx/library.json")
+        if not library_path.is_file():
+            return None
+        try:
+            payload = json.loads(library_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        tracks = payload.get("tracks")
+        if not isinstance(tracks, list):
+            return None
+        for row in tracks:
+            if not isinstance(row, dict) or row.get("category") != "transition_whoosh":
+                continue
+            raw_path = row.get("path")
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                continue
+            candidate = Path(raw_path)
+            if not candidate.is_absolute():
+                candidate = library_path.parent / candidate
+            if candidate.is_file():
+                return candidate
+        return None
 
     def _default_audio_assets(self, boundary: MatchBoundary) -> dict[str, Path]:
         try:
@@ -833,22 +916,21 @@ class EditingPlannerService:
 
     @staticmethod
     def _timeline_duration(timeline: list[TimelineSegment]) -> float:
-        return sum(
-            max(0.0, segment.source_end_seconds - segment.source_start_seconds)
-            for segment in timeline
-        )
+        return sum(EditingPlannerService._segment_duration(segment) for segment in timeline)
 
     @staticmethod
     def _segment_duration(segment: TimelineSegment) -> float:
+        if segment.role == "transition":
+            return max(0.0, segment.duration_seconds or 0.0)
         return max(0.0, segment.source_end_seconds - segment.source_start_seconds)
 
     @staticmethod
-    def _leading_teaser_duration(timeline: list[TimelineSegment]) -> float:
+    def _leading_non_main_duration(timeline: list[TimelineSegment]) -> float:
         duration = 0.0
         for segment in timeline:
-            if segment.role != "teaser":
+            if segment.role == "main":
                 break
-            duration += max(0.0, segment.source_end_seconds - segment.source_start_seconds)
+            duration += EditingPlannerService._segment_duration(segment)
         return round(duration, 3)
 
     def _select_teaser_windows(
@@ -856,12 +938,17 @@ class EditingPlannerService:
         windows: list[HighlightClipWindow],
         duration: float,
         *,
+        planned_export_duration: float | None = None,
         subtitle: SubtitleAsset | None = None,
         semantic_asset: CopywriterSemanticAsset | None = None,
     ) -> list[HighlightClipWindow]:
+        max_total_seconds = self._teaser_budget_seconds(
+            planned_export_duration if planned_export_duration is not None else duration
+        )
         semantic_windows = self._semantic_teaser_windows(
             windows,
             duration,
+            max_total_seconds=max_total_seconds,
             semantic_asset=semantic_asset,
         )
         if semantic_windows:
@@ -870,23 +957,52 @@ class EditingPlannerService:
         candidates = self._teaser_candidates(
             windows,
             duration,
-            reasons=_PRIMARY_TEASER_REASONS,
+            reasons=set(self.settings.editing.teaser_candidate_reasons),
         )
+        scored_candidates = [
+            (window, self._teaser_signal_score(window, subtitle_cues))
+            for window in candidates
+        ]
+        high_confidence = [
+            (window, score)
+            for window, score in scored_candidates
+            if score > 0 or window.reason == "highlight_keyword"
+        ]
+        fallback_candidates = high_confidence
+        if not fallback_candidates and self.settings.editing.teaser_fallback_enabled:
+            fallback_candidates = scored_candidates
+            if fallback_candidates:
+                log("editing", "teaser fallback reason=teaser_fallback_top_scored")
+        candidates = [
+            (
+                HighlightClipWindow(
+                    started_at_seconds=window.started_at_seconds,
+                    ended_at_seconds=window.ended_at_seconds,
+                    reason=(
+                        "teaser_fallback_top_scored"
+                        if not high_confidence
+                        and self.settings.editing.teaser_fallback_enabled
+                        else window.reason
+                    ),
+                ),
+                score,
+            )
+            for window, score in fallback_candidates
+        ]
         candidates.sort(
-            key=lambda window: (
-                -self._teaser_signal_score(window, subtitle_cues),
-                _REASON_PRIORITY.get(window.reason, 100),
-                window.started_at_seconds,
-                window.ended_at_seconds,
+            key=lambda item: (
+                -item[1],
+                _REASON_PRIORITY.get(item[0].reason, 100),
+                item[0].started_at_seconds,
+                item[0].ended_at_seconds,
             )
         )
 
         selected: list[HighlightClipWindow] = []
         total_seconds = 0.0
         max_segments = self.settings.editing.teaser_max_segments
-        max_total_seconds = self.settings.editing.teaser_max_total_seconds
         min_seconds = self.settings.editing.teaser_min_segment_seconds
-        for window in candidates:
+        for window, _score in candidates:
             if len(selected) >= max_segments:
                 break
             remaining = max_total_seconds - total_seconds
@@ -906,11 +1022,27 @@ class EditingPlannerService:
             total_seconds += end - start
         return selected
 
+    def _teaser_budget_seconds(self, planned_export_duration: float) -> float:
+        configured_cap = self.settings.editing.teaser_max_total_seconds
+        if not self.settings.editing.teaser_dynamic_budget_enabled:
+            return configured_cap
+        fraction = (
+            self.settings.editing.teaser_budget_fraction_min
+            + self.settings.editing.teaser_budget_fraction_max
+        ) / 2.0
+        dynamic_budget = planned_export_duration * fraction
+        dynamic_budget = min(
+            self.settings.editing.teaser_budget_max_seconds,
+            max(self.settings.editing.teaser_budget_min_seconds, dynamic_budget),
+        )
+        return max(0.0, min(configured_cap, dynamic_budget))
+
     def _semantic_teaser_windows(
         self,
         windows: list[HighlightClipWindow],
         duration: float,
         *,
+        max_total_seconds: float,
         semantic_asset: CopywriterSemanticAsset | None,
     ) -> list[HighlightClipWindow]:
         if semantic_asset is None:
@@ -931,7 +1063,7 @@ class EditingPlannerService:
         for window in candidates:
             if len(selected) >= self.settings.editing.teaser_max_segments:
                 break
-            remaining = self.settings.editing.teaser_max_total_seconds - total_seconds
+            remaining = max_total_seconds - total_seconds
             if remaining < self.settings.editing.teaser_min_segment_seconds:
                 break
             end = min(window.ended_at_seconds, window.started_at_seconds + remaining)
@@ -1200,6 +1332,9 @@ class EditingPlannerService:
             duration,
             subtitle,
             semantic_asset,
+        ) and self._edit_plan_has_current_transition_shape(
+            plan,
+            semantic_asset,
         ) and self._edit_plan_has_current_zoom_shape(plan)
         if not matches_shape:
             return False
@@ -1319,6 +1454,9 @@ class EditingPlannerService:
             self._select_teaser_windows(
                 highlight_plan.windows,
                 duration,
+                planned_export_duration=self._timeline_duration(
+                    self._build_main_segments(highlight_plan.windows, duration)
+                ),
                 subtitle=subtitle,
                 semantic_asset=semantic_asset,
             )
@@ -1333,6 +1471,40 @@ class EditingPlannerService:
         return all(
             self._timeline_segment_matches_window(segment, window)
             for segment, window in zip(teaser_segments, expected_windows, strict=True)
+        )
+
+    def _edit_plan_has_current_transition_shape(
+        self,
+        plan: EditPlanAsset,
+        semantic_asset: CopywriterSemanticAsset | None,
+    ) -> bool:
+        transition_segments = [
+            segment for segment in plan.timeline if segment.role == "transition"
+        ]
+        teaser_count = sum(1 for segment in plan.timeline if segment.role == "teaser")
+        expected = self._build_transition_segment(
+            semantic_asset=semantic_asset,
+            has_teaser=teaser_count > 0,
+        )
+        if expected is None:
+            return not transition_segments
+        if len(transition_segments) != 1:
+            return False
+        transition_index = plan.timeline.index(transition_segments[0])
+        if transition_index != teaser_count:
+            return False
+        actual = transition_segments[0]
+        return (
+            actual.source_path is None
+            and actual.transform is None
+            and actual.reason == expected.reason
+            and actual.text == expected.text
+            and self._float_matches(
+                actual.duration_seconds or 0.0,
+                expected.duration_seconds or 0.0,
+            )
+            and self._float_matches(actual.source_start_seconds, 0.0)
+            and self._float_matches(actual.source_end_seconds, 0.0)
         )
 
     @classmethod

@@ -287,6 +287,21 @@ class EditingSettings(BaseModel):
     teaser_max_segments: int = 2
     teaser_max_total_seconds: float = 45.0
     teaser_min_segment_seconds: float = 3.0
+    teaser_dynamic_budget_enabled: bool = True
+    teaser_budget_fraction_min: float = 0.08
+    teaser_budget_fraction_max: float = 0.12
+    teaser_budget_min_seconds: float = 20.0
+    teaser_budget_max_seconds: float = 90.0
+    teaser_candidate_reasons: tuple[str, ...] = (
+        "highlight_keyword",
+        "condensed_key_event",
+    )
+    teaser_fallback_enabled: bool = True
+    transition_mode: str = "none"
+    transition_duration_seconds: float = 1.25
+    transition_text: str = "Back to match start"
+    transition_sfx_path: Path | None = None
+    transition_sfx_gain_db: float = -12.0
     zoom_enabled: bool = False
     zoom_target: str = "chat"
     zoom_scale: float = 1.2
@@ -303,7 +318,7 @@ class EditingSettings(BaseModel):
     sfx_gain_db: float = -12.0
 
     @model_validator(mode="after")
-    def _normalize_zoom_target(self) -> "EditingSettings":
+    def _normalize_editing_settings(self) -> "EditingSettings":
         aliases = {
             "chat": "chat",
             "game_chat": "chat",
@@ -317,6 +332,42 @@ class EditingSettings(BaseModel):
         if raw not in aliases:
             raise ValueError("zoom_target must be one of chat, center, or custom")
         self.zoom_target = aliases[raw]
+        transition_aliases = {
+            "none": "none",
+            "off": "none",
+            "disabled": "none",
+            "black_card": "black_card",
+            "black-card": "black_card",
+            "card": "black_card",
+            "crossfade": "crossfade",
+            "cross-fade": "crossfade",
+        }
+        transition_mode = self.transition_mode.strip().lower()
+        if transition_mode not in transition_aliases:
+            raise ValueError("transition_mode must be one of none, black_card, or crossfade")
+        self.transition_mode = transition_aliases[transition_mode]
+        if self.teaser_budget_fraction_min < 0.0:
+            self.teaser_budget_fraction_min = 0.0
+        if self.teaser_budget_fraction_max < self.teaser_budget_fraction_min:
+            self.teaser_budget_fraction_max = self.teaser_budget_fraction_min
+        self.teaser_budget_min_seconds = max(0.1, self.teaser_budget_min_seconds)
+        self.teaser_budget_max_seconds = max(
+            self.teaser_budget_min_seconds,
+            self.teaser_budget_max_seconds,
+        )
+        self.transition_duration_seconds = min(
+            10.0,
+            max(0.1, self.transition_duration_seconds),
+        )
+        self.transition_text = self.transition_text.strip() or "Back to match start"
+        candidate_reasons = tuple(
+            dict.fromkeys(
+                reason.strip()
+                for reason in self.teaser_candidate_reasons
+                if reason.strip()
+            )
+        )
+        self.teaser_candidate_reasons = candidate_reasons or ("highlight_keyword",)
         return self
 
 
@@ -489,6 +540,12 @@ def apply_publish_preset(settings: Settings) -> Settings:
         and subtitles.model_size == "small"
     ):
         subtitles = subtitles.model_copy(update={"model_size": "medium"})
+    transition_mode = settings.editing.transition_mode
+    if (
+        transition_mode == "none"
+        and os.getenv("ARL_EDIT_TRANSITION_MODE", "").strip() == ""
+    ):
+        transition_mode = "black_card"
 
     return settings.model_copy(
         deep=True,
@@ -518,6 +575,7 @@ def apply_publish_preset(settings: Settings) -> Settings:
                     "zoom_enabled": True,
                     "audio_mixing_enabled": True,
                     "bgm_library_path": bgm_library_path,
+                    "transition_mode": transition_mode,
                 }
             ),
             "export": settings.export.model_copy(
@@ -1163,6 +1221,48 @@ def load_settings() -> Settings:
             teaser_min_segment_seconds=max(
                 0.1,
                 _env_float("ARL_EDIT_TEASER_MIN_SEGMENT_SECONDS", 3.0),
+            ),
+            teaser_dynamic_budget_enabled=_env_bool(
+                "ARL_EDIT_TEASER_DYNAMIC_BUDGET_ENABLED",
+                True,
+            ),
+            teaser_budget_fraction_min=max(
+                0.0,
+                _env_float("ARL_EDIT_TEASER_BUDGET_FRACTION_MIN", 0.08),
+            ),
+            teaser_budget_fraction_max=max(
+                0.0,
+                _env_float("ARL_EDIT_TEASER_BUDGET_FRACTION_MAX", 0.12),
+            ),
+            teaser_budget_min_seconds=max(
+                0.1,
+                _env_float("ARL_EDIT_TEASER_BUDGET_MIN_SECONDS", 20.0),
+            ),
+            teaser_budget_max_seconds=max(
+                0.1,
+                _env_float("ARL_EDIT_TEASER_BUDGET_MAX_SECONDS", 90.0),
+            ),
+            teaser_candidate_reasons=tuple(
+                _env_csv("ARL_EDIT_TEASER_CANDIDATE_REASONS")
+                or ["highlight_keyword", "condensed_key_event"]
+            ),
+            teaser_fallback_enabled=_env_bool(
+                "ARL_EDIT_TEASER_FALLBACK_ENABLED",
+                True,
+            ),
+            transition_mode=os.getenv("ARL_EDIT_TRANSITION_MODE", "none"),
+            transition_duration_seconds=max(
+                0.1,
+                _env_float("ARL_EDIT_TRANSITION_DURATION_SECONDS", 1.25),
+            ),
+            transition_text=os.getenv(
+                "ARL_EDIT_TRANSITION_TEXT",
+                "Back to match start",
+            ),
+            transition_sfx_path=_env_optional_path("ARL_EDIT_TRANSITION_SFX_PATH"),
+            transition_sfx_gain_db=min(
+                6.0,
+                max(-60.0, _env_float("ARL_EDIT_TRANSITION_SFX_GAIN_DB", -12.0)),
             ),
             zoom_enabled=_env_bool("ARL_EDIT_ZOOM_ENABLED", False),
             zoom_target=os.getenv("ARL_EDIT_ZOOM_TARGET", "chat"),

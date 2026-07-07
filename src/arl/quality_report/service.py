@@ -603,7 +603,7 @@ class QualityReportService:
     ) -> float | None:
         if edit_plan is not None:
             return sum(
-                max(0.0, segment.source_end_seconds - segment.source_start_seconds)
+                QualityReportService._timeline_segment_duration(segment)
                 for segment in edit_plan.timeline
             )
         if highlight_plan is not None:
@@ -625,7 +625,7 @@ class QualityReportService:
         return (
             len(teaser_segments),
             sum(
-                max(0.0, segment.source_end_seconds - segment.source_start_seconds)
+                QualityReportService._timeline_segment_duration(segment)
                 for segment in teaser_segments
             ),
         )
@@ -679,7 +679,7 @@ class QualityReportService:
         metrics: list[ZoomSegmentMetric] = []
         output_cursor = 0.0
         for segment in edit_plan.timeline:
-            duration = max(0.0, segment.source_end_seconds - segment.source_start_seconds)
+            duration = QualityReportService._timeline_segment_duration(segment)
             transform = segment.transform
             if transform is not None and transform.kind == "punch_in":
                 metrics.append(
@@ -965,12 +965,21 @@ class QualityReportService:
     ) -> float | None:
         output_cursor = 0.0
         for segment in edit_plan.timeline:
-            duration = max(0.0, segment.source_end_seconds - segment.source_start_seconds)
+            duration = QualityReportService._timeline_segment_duration(segment)
+            if segment.role == "transition":
+                output_cursor += duration
+                continue
             if output_seconds <= output_cursor + duration + _SECONDS_EPSILON:
                 offset = min(max(0.0, output_seconds - output_cursor), duration)
                 return segment.source_start_seconds + offset
             output_cursor += duration
         return None
+
+    @staticmethod
+    def _timeline_segment_duration(segment) -> float:
+        if segment.role == "transition":
+            return max(0.0, segment.duration_seconds or 0.0)
+        return max(0.0, segment.source_end_seconds - segment.source_start_seconds)
 
     @staticmethod
     def _kda_event_timestamp(cue: ClassifiedCue) -> float | None:

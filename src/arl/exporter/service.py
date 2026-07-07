@@ -737,8 +737,22 @@ class ExporterService:
             return None
         first_main_index = main_indices[0]
         segment_tolerance_seconds = 0.001
+        transition_count = 0
 
         for index, segment in enumerate(plan.timeline):
+            if segment.role == "transition":
+                transition_count += 1
+                if transition_count > 1:
+                    return None
+                if not self._valid_transition_segment(segment):
+                    return None
+                if index >= first_main_index:
+                    return None
+                if index == 0 or not any(
+                    earlier.role == "teaser" for earlier in plan.timeline[:index]
+                ):
+                    return None
+                continue
             if segment.role not in {"teaser", "main"}:
                 return None
             if segment.source_path is not None:
@@ -785,6 +799,19 @@ class ExporterService:
         if not self._valid_edit_plan_audio(plan, boundary, rendered_duration):
             return None
         return plan
+
+    @staticmethod
+    def _valid_transition_segment(segment: TimelineSegment) -> bool:
+        if segment.reason != "transition_black_card":
+            return False
+        if segment.source_path is not None or segment.transform is not None:
+            return False
+        if abs(segment.source_start_seconds) > 0.001:
+            return False
+        if abs(segment.source_end_seconds) > 0.001:
+            return False
+        duration = segment.duration_seconds or 0.0
+        return 0.0 < duration <= 10.0
 
     def _valid_edit_plan_audio(
         self,
@@ -1040,14 +1067,23 @@ class ExporterService:
         for index, segment in enumerate(edit_plan.timeline):
             video_label = f"v{index}"
             audio_label = f"a{index}"
-            video_filters = self._timeline_video_filters(segment)
-            filter_parts.append(f"[0:v]{','.join(video_filters)}[{video_label}]")
-            filter_parts.append(
-                "[0:a]"
-                f"atrim=start={segment.source_start_seconds:.3f}:"
-                f"end={segment.source_end_seconds:.3f},"
-                f"asetpts=PTS-STARTPTS[{audio_label}]"
-            )
+            if segment.role == "transition":
+                filter_parts.extend(
+                    self._transition_filter_parts(
+                        segment,
+                        video_label=video_label,
+                        audio_label=audio_label,
+                    )
+                )
+            else:
+                video_filters = self._timeline_video_filters(segment)
+                filter_parts.append(f"[0:v]{','.join(video_filters)}[{video_label}]")
+                filter_parts.append(
+                    "[0:a]"
+                    f"atrim=start={segment.source_start_seconds:.3f}:"
+                    f"end={segment.source_end_seconds:.3f},"
+                    f"asetpts=PTS-STARTPTS[{audio_label}]"
+                )
             concat_inputs.extend([f"[{video_label}]", f"[{audio_label}]"])
         concat_audio_label = "basea" if has_audio_mix else "a"
         filter_parts.append(
@@ -1110,8 +1146,11 @@ class ExporterService:
         output_path: Path,
         edit_plan: EditPlanAsset,
     ) -> list[str]:
-        expanded: list[tuple[MediaSpan, TimelineVideoTransform | None]] = []
+        expanded: list[tuple[MediaSpan | TimelineSegment, TimelineVideoTransform | None]] = []
         for segment in edit_plan.timeline:
+            if segment.role == "transition":
+                expanded.append((segment, None))
+                continue
             segment_spans = self._resolve_export_spans(
                 recording_asset,
                 start_seconds=boundary.started_at_seconds
@@ -1123,17 +1162,33 @@ class ExporterService:
         has_audio_mix = bool(edit_plan.audio_beds or edit_plan.sound_effects)
         filter_parts: list[str] = []
         concat_inputs: list[str] = []
+        media_input_count = sum(
+            1 for span, _transform in expanded if not isinstance(span, TimelineSegment)
+        )
+        next_media_input_index = 0
         for index, (span, transform) in enumerate(expanded):
             video_label = f"v{index}"
             audio_label = f"a{index}"
-            video_filters = self._media_span_video_filters(span, transform)
-            filter_parts.append(f"[{index}:v]{','.join(video_filters)}[{video_label}]")
-            filter_parts.append(
-                f"[{index}:a]"
-                f"atrim=start={span.local_start_seconds:.3f}:"
-                f"end={span.local_end_seconds:.3f},"
-                f"asetpts=PTS-STARTPTS[{audio_label}]"
-            )
+            if isinstance(span, TimelineSegment):
+                filter_parts.extend(
+                    self._transition_filter_parts(
+                        span,
+                        video_label=video_label,
+                        audio_label=audio_label,
+                    )
+                )
+            else:
+                video_filters = self._media_span_video_filters(span, transform)
+                filter_parts.append(
+                    f"[{next_media_input_index}:v]{','.join(video_filters)}[{video_label}]"
+                )
+                filter_parts.append(
+                    f"[{next_media_input_index}:a]"
+                    f"atrim=start={span.local_start_seconds:.3f}:"
+                    f"end={span.local_end_seconds:.3f},"
+                    f"asetpts=PTS-STARTPTS[{audio_label}]"
+                )
+                next_media_input_index += 1
             concat_inputs.extend([f"[{video_label}]", f"[{audio_label}]"])
         concat_audio_label = "basea" if has_audio_mix else "a"
         filter_parts.append(
@@ -1151,7 +1206,7 @@ class ExporterService:
             filter_parts.extend(
                 self._edit_plan_audio_filters(
                     edit_plan,
-                    first_audio_input_index=len(expanded),
+                    first_audio_input_index=media_input_count,
                 )
             )
         audio_output_label = self._append_audio_loudnorm_filter(filter_parts)
@@ -1170,6 +1225,8 @@ class ExporterService:
             "error",
         ]
         for span, _transform in expanded:
+            if isinstance(span, TimelineSegment):
+                continue
             command.extend(["-i", span.path])
         command.extend(self._edit_plan_audio_inputs(edit_plan))
         command.extend(
@@ -1349,7 +1406,11 @@ class ExporterService:
     @staticmethod
     def _edit_plan_output_duration(edit_plan: EditPlanAsset) -> float:
         return sum(
-            max(0.0, segment.source_end_seconds - segment.source_start_seconds)
+            (
+                max(0.0, segment.duration_seconds or 0.0)
+                if segment.role == "transition"
+                else max(0.0, segment.source_end_seconds - segment.source_start_seconds)
+            )
             for segment in edit_plan.timeline
         )
 
@@ -1459,6 +1520,45 @@ class ExporterService:
         ]
         filters.extend(self._timeline_transform_filters(segment.transform))
         return filters
+
+    def _transition_filter_parts(
+        self,
+        segment: TimelineSegment,
+        *,
+        video_label: str,
+        audio_label: str,
+    ) -> list[str]:
+        duration = max(0.001, segment.duration_seconds or 0.0)
+        video_filters = [
+            f"color=c=black:s=1920x1080:r=30:d={duration:.3f}",
+            "format=yuv420p",
+            "setsar=1",
+        ]
+        text = (segment.text or "").strip()
+        if text:
+            video_filters.append(
+                "drawtext="
+                f"text='{self._drawtext_escape(text)}':"
+                "fontcolor=white:"
+                "fontsize=54:"
+                "x=(w-text_w)/2:"
+                "y=(h-text_h)/2"
+            )
+        return [
+            f"{','.join(video_filters)}[{video_label}]",
+            "anullsrc=channel_layout=stereo:sample_rate=48000,"
+            f"atrim=start=0.000:duration={duration:.3f},"
+            f"asetpts=PTS-STARTPTS[{audio_label}]",
+        ]
+
+    @staticmethod
+    def _drawtext_escape(text: str) -> str:
+        return (
+            text.replace("\\", "\\\\")
+            .replace("'", r"\'")
+            .replace(":", r"\:")
+            .replace("%", r"\%")
+        )
 
     def _timeline_transform_filters(
         self,

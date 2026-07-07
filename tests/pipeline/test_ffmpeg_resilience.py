@@ -3865,6 +3865,129 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertEqual(command[command.index("-map") + 1], "[vsub]")
         self.assertNotIn("select=", filter_complex)
 
+    def test_edit_plan_export_renders_black_card_transition(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=120.0)
+        settings = self.settings.model_copy(deep=True)
+        settings.export.use_edit_plans = True
+        settings.export.burn_subtitles = False
+        append_model(
+            self.temp_root / "edit-plans.jsonl",
+            EditPlanAsset(
+                session_id="session-e",
+                match_index=1,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=120.0,
+                timeline=[
+                    TimelineSegment(
+                        role="teaser",
+                        source_start_seconds=90.0,
+                        source_end_seconds=105.0,
+                        reason="highlight_keyword",
+                    ),
+                    TimelineSegment(
+                        role="transition",
+                        duration_seconds=1.25,
+                        reason="transition_black_card",
+                        text="Back to match start",
+                    ),
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=0.0,
+                        source_end_seconds=30.0,
+                        reason="condensed_match_context",
+                    ),
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=90.0,
+                        source_end_seconds=120.0,
+                        reason="condensed_key_event",
+                    ),
+                ],
+                created_at=datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        filter_complex = command[command.index("-filter_complex") + 1]
+        self.assertIn("trim=start=90.000:end=105.000,setpts=PTS-STARTPTS[v0]", filter_complex)
+        self.assertIn("color=c=black:s=1920x1080:r=30:d=1.250", filter_complex)
+        self.assertIn("drawtext=text='Back to match start'", filter_complex)
+        self.assertIn("anullsrc=channel_layout=stereo:sample_rate=48000", filter_complex)
+        self.assertIn("atrim=start=0.000:duration=1.250,asetpts=PTS-STARTPTS[a1]", filter_complex)
+        self.assertIn(
+            "[v0][a0][v1][a1][v2][a2][v3][a3]concat=n=4:v=1:a=1[v][a]",
+            filter_complex,
+        )
+
+    def test_invalid_transition_edit_plan_falls_back_to_full_match_export(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=120.0)
+        settings = self.settings.model_copy(deep=True)
+        settings.export.use_edit_plans = True
+        append_model(
+            self.temp_root / "edit-plans.jsonl",
+            EditPlanAsset(
+                session_id="session-e",
+                match_index=1,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=120.0,
+                timeline=[
+                    TimelineSegment(
+                        role="teaser",
+                        source_start_seconds=90.0,
+                        source_end_seconds=105.0,
+                        reason="highlight_keyword",
+                    ),
+                    TimelineSegment(
+                        role="transition",
+                        duration_seconds=0.0,
+                        reason="transition_black_card",
+                    ),
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=0.0,
+                        source_end_seconds=30.0,
+                        reason="condensed_match_context",
+                    ),
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=90.0,
+                        source_end_seconds=120.0,
+                        reason="condensed_key_event",
+                    ),
+                ],
+                created_at=datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        self.assertNotIn("-filter_complex", command)
+
     def test_main_only_edit_plan_export_uses_filter_complex(self) -> None:
         self._seed_export_inputs(boundary_ended_at_seconds=120.0)
         settings = self.settings.model_copy(deep=True)
@@ -3987,6 +4110,77 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertIn("[bgmraw0][basechain0]sidechaincompress=", filter_complex)
         self.assertIn("[basemix][bgm0]amix=inputs=2:duration=first:dropout_transition=0[a]", filter_complex)
         self.assertNotIn("select=", filter_complex)
+
+    def test_chunked_edit_plan_export_renders_transition_without_input_index_shift(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=12.0)
+        _manifest_path, first_chunk, second_chunk = self._append_chunked_recording_asset()
+        settings = self.settings.model_copy(deep=True)
+        settings.export.use_edit_plans = True
+        settings.export.burn_subtitles = False
+        append_model(
+            self.temp_root / "edit-plans.jsonl",
+            EditPlanAsset(
+                session_id="session-e",
+                match_index=1,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=12.0,
+                timeline=[
+                    TimelineSegment(
+                        role="teaser",
+                        source_start_seconds=8.0,
+                        source_end_seconds=12.0,
+                        reason="highlight_keyword",
+                    ),
+                    TimelineSegment(
+                        role="transition",
+                        duration_seconds=1.25,
+                        reason="transition_black_card",
+                        text="Back",
+                    ),
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=0.0,
+                        source_end_seconds=5.0,
+                        reason="condensed_match_context",
+                    ),
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=8.0,
+                        source_end_seconds=12.0,
+                        reason="condensed_key_event",
+                    ),
+                ],
+                created_at=datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        self.assertEqual(command.count(str(first_chunk)), 3)
+        self.assertEqual(command.count(str(second_chunk)), 2)
+        filter_complex = command[command.index("-filter_complex") + 1]
+        self.assertIn("[0:v]trim=start=8.000:end=10.000,setpts=PTS-STARTPTS[v0]", filter_complex)
+        self.assertIn("[1:v]trim=start=0.000:end=2.000,setpts=PTS-STARTPTS[v1]", filter_complex)
+        self.assertIn("color=c=black:s=1920x1080:r=30:d=1.250", filter_complex)
+        self.assertIn("[2:v]trim=start=0.000:end=5.000,setpts=PTS-STARTPTS[v3]", filter_complex)
+        self.assertIn("[3:v]trim=start=8.000:end=10.000,setpts=PTS-STARTPTS[v4]", filter_complex)
+        self.assertIn("[4:v]trim=start=0.000:end=2.000,setpts=PTS-STARTPTS[v5]", filter_complex)
+        self.assertIn(
+            "[v0][a0][v1][a1][v2][a2][v3][a3][v4][a4][v5][a5]concat=n=6:v=1:a=1[v][a]",
+            filter_complex,
+        )
 
     def test_edit_plan_audio_mix_adds_asset_inputs_and_amix(self) -> None:
         self._seed_export_inputs(boundary_ended_at_seconds=120.0)

@@ -98,7 +98,7 @@ class EditingPlannerServiceTest(unittest.TestCase):
         self.assertEqual(
             [(segment.role, segment.source_start_seconds, segment.source_end_seconds) for segment in plan.timeline],
             [
-                ("teaser", 300.0, 325.0),
+                ("teaser", 300.0, 320.0),
                 ("main", 0.0, 30.0),
                 ("main", 60.0, 70.0),
                 ("main", 120.0, 135.0),
@@ -151,7 +151,7 @@ class EditingPlannerServiceTest(unittest.TestCase):
                 (segment.source_start_seconds, segment.source_end_seconds)
                 for segment in teaser_segments
             ],
-            [(300.0, 315.0), (80.0, 95.0)],
+            [(300.0, 315.0), (80.0, 85.0)],
         )
 
     def test_semantic_teaser_recommendation_overrides_fallback_teaser(self) -> None:
@@ -219,6 +219,136 @@ class EditingPlannerServiceTest(unittest.TestCase):
             [(80.0, 95.0, "highlight_keyword")],
         )
 
+    def test_black_card_transition_uses_semantic_hook_line(self) -> None:
+        session_id = "session-edit-transition-hook"
+        self.settings.editing.transition_mode = "black_card"
+        self.settings.editing.transition_duration_seconds = 1.5
+        self.settings.editing.transition_text = "Back to match start"
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=0.0,
+                    ended_at_seconds=30.0,
+                    reason="condensed_match_context",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=300.0,
+                    ended_at_seconds=312.0,
+                    reason="highlight_keyword",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=570.0,
+                    ended_at_seconds=600.0,
+                    reason="condensed_match_context",
+                ),
+            ],
+            duration=600.0,
+        )
+        self._append_semantic_asset(
+            session_id,
+            teaser_start=300.0,
+            teaser_end=312.0,
+            hook_line="Hook from LLM",
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        self.assertEqual(
+            [segment.role for segment in plan.timeline[:3]],
+            ["teaser", "transition", "main"],
+        )
+        transition = plan.timeline[1]
+        self.assertEqual(transition.reason, "transition_black_card")
+        self.assertEqual(transition.duration_seconds, 1.5)
+        self.assertEqual(transition.text, "Hook from LLM")
+        self.assertEqual(transition.source_start_seconds, 0.0)
+        self.assertEqual(transition.source_end_seconds, 0.0)
+
+    def test_transition_mode_none_preserves_no_card_shape(self) -> None:
+        session_id = "session-edit-transition-none"
+        self.settings.editing.transition_mode = "none"
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=0.0,
+                    ended_at_seconds=30.0,
+                    reason="condensed_match_context",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=300.0,
+                    ended_at_seconds=312.0,
+                    reason="highlight_keyword",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=570.0,
+                    ended_at_seconds=600.0,
+                    reason="condensed_match_context",
+                ),
+            ],
+            duration=600.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        self.assertNotIn("transition", [segment.role for segment in plan.timeline])
+
+    def test_dynamic_teaser_budget_caps_total_duration(self) -> None:
+        session_id = "session-edit-dynamic-teaser-budget"
+        self.settings.editing.teaser_max_segments = 3
+        self.settings.editing.teaser_max_total_seconds = 90.0
+        self.settings.editing.teaser_budget_min_seconds = 20.0
+        self.settings.editing.teaser_budget_max_seconds = 90.0
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=0.0,
+                    ended_at_seconds=180.0,
+                    reason="condensed_match_context",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=220.0,
+                    ended_at_seconds=260.0,
+                    reason="highlight_keyword",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=320.0,
+                    ended_at_seconds=360.0,
+                    reason="highlight_keyword",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=570.0,
+                    ended_at_seconds=600.0,
+                    reason="condensed_match_context",
+                ),
+            ],
+            duration=600.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        teaser_segments = [
+            segment
+            for segment in load_models(self.edit_plans_path, EditPlanAsset)[0].timeline
+            if segment.role == "teaser"
+        ]
+        total = sum(
+            segment.source_end_seconds - segment.source_start_seconds
+            for segment in teaser_segments
+        )
+        self.assertLessEqual(total, 29.0)
+        self.assertEqual(
+            [(segment.source_start_seconds, segment.source_end_seconds) for segment in teaser_segments],
+            [(220.0, 249.0)],
+        )
+
     def test_zoom_enabled_marks_high_signal_segments_with_budget(self) -> None:
         session_id = "session-edit-zoom"
         self.settings.editing.zoom_enabled = True
@@ -262,8 +392,8 @@ class EditingPlannerServiceTest(unittest.TestCase):
         self.assertIsNone(second_teaser.transform)
         self.assertIsNone(first_main.transform)
 
-    def test_planner_omits_teaser_for_generic_condensed_key_events(self) -> None:
-        session_id = "session-edit-no-teaser"
+    def test_planner_emits_fallback_teaser_for_generic_condensed_key_events(self) -> None:
+        session_id = "session-edit-fallback-teaser"
         self.settings.editing.zoom_enabled = True
         self._append_boundary(session_id, duration=600.0)
         self._append_highlight_plan(
@@ -283,22 +413,23 @@ class EditingPlannerServiceTest(unittest.TestCase):
         plans = load_models(self.edit_plans_path, EditPlanAsset)
         self.assertEqual(len(plans), 1)
         plan = plans[0]
-        self.assertTrue(all(segment.role != "teaser" for segment in plan.timeline))
+        self.assertEqual(plan.timeline[0].role, "teaser")
+        self.assertEqual(plan.timeline[0].reason, "teaser_fallback_top_scored")
+        self.assertEqual(plan.timeline[0].source_start_seconds, 120.0)
+        self.assertEqual(plan.timeline[0].source_end_seconds, 140.0)
+        self.assertIsNotNone(plan.timeline[0].transform)
         key_segments = [
             segment for segment in plan.timeline if segment.reason == "condensed_key_event"
         ]
         self.assertEqual(len(key_segments), 1)
         self.assertEqual(key_segments[0].source_start_seconds, 120.0)
         self.assertEqual(key_segments[0].source_end_seconds, 150.0)
-        self.assertIsNotNone(key_segments[0].transform)
-        assert key_segments[0].transform is not None
-        self.assertEqual(key_segments[0].transform.kind, "punch_in")
-        self.assertEqual(key_segments[0].transform.target, "chat")
+        self.assertIsNone(key_segments[0].transform)
         self.assertTrue(
             all(
                 segment.transform is None
                 for segment in plan.timeline
-                if segment is not key_segments[0]
+                if segment is not plan.timeline[0]
             )
         )
         self.assertEqual(plan.sound_effects, [])
@@ -441,7 +572,7 @@ class EditingPlannerServiceTest(unittest.TestCase):
         self.assertEqual(len(plan.sound_effects), 2)
         self.assertEqual(
             [(hit.at_seconds, hit.reason) for hit in plan.sound_effects],
-            [(0.0, "highlight_keyword"), (70.0, "highlight_keyword")],
+            [(0.0, "highlight_keyword"), (65.0, "highlight_keyword")],
         )
         for hit in plan.sound_effects:
             self.assertEqual(hit.source_path, str(sfx_path))
@@ -454,6 +585,8 @@ class EditingPlannerServiceTest(unittest.TestCase):
         sfx_path.write_text("fake sfx", encoding="utf-8")
         self.settings.editing.audio_mixing_enabled = True
         self.settings.editing.sfx_path = sfx_path
+        self.settings.editing.teaser_fallback_enabled = False
+        self.settings.editing.teaser_candidate_reasons = ("highlight_keyword",)
         self._append_boundary(session_id, duration=600.0)
         self._append_highlight_plan(
             session_id,
@@ -506,13 +639,13 @@ class EditingPlannerServiceTest(unittest.TestCase):
         self.assertEqual(len(plan.audio_beds), 2)
         self.assertTrue(plan.audio_beds[0].source_path.endswith("bgm-playful.wav"))
         self.assertTrue(plan.audio_beds[1].source_path.endswith("bgm-climax.wav"))
-        self.assertEqual(plan.audio_beds[0].timeline_start_seconds, 45.0)
+        self.assertEqual(plan.audio_beds[0].timeline_start_seconds, 21.0)
         self.assertIsNotNone(plan.audio_beds[0].timeline_end_seconds)
         self.assertEqual(
             plan.audio_beds[1].timeline_start_seconds,
             plan.audio_beds[0].timeline_end_seconds,
         )
-        self.assertGreater(plan.audio_beds[1].timeline_start_seconds, 45.0)
+        self.assertGreater(plan.audio_beds[1].timeline_start_seconds, 21.0)
         self.assertEqual(plan.audio_beds[1].timeline_end_seconds, None)
         self.assertEqual(plan.audio_beds[0].reason, "background_music_playful")
         self.assertEqual(plan.audio_beds[1].reason, "background_music_climax")
@@ -888,15 +1021,15 @@ class EditingPlannerServiceTest(unittest.TestCase):
                 audio_beds=[
                     AudioBed(
                         source_path=str(early_path),
-                        timeline_start_seconds=45.0,
-                        timeline_end_seconds=97.5,
+                        timeline_start_seconds=20.0,
+                        timeline_end_seconds=85.0,
                         gain_db=self.settings.editing.bgm_gain_db,
                         loop=True,
                         reason="background_music_library",
                     ),
                     AudioBed(
                         source_path=str(climax_path),
-                        timeline_start_seconds=97.5,
+                        timeline_start_seconds=85.0,
                         timeline_end_seconds=None,
                         gain_db=self.settings.editing.bgm_gain_db,
                         loop=True,
@@ -924,13 +1057,13 @@ class EditingPlannerServiceTest(unittest.TestCase):
         self.assertTrue(
             all(Path(bed.source_path) in {early_path, climax_path} for bed in latest.audio_beds)
         )
-        self.assertEqual(latest.audio_beds[0].timeline_start_seconds, 45.0)
+        self.assertEqual(latest.audio_beds[0].timeline_start_seconds, 20.0)
         if len(latest.audio_beds) > 1:
             self.assertEqual(
                 latest.audio_beds[0].timeline_end_seconds,
                 latest.audio_beds[1].timeline_start_seconds,
             )
-            self.assertGreater(latest.audio_beds[1].timeline_start_seconds, 45.0)
+            self.assertGreater(latest.audio_beds[1].timeline_start_seconds, 20.0)
 
     def test_audio_mixing_marks_main_key_event_without_fallback_teaser(self) -> None:
         session_id = "session-edit-main-sfx"
@@ -939,6 +1072,8 @@ class EditingPlannerServiceTest(unittest.TestCase):
         sfx_path.write_text("fake sfx", encoding="utf-8")
         self.settings.editing.audio_mixing_enabled = True
         self.settings.editing.sfx_path = sfx_path
+        self.settings.editing.teaser_fallback_enabled = False
+        self.settings.editing.teaser_candidate_reasons = ("highlight_keyword",)
         self._append_boundary(session_id, duration=600.0)
         self._append_highlight_plan(
             session_id,
@@ -1291,6 +1426,8 @@ class EditingPlannerServiceTest(unittest.TestCase):
     def test_legacy_main_without_zoom_is_replanned_when_zoom_enabled(self) -> None:
         session_id = "session-edit-legacy-main-zoom"
         self.settings.editing.zoom_enabled = True
+        self.settings.editing.teaser_fallback_enabled = False
+        self.settings.editing.teaser_candidate_reasons = ("highlight_keyword",)
         self._append_boundary(session_id, duration=600.0)
         self._append_highlight_plan(
             session_id,
@@ -1367,6 +1504,8 @@ class EditingPlannerServiceTest(unittest.TestCase):
         session_id = "session-edit-legacy-long-zoom"
         self.settings.editing.zoom_enabled = True
         self.settings.editing.zoom_max_duration_seconds = 30.0
+        self.settings.editing.teaser_fallback_enabled = False
+        self.settings.editing.teaser_candidate_reasons = ("highlight_keyword",)
         self._append_boundary(session_id, duration=700.0)
         self._append_highlight_plan(
             session_id,
@@ -1651,6 +1790,7 @@ class EditingPlannerServiceTest(unittest.TestCase):
         *,
         teaser_start: float,
         teaser_end: float,
+        hook_line: str = "神钩开团，团战逆转",
     ) -> None:
         append_model(
             self.temp_root / "copywriter-semantic-assets.jsonl",
@@ -1671,7 +1811,7 @@ class EditingPlannerServiceTest(unittest.TestCase):
                     summary="一次关键开团带动整局节奏。",
                     description="关键团战打出优势，适合作为发布切片。",
                     tags=["英雄联盟", "直播切片", "神钩", "团战", "上分"],
-                    hook_line="神钩开团，团战逆转",
+                    hook_line=hook_line,
                     teaser_recommendations=[
                         {
                             "source_start_seconds": teaser_start,
