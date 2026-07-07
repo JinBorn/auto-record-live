@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/export-configuration.md", "reason": "Verify report metrics and threshold semantics stay consistent with export/edit-plan contracts and env-var conventions."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Check code standards compliance."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Check logging conventions."}
+{"file": ".trellis/tasks/archive/2026-07/07-02-condensed-highlight-duration-tightening/validation-report.md", "reason": "Ground truth for acceptance: command output must reproduce these numbers within rounding tolerance."}

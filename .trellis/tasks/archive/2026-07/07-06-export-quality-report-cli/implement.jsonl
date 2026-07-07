@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/export-configuration.md", "reason": "Export/edit-plan/BGM/SFX/zoom/KDA contracts, env-var reference, and the plan-validity rules the report metrics must mirror."}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "File-backed jsonl persistence guardrails for reading data/tmp stores and writing report artifacts."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Code standards and forbidden patterns for new CLI/service code."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Structured logging conventions for the new stage."}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Module organization for placing the new quality-report service."}
+{"file": ".trellis/tasks/archive/2026-07/07-02-condensed-highlight-duration-tightening/validation-report.md", "reason": "The manual metrics table this CLI must reproduce: column semantics, sample sessions, and expected values."}
