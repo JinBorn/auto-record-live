@@ -413,6 +413,10 @@ ARL_ASR_OPENCC_ENABLED=1
 ARL_ASR_INITIAL_PROMPT_PATH=data/asr/initial-prompt.txt
 ARL_ASR_INITIAL_PROMPT_MAX_CHARS=1200
 ARL_ASR_TERM_FIXES_PATH=data/asr/term-fixes.json
+ARL_ASR_DISPLAY_SMOOTHING_ENABLED=1
+ARL_ASR_DISPLAY_MIN_DURATION_SECONDS=3.5
+ARL_ASR_DISPLAY_TRAILING_HOLD_SECONDS=1.25
+ARL_ASR_DISPLAY_MAX_GAP_FILL_SECONDS=8
 ```
 
 `data/asr/initial-prompt.txt` is a UTF-8 text file for LoL names, streamer
@@ -428,6 +432,11 @@ OpenCC zh-Hans conversion and before writing SRT:
   "bad champion name": "correct champion name"
 }
 ```
+
+Display smoothing is applied after ASR text normalization and before writing
+SRT. It keeps very short cues readable, carries text briefly after speech, and
+fills only small gaps between neighboring cues. Set
+`ARL_ASR_DISPLAY_SMOOTHING_ENABLED=0` to preserve raw ASR word timing.
 
 ## 状态检查和排查
 

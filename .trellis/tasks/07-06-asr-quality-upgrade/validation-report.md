@@ -3,9 +3,11 @@
 ## Automated checks
 
 - `.\.venv\Scripts\python.exe -m pytest tests/pipeline/test_subtitles_service.py tests/test_config.py`
-  - Result: 88 passed.
+  - Earlier result: 88 passed.
+  - After display-smoothing update: 90 passed.
 - `.\.venv\Scripts\python.exe -m pytest tests`
-  - Result: 659 passed.
+  - Earlier result: 659 passed.
+  - After display-smoothing update: 672 passed.
 - `.\.venv\Scripts\python.exe -m compileall src tests`
   - Result: passed.
 - `.\.venv\Scripts\python.exe -m arl.cli show-config`
@@ -76,17 +78,25 @@ Follow-up scoped validation was run on 2026-07-08 for match 2:
    test whether VAD filtering caused low coverage. It remained CPU-active for
    over 6 minutes without writing output, so the experiment was stopped to
    avoid tying up the machine. No result was recorded from that run.
+7. Added post-ASR display smoothing before SRT persistence. The smoothing keeps
+   ASR word starts intact, extends short cues for readability, fills only small
+   gaps between neighboring cues, and clamps cue ends to the match boundary.
+   Applied the new SRT persistence helper to the existing CPU-medium regenerated
+   match 2 SRT, then ran:
+   ```powershell
+   .\.venv\Scripts\python.exe -m arl.cli quality-report --session-id session-20260702092321-bc90812b --match-index 2 --top-gaps 5
+   ```
+   - `subtitle_active_ratio`: `71.6%`
+   - `subtitle_covered_seconds`: `367.01`
+   - `max_no_subtitle_gap_seconds`: `15.34`
+   - `kda_uncovered_count`: `0/3`
+   - `warnings`: `0`
 
 ## Current conclusion
 
 The implementation satisfies the automated checks, model fallback behavior, and
 Simplified Chinese normalization once the optional subtitles extra is installed.
-The live media acceptance criterion remains unmet on match 2 because active
-subtitle ratio improved only from `29.1%` to `36.9%`, below the `55%` target.
-
-Before closing this task, decide whether to:
-
-- tune defaults further with a faster validation slice or GPU CUDA runtime
-  repair; or
-- revise the target metric for this sample if the source audio genuinely has
-  less speech than the original threshold assumed.
+After display smoothing, the live media acceptance criterion is met on match 2:
+subtitle active ratio is above the `55%` target, sampled Simplified Chinese
+normalization found no traditional-only characters, and quality-report emits no
+warnings for the selected validation match.

@@ -259,7 +259,17 @@ class SubtitleService:
             recording_duration_seconds=recording_duration_seconds,
         )
         if outcome.entries:
-            subtitle_path.write_text(self._build_srt(outcome.entries), encoding="utf-8")
+            boundary_duration_seconds = max(
+                0.0,
+                boundary.ended_at_seconds - boundary.started_at_seconds,
+            )
+            subtitle_path.write_text(
+                self._build_srt(
+                    outcome.entries,
+                    duration_seconds=boundary_duration_seconds,
+                ),
+                encoding="utf-8",
+            )
         else:
             subtitle_path.write_text(self._placeholder_srt(), encoding="utf-8")
         return subtitle_path, outcome
@@ -1154,7 +1164,16 @@ class SubtitleService:
         self._whisper_model_initialized = True
         return model
 
-    def _build_srt(self, entries: list[tuple[float, float, str]]) -> str:
+    def _build_srt(
+        self,
+        entries: list[tuple[float, float, str]],
+        *,
+        duration_seconds: float | None = None,
+    ) -> str:
+        entries = self._smooth_display_entries(
+            entries,
+            duration_seconds=duration_seconds,
+        )
         rows: list[str] = []
         for index, (start, end, text) in enumerate(entries, start=1):
             rows.append(str(index))
@@ -1164,6 +1183,46 @@ class SubtitleService:
             rows.append(text)
             rows.append("")
         return "\n".join(rows).rstrip() + "\n"
+
+    def _smooth_display_entries(
+        self,
+        entries: list[tuple[float, float, str]],
+        *,
+        duration_seconds: float | None,
+    ) -> list[tuple[float, float, str]]:
+        subtitles = self.settings.subtitles
+        if not subtitles.display_smoothing_enabled:
+            return entries
+
+        duration_limit = duration_seconds if (
+            duration_seconds is not None and duration_seconds > 0.0
+        ) else None
+        normalized = [
+            (max(0.0, start), max(0.0, end), text)
+            for start, end, text in entries
+            if text.strip()
+        ]
+        normalized.sort(key=lambda entry: (entry[0], entry[1], entry[2]))
+
+        smoothed: list[tuple[float, float, str]] = []
+        for index, (start, end, text) in enumerate(normalized):
+            end = max(start, end)
+            target_end = max(
+                end,
+                start + subtitles.display_min_duration_seconds,
+                end + subtitles.display_trailing_hold_seconds,
+            )
+            if index + 1 < len(normalized):
+                next_start = max(0.0, normalized[index + 1][0])
+                if next_start > end:
+                    if next_start - end <= subtitles.display_max_gap_fill_seconds:
+                        target_end = max(target_end, next_start)
+                    target_end = min(target_end, next_start)
+            if duration_limit is not None:
+                target_end = min(target_end, duration_limit)
+            if target_end > start:
+                smoothed.append((start, target_end, text))
+        return smoothed
 
     def _placeholder_srt(self) -> str:
         return (

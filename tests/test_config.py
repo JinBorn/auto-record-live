@@ -865,6 +865,10 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             os.environ["ARL_WHISPER_VAD_FILTER"] = "0"
             os.environ["ARL_WHISPER_VAD_MIN_SILENCE_DURATION_MS"] = "-1"
             os.environ["ARL_WHISPER_VAD_SPEECH_PAD_MS"] = "-2"
+            os.environ["ARL_ASR_DISPLAY_SMOOTHING_ENABLED"] = "0"
+            os.environ["ARL_ASR_DISPLAY_MIN_DURATION_SECONDS"] = "-1"
+            os.environ["ARL_ASR_DISPLAY_TRAILING_HOLD_SECONDS"] = "-2"
+            os.environ["ARL_ASR_DISPLAY_MAX_GAP_FILL_SECONDS"] = "-3"
             settings = load_settings()
 
         self.assertEqual(
@@ -890,6 +894,10 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertFalse(settings.subtitles.vad_filter)
         self.assertEqual(settings.subtitles.vad_min_silence_duration_ms, 0)
         self.assertEqual(settings.subtitles.vad_speech_pad_ms, 0)
+        self.assertFalse(settings.subtitles.display_smoothing_enabled)
+        self.assertEqual(settings.subtitles.display_min_duration_seconds, 0.0)
+        self.assertEqual(settings.subtitles.display_trailing_hold_seconds, 0.0)
+        self.assertEqual(settings.subtitles.display_max_gap_fill_seconds, 0.0)
 
     def test_segmenter_template_fallback_env_loads(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):

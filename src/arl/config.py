@@ -167,6 +167,10 @@ class SubtitleSettings(BaseModel):
     vad_filter: bool = True
     vad_min_silence_duration_ms: int = 300
     vad_speech_pad_ms: int = 250
+    display_smoothing_enabled: bool = True
+    display_min_duration_seconds: float = 3.5
+    display_trailing_hold_seconds: float = 1.25
+    display_max_gap_fill_seconds: float = 8.0
 
 
 class SegmenterSettings(BaseModel):
@@ -1004,6 +1008,22 @@ def load_settings() -> Settings:
             vad_speech_pad_ms=max(
                 0,
                 _env_int("ARL_WHISPER_VAD_SPEECH_PAD_MS", 250),
+            ),
+            display_smoothing_enabled=_env_bool(
+                "ARL_ASR_DISPLAY_SMOOTHING_ENABLED",
+                True,
+            ),
+            display_min_duration_seconds=max(
+                0.0,
+                _env_float("ARL_ASR_DISPLAY_MIN_DURATION_SECONDS", 3.5),
+            ),
+            display_trailing_hold_seconds=max(
+                0.0,
+                _env_float("ARL_ASR_DISPLAY_TRAILING_HOLD_SECONDS", 1.25),
+            ),
+            display_max_gap_fill_seconds=max(
+                0.0,
+                _env_float("ARL_ASR_DISPLAY_MAX_GAP_FILL_SECONDS", 8.0),
             ),
         ),
         segmenter=SegmenterSettings(
