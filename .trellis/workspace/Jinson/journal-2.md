@@ -533,3 +533,36 @@ Added configurable post-ASR subtitle display smoothing, documented ASR tuning en
 ### Next Steps
 
 - None - task complete
+
+
+## Session 64: Zoom close-up upgrade
+
+**Date**: 2026-07-08
+**Task**: Zoom close-up upgrade
+**Branch**: `main`
+
+### Summary
+
+Implemented close-up zoom mode with KDA/chat/fallback triggers, eased zoompan export rendering, docs/spec updates, full tests, and real sample validation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `bdfce0d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
