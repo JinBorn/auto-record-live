@@ -74,10 +74,19 @@ _TAG_ALIASES = {
 
 
 @dataclass(frozen=True)
+class SourceMusicSpan:
+    start_seconds: float
+    end_seconds: float
+    confidence: float = 0.0
+
+
+@dataclass(frozen=True)
 class SourceMusicDetection:
     has_music: bool
     confidence: float
     reason: str
+    music_spans: tuple[SourceMusicSpan, ...] = ()
+    coverage_ratio: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -298,23 +307,28 @@ def load_sfx_library_report(manifest_path: Path | None) -> SfxLibraryLoadReport:
 def select_bgm_tracks(
     tracks: list[BgmLibraryTrack],
     context: BgmSelectionContext,
+    requested_phases: tuple[str, ...] | None = None,
 ) -> list[BgmLibraryTrack]:
     if not tracks:
         return []
-    needs_switch = context.rendered_duration_seconds >= 120.0
-    early = _best_bgm_track(tracks, context, preferred_phase="early")
-    if early is None:
-        return []
-    if not needs_switch:
-        return [early]
-    climax = _best_bgm_track(
-        [track for track in tracks if track.path != early.path] or tracks,
-        context,
-        preferred_phase="climax",
-    )
-    if climax is None or climax.path == early.path:
-        return [early]
-    return [early, climax]
+    phases = requested_phases
+    if phases is None:
+        phases = (
+            ("early", "climax")
+            if context.rendered_duration_seconds >= 120.0
+            else ("early",)
+        )
+    selected: list[BgmLibraryTrack] = []
+    available = list(tracks)
+    for phase in phases:
+        candidate = _best_bgm_track(available, context, preferred_phase=phase)
+        if candidate is None:
+            continue
+        selected.append(candidate)
+        available = [track for track in available if track.path != candidate.path]
+        if not available:
+            break
+    return selected
 
 
 def infer_bgm_context_tags(
@@ -432,7 +446,7 @@ def _track_matches_preferred_phase(
     phase = track.phase
     mood = track.mood
     energy = track.energy
-    if preferred_phase == "early":
+    if preferred_phase in {"early", "laning"}:
         if phase in {"early", "laning", "playful"}:
             return True
         if phase in {"climax", "hype", "fight"}:
@@ -440,6 +454,18 @@ def _track_matches_preferred_phase(
         if mood in {"playful", "chill", "tutorial"} and (energy is None or energy <= 3):
             return True
         return phase in {None, "any", "all"} and (energy is None or energy <= 3)
+    if preferred_phase == "momentum":
+        if phase in {"momentum", "mid", "tactical", "fight"}:
+            return True
+        if phase in {"climax", "hype"} and (energy is None or energy >= 5):
+            return False
+        if mood in {"tactical", "fight", "trick"} and (
+            energy is None or 2 <= energy <= 4
+        ):
+            return True
+        return phase in {None, "any", "all"} and (
+            energy is None or 2 <= energy <= 4
+        )
     if phase in {"climax", "hype", "fight"}:
         return True
     if energy is not None and energy >= 4:
@@ -483,12 +509,27 @@ def _bgm_track_score(
         score += 6
     elif track.phase in {None, "any", "all"}:
         score += 2
-    elif preferred_phase == "early" and track.phase in {"playful", "laning"}:
+    elif preferred_phase in {"early", "laning"} and track.phase in {
+        "early",
+        "playful",
+        "laning",
+    }:
+        score += 4
+    elif preferred_phase == "momentum" and track.phase in {
+        "mid",
+        "tactical",
+        "fight",
+    }:
         score += 4
     elif preferred_phase == "climax" and track.phase in {"hype", "fight"}:
         score += 4
 
-    desired_energy = 4 if preferred_phase == "climax" or "hype" in context_tags else 2
+    if preferred_phase == "climax" or "hype" in context_tags:
+        desired_energy = 4
+    elif preferred_phase == "momentum":
+        desired_energy = 3
+    else:
+        desired_energy = 2
     if track.energy is not None:
         score += max(0, 4 - abs(track.energy - desired_energy))
     if not context_tags and track.phase in {None, "any", "all", preferred_phase}:
@@ -518,6 +559,7 @@ def detect_source_background_music(
         return SourceMusicDetection(False, 0.0, "missing_ffmpeg")
 
     scores: list[float] = []
+    confident_spans: list[SourceMusicSpan] = []
     for sample_start in _detection_sample_starts(
         start_seconds=start_seconds,
         end_seconds=end_seconds,
@@ -529,17 +571,36 @@ def detect_source_background_music(
         )
         if not pcm:
             continue
-        scores.append(_music_likeness_score(pcm))
+        score = _music_likeness_score(pcm)
+        scores.append(score)
+        if score >= 0.72:
+            confident_spans.append(
+                SourceMusicSpan(
+                    start_seconds=round(sample_start, 3),
+                    end_seconds=round(
+                        min(end_seconds, sample_start + DETECTION_SAMPLE_SECONDS),
+                        3,
+                    ),
+                    confidence=round(score, 3),
+                )
+            )
 
     if not scores:
         return SourceMusicDetection(False, 0.0, "no_audio_samples")
     confident_scores = [score for score in scores if score >= 0.72]
     confidence = round(sum(scores) / len(scores), 3)
     has_music = len(confident_scores) >= 2 and len(confident_scores) >= len(scores) * 0.6
+    music_spans = _merge_source_music_spans(confident_spans)
     return SourceMusicDetection(
         has_music,
         confidence,
         "persistent_music_like_audio" if has_music else "no_persistent_music_bed",
+        music_spans=music_spans,
+        coverage_ratio=_source_music_coverage_ratio(
+            music_spans,
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+        ),
     )
 
 
@@ -561,6 +622,7 @@ def detect_source_background_music_spans(
             return SourceMusicDetection(False, 0.0, "missing_source")
 
     scores: list[float] = []
+    confident_spans: list[SourceMusicSpan] = []
     for sample_start in _detection_sample_starts(
         start_seconds=start_seconds,
         end_seconds=end_seconds,
@@ -578,18 +640,84 @@ def detect_source_background_music_spans(
         )
         if not pcm:
             continue
-        scores.append(_music_likeness_score(pcm))
+        score = _music_likeness_score(pcm)
+        scores.append(score)
+        if score >= 0.72:
+            confident_spans.append(
+                SourceMusicSpan(
+                    start_seconds=round(sample_start, 3),
+                    end_seconds=round(
+                        min(
+                            span.source_end_seconds,
+                            sample_start + DETECTION_SAMPLE_SECONDS,
+                        ),
+                        3,
+                    ),
+                    confidence=round(score, 3),
+                )
+            )
 
     if not scores:
         return SourceMusicDetection(False, 0.0, "no_audio_samples")
     confident_scores = [score for score in scores if score >= 0.72]
     confidence = round(sum(scores) / len(scores), 3)
     has_music = len(confident_scores) >= 2 and len(confident_scores) >= len(scores) * 0.6
+    music_spans = _merge_source_music_spans(confident_spans)
     return SourceMusicDetection(
         has_music,
         confidence,
         "persistent_music_like_audio" if has_music else "no_persistent_music_bed",
+        music_spans=music_spans,
+        coverage_ratio=_source_music_coverage_ratio(
+            music_spans,
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+        ),
     )
+
+
+def _merge_source_music_spans(
+    spans: list[SourceMusicSpan],
+) -> tuple[SourceMusicSpan, ...]:
+    if not spans:
+        return ()
+    merged: list[SourceMusicSpan] = []
+    for span in sorted(spans, key=lambda item: (item.start_seconds, item.end_seconds)):
+        if span.end_seconds <= span.start_seconds:
+            continue
+        if not merged:
+            merged.append(span)
+            continue
+        previous = merged[-1]
+        if span.start_seconds <= previous.end_seconds + 0.001:
+            merged[-1] = SourceMusicSpan(
+                start_seconds=previous.start_seconds,
+                end_seconds=max(previous.end_seconds, span.end_seconds),
+                confidence=max(previous.confidence, span.confidence),
+            )
+        else:
+            merged.append(span)
+    return tuple(merged)
+
+
+def _source_music_coverage_ratio(
+    spans: tuple[SourceMusicSpan, ...],
+    *,
+    start_seconds: float,
+    end_seconds: float,
+) -> float:
+    duration = max(0.0, end_seconds - start_seconds)
+    if duration <= 0.0:
+        return 0.0
+    covered = 0.0
+    for span in spans:
+        overlap = min(end_seconds, span.end_seconds) - max(
+            start_seconds,
+            span.start_seconds,
+        )
+        if overlap > 0.0:
+            covered += overlap
+    return round(min(1.0, covered / duration), 3)
 
 
 def _span_for_source_second(

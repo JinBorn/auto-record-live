@@ -326,6 +326,11 @@ class EditingSettings(BaseModel):
     bgm_library_path: Path | None = None
     bgm_path: Path | None = None
     bgm_gain_db: float = -28.0
+    bgm_multi_phase_min_seconds: float = 600.0
+    bgm_switch_min_gap_seconds: float = 60.0
+    bgm_crossfade_seconds: float = 2.0
+    bgm_source_music_padding_seconds: float = 2.0
+    bgm_source_music_majority_threshold: float = 0.60
     sfx_path: Path | None = None
     sfx_gain_db: float = -12.0
     sfx_library_path: Path | None = DEFAULT_SFX_LIBRARY_PATH
@@ -399,6 +404,17 @@ class EditingSettings(BaseModel):
             )
         )
         self.teaser_candidate_reasons = candidate_reasons or ("highlight_keyword",)
+        self.bgm_multi_phase_min_seconds = max(0.0, self.bgm_multi_phase_min_seconds)
+        self.bgm_switch_min_gap_seconds = max(0.0, self.bgm_switch_min_gap_seconds)
+        self.bgm_crossfade_seconds = min(2.0, max(1.0, self.bgm_crossfade_seconds))
+        self.bgm_source_music_padding_seconds = max(
+            0.0,
+            self.bgm_source_music_padding_seconds,
+        )
+        self.bgm_source_music_majority_threshold = min(
+            1.0,
+            max(0.0, self.bgm_source_music_majority_threshold),
+        )
         self.sfx_min_interval_seconds = max(0.0, self.sfx_min_interval_seconds)
         self.sfx_max_hits = max(0, self.sfx_max_hits)
         self.sfx_multikill_window_seconds = max(
@@ -1389,6 +1405,29 @@ def load_settings() -> Settings:
             bgm_gain_db=min(
                 0.0,
                 max(-60.0, _env_float("ARL_EDIT_BGM_GAIN_DB", -28.0)),
+            ),
+            bgm_multi_phase_min_seconds=max(
+                0.0,
+                _env_float("ARL_EDIT_BGM_MULTI_PHASE_MIN_SECONDS", 600.0),
+            ),
+            bgm_switch_min_gap_seconds=max(
+                0.0,
+                _env_float("ARL_EDIT_BGM_SWITCH_MIN_GAP_SECONDS", 60.0),
+            ),
+            bgm_crossfade_seconds=min(
+                2.0,
+                max(1.0, _env_float("ARL_EDIT_BGM_CROSSFADE_SECONDS", 2.0)),
+            ),
+            bgm_source_music_padding_seconds=max(
+                0.0,
+                _env_float("ARL_EDIT_BGM_SOURCE_MUSIC_PADDING_SECONDS", 2.0),
+            ),
+            bgm_source_music_majority_threshold=min(
+                1.0,
+                max(
+                    0.0,
+                    _env_float("ARL_EDIT_BGM_SOURCE_MUSIC_MAJORITY_THRESHOLD", 0.60),
+                ),
             ),
             sfx_path=_env_optional_path("ARL_EDIT_SFX_PATH"),
             sfx_gain_db=min(

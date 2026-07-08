@@ -4292,14 +4292,14 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
                 AudioBed(
                     source_path=str(playful_path),
                     timeline_start_seconds=0.0,
-                    timeline_end_seconds=40.0,
+                    timeline_end_seconds=41.0,
                     gain_db=-24.0,
                     loop=True,
                     reason="background_music_playful",
                 ),
                 AudioBed(
                     source_path=str(climax_path),
-                    timeline_start_seconds=40.0,
+                    timeline_start_seconds=39.0,
                     timeline_end_seconds=None,
                     gain_db=-24.0,
                     loop=True,
@@ -4324,15 +4324,15 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         ][0]
         filter_complex = command[command.index("-filter_complex") + 1]
         self.assertIn(
-            "[1:a]atrim=start=0.000:duration=40.000,asetpts=PTS-STARTPTS,"
+            "[1:a]atrim=start=0.000:duration=41.000,asetpts=PTS-STARTPTS,"
             "volume=0.063096,afade=t=in:st=0.000:d=2.000,"
-            "afade=t=out:st=38.000:d=2.000[bgmraw0]",
+            "afade=t=out:st=39.000:d=2.000[bgmraw0]",
             filter_complex,
         )
         self.assertIn(
-            "[2:a]atrim=start=0.000:duration=35.000,asetpts=PTS-STARTPTS,"
+            "[2:a]atrim=start=0.000:duration=36.000,asetpts=PTS-STARTPTS,"
             "volume=0.063096,afade=t=in:st=0.000:d=2.000,"
-            "afade=t=out:st=33.000:d=2.000,adelay=40000|40000[bgmraw1]",
+            "afade=t=out:st=34.000:d=2.000,adelay=39000|39000[bgmraw1]",
             filter_complex,
         )
         self.assertIn("[basea]asplit=3[basemix][basechain0][basechain1]", filter_complex)

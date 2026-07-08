@@ -17,6 +17,7 @@ from arl.editing.audio import (
     BgmLibraryTrack,
     BgmSelectionContext,
     SourceMusicDetection,
+    SourceMusicSpan,
     select_bgm_tracks,
 )
 from arl.editing.service import EditingPlannerService
@@ -939,9 +940,15 @@ class EditingPlannerServiceTest(unittest.TestCase):
         self.assertTrue(plan.audio_beds[1].source_path.endswith("bgm-climax.wav"))
         self.assertEqual(plan.audio_beds[0].timeline_start_seconds, 21.0)
         self.assertIsNotNone(plan.audio_beds[0].timeline_end_seconds)
-        self.assertEqual(
-            plan.audio_beds[1].timeline_start_seconds,
+        assert plan.audio_beds[0].timeline_end_seconds is not None
+        self.assertGreater(
             plan.audio_beds[0].timeline_end_seconds,
+            plan.audio_beds[1].timeline_start_seconds,
+        )
+        self.assertAlmostEqual(
+            plan.audio_beds[0].timeline_end_seconds
+            - plan.audio_beds[1].timeline_start_seconds,
+            self.settings.editing.bgm_crossfade_seconds,
         )
         self.assertGreater(plan.audio_beds[1].timeline_start_seconds, 21.0)
         self.assertEqual(plan.audio_beds[1].timeline_end_seconds, None)
@@ -1086,6 +1093,76 @@ class EditingPlannerServiceTest(unittest.TestCase):
         )
 
         self.assertEqual([track.path for track in selected], [early_path, hype_path])
+
+    def test_long_library_bgm_uses_three_content_aware_crossfaded_phases(self) -> None:
+        session_id = "session-edit-bgm-three-phase"
+        self.settings.editing.audio_mixing_enabled = True
+        self.settings.editing.teaser_max_segments = 0
+        library_path, laning_path, momentum_path, climax_path = (
+            self._write_three_phase_bgm_library()
+        )
+        self.settings.editing.bgm_library_path = library_path
+        self._append_subtitle(
+            session_id,
+            "1\n00:00:02,000 --> 00:00:04,000\n"
+            "robot tactical fight\n",
+        )
+        self._append_boundary(session_id, duration=900.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=0.0,
+                    ended_at_seconds=350.0,
+                    reason="condensed_match_context",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=360.0,
+                    ended_at_seconds=760.0,
+                    reason="condensed_context",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=770.0,
+                    ended_at_seconds=900.0,
+                    reason="condensed_match_context",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=320.0,
+                    ended_at_seconds=340.0,
+                    reason="condensed_tactical",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=700.0,
+                    ended_at_seconds=720.0,
+                    reason="highlight_keyword",
+                ),
+            ],
+            duration=900.0,
+            include_edges=False,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        self.assertEqual(
+            [bed.source_path for bed in plan.audio_beds],
+            [str(laning_path), str(momentum_path), str(climax_path)],
+        )
+        self.assertEqual(
+            [bed.reason for bed in plan.audio_beds],
+            [
+                "background_music_library",
+                "background_music_library_momentum",
+                "background_music_library_climax",
+            ],
+        )
+        self.assertEqual(
+            [
+                (bed.timeline_start_seconds, bed.timeline_end_seconds)
+                for bed in plan.audio_beds
+            ],
+            [(0.0, 331.0), (329.0, 701.0), (699.0, None)],
+        )
 
     def test_audio_mixing_selects_bgm_from_chinese_library_aliases(self) -> None:
         session_id = "session-edit-bgm-library-cn"
@@ -1357,9 +1434,15 @@ class EditingPlannerServiceTest(unittest.TestCase):
         )
         self.assertEqual(latest.audio_beds[0].timeline_start_seconds, 20.0)
         if len(latest.audio_beds) > 1:
-            self.assertEqual(
+            assert latest.audio_beds[0].timeline_end_seconds is not None
+            self.assertGreater(
                 latest.audio_beds[0].timeline_end_seconds,
                 latest.audio_beds[1].timeline_start_seconds,
+            )
+            self.assertAlmostEqual(
+                latest.audio_beds[0].timeline_end_seconds
+                - latest.audio_beds[1].timeline_start_seconds,
+                self.settings.editing.bgm_crossfade_seconds,
             )
             self.assertGreater(latest.audio_beds[1].timeline_start_seconds, 20.0)
 
@@ -1453,6 +1536,164 @@ class EditingPlannerServiceTest(unittest.TestCase):
         self.assertEqual(len(plan.sound_effects), 2)
         self.assertTrue(
             all(hit.source_path.endswith("coin.wav") for hit in plan.sound_effects)
+        )
+
+    def test_source_music_spans_split_bgm_only_in_detected_regions(self) -> None:
+        session_id = "session-edit-source-music-spans"
+        bgm_path = self.temp_root / "audio" / "bgm.mp3"
+        bgm_path.parent.mkdir(parents=True, exist_ok=True)
+        bgm_path.write_text("fake bgm", encoding="utf-8")
+        self.settings.editing.audio_mixing_enabled = True
+        self.settings.editing.bgm_path = bgm_path
+        self.settings.editing.teaser_max_segments = 0
+        self._append_recording(session_id)
+        self._append_boundary(session_id, duration=120.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=0.0,
+                    ended_at_seconds=60.0,
+                    reason="condensed_match_context",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=90.0,
+                    ended_at_seconds=120.0,
+                    reason="condensed_match_context",
+                ),
+            ],
+            duration=120.0,
+            include_edges=False,
+        )
+
+        EditingPlannerService(
+            self.settings,
+            source_bgm_detector=lambda *args, **kwargs: SourceMusicDetection(
+                has_music=True,
+                confidence=0.9,
+                reason="sampled_music_like_audio",
+                music_spans=(SourceMusicSpan(40.0, 50.0, 0.9),),
+                coverage_ratio=0.083,
+            ),
+        ).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        self.assertEqual(len(plan.audio_beds), 2)
+        self.assertEqual(
+            [
+                (bed.timeline_start_seconds, bed.timeline_end_seconds)
+                for bed in plan.audio_beds
+            ],
+            [(0.0, 38.0), (52.0, None)],
+        )
+
+    def test_source_music_majority_rendered_coverage_skips_bgm(self) -> None:
+        session_id = "session-edit-source-music-majority"
+        bgm_path = self.temp_root / "audio" / "bgm.mp3"
+        bgm_path.parent.mkdir(parents=True, exist_ok=True)
+        bgm_path.write_text("fake bgm", encoding="utf-8")
+        self.settings.editing.audio_mixing_enabled = True
+        self.settings.editing.bgm_path = bgm_path
+        self.settings.editing.teaser_max_segments = 0
+        self.settings.editing.bgm_source_music_padding_seconds = 0.0
+        self._append_recording(session_id)
+        self._append_boundary(session_id, duration=120.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=0.0,
+                    ended_at_seconds=60.0,
+                    reason="condensed_match_context",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=90.0,
+                    ended_at_seconds=120.0,
+                    reason="condensed_match_context",
+                ),
+            ],
+            duration=120.0,
+            include_edges=False,
+        )
+
+        EditingPlannerService(
+            self.settings,
+            source_bgm_detector=lambda *args, **kwargs: SourceMusicDetection(
+                has_music=True,
+                confidence=0.9,
+                reason="sampled_music_like_audio",
+                music_spans=(SourceMusicSpan(0.0, 120.0, 0.9),),
+                coverage_ratio=1.0,
+            ),
+        ).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        self.assertEqual(plan.audio_beds, [])
+
+    def test_chunked_source_music_spans_translate_local_detector_spans(self) -> None:
+        session_id = "session-edit-source-music-chunked-spans"
+        bgm_path = self.temp_root / "audio" / "bgm.mp3"
+        bgm_path.parent.mkdir(parents=True, exist_ok=True)
+        bgm_path.write_text("fake bgm", encoding="utf-8")
+        self.settings.editing.audio_mixing_enabled = True
+        self.settings.editing.bgm_path = bgm_path
+        self.settings.editing.teaser_max_segments = 0
+        self.settings.editing.bgm_source_music_padding_seconds = 0.0
+        first_chunk, second_chunk = self._append_chunked_recording(session_id)
+        self._append_boundary(session_id, duration=20.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=0.0,
+                    ended_at_seconds=8.0,
+                    reason="condensed_match_context",
+                ),
+                HighlightClipWindow(
+                    started_at_seconds=12.0,
+                    ended_at_seconds=20.0,
+                    reason="condensed_match_context",
+                ),
+            ],
+            duration=20.0,
+            include_edges=False,
+        )
+        seen: list[tuple[Path, float, float]] = []
+
+        def _detector(
+            source_path: Path,
+            *,
+            start_seconds: float,
+            end_seconds: float,
+        ) -> SourceMusicDetection:
+            seen.append((source_path, start_seconds, end_seconds))
+            return SourceMusicDetection(
+                has_music=True,
+                confidence=0.9,
+                reason="sampled_music_like_audio",
+                music_spans=(SourceMusicSpan(4.0, 6.0, 0.9),),
+                coverage_ratio=0.2,
+            )
+
+        EditingPlannerService(
+            self.settings,
+            source_bgm_detector=_detector,
+        ).run()
+
+        self.assertEqual(
+            seen,
+            [
+                (first_chunk, 0.0, 10.0),
+                (second_chunk, 0.0, 10.0),
+            ],
+        )
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        self.assertEqual(
+            [
+                (bed.timeline_start_seconds, bed.timeline_end_seconds)
+                for bed in plan.audio_beds
+            ],
+            [(0.0, 4.0), (6.0, 10.0), (12.0, None)],
         )
 
     def test_source_music_detection_resolves_chunked_recording_spans(self) -> None:
@@ -2157,6 +2398,47 @@ class EditingPlannerServiceTest(unittest.TestCase):
                 created_at=datetime(2026, 6, 26, 12, 0, tzinfo=timezone.utc),
             ),
         )
+
+    def _write_three_phase_bgm_library(self) -> tuple[Path, Path, Path, Path]:
+        library_dir = self.temp_root / "bgm-library-three"
+        library_dir.mkdir(parents=True, exist_ok=True)
+        laning_path = library_dir / "robot-laning.wav"
+        momentum_path = library_dir / "robot-momentum.wav"
+        climax_path = library_dir / "robot-climax.wav"
+        for path in (laning_path, momentum_path, climax_path):
+            path.write_text("audio", encoding="utf-8")
+        library_path = library_dir / "library.json"
+        library_path.write_text(
+            json.dumps(
+                {
+                    "tracks": [
+                        {
+                            "path": laning_path.name,
+                            "tags": ["robot"],
+                            "phase": "laning",
+                            "mood": "playful",
+                            "energy": 2,
+                        },
+                        {
+                            "path": momentum_path.name,
+                            "tags": ["robot", "tactical"],
+                            "phase": "momentum",
+                            "mood": "tactical",
+                            "energy": 3,
+                        },
+                        {
+                            "path": climax_path.name,
+                            "tags": ["robot", "hype"],
+                            "phase": "climax",
+                            "mood": "hype",
+                            "energy": 5,
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        return library_path, laning_path, momentum_path, climax_path
 
     def _write_bgm_library(self) -> tuple[Path, Path, Path]:
         library_dir = self.temp_root / "bgm-library"

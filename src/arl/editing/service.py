@@ -14,6 +14,7 @@ from arl.editing.audio import (
     BgmLibraryTrack,
     BgmSelectionContext,
     SourceMusicDetection,
+    SourceMusicSpan,
     SfxLibraryLoadReport,
     SfxLibraryTrack,
     detect_source_background_music,
@@ -63,6 +64,7 @@ _ZOOM_REASONS = {
 _SFX_REASONS = {"highlight_keyword", "condensed_key_event"}
 _SEGMENT_TOLERANCE_SECONDS = 0.001
 _BGM_SWITCH_MIN_DURATION_SECONDS = 120.0
+_BGM_MIN_FRAGMENT_SECONDS = 3.0
 _KDA_KILLS_RE = re.compile(r"\bkills=(\d+)->(\d+)")
 _KDA_CURRENT_AT_RE = re.compile(r"\bcurrent_at=([0-9]+(?:\.[0-9]+)?)")
 _MULTIKILL_KEYWORDS = (
@@ -113,6 +115,19 @@ class _ZoomCandidate:
     x_anchor: float
     y_anchor: float
     target: str
+
+
+@dataclass(frozen=True)
+class _BgmSwitchCandidate:
+    relative_seconds: float
+    weight: int
+
+
+@dataclass(frozen=True)
+class _BgmPhaseInterval:
+    phase: str
+    start_seconds: float
+    end_seconds: float
 
 
 class EditingPlannerService:
@@ -840,7 +855,19 @@ class EditingPlannerService:
         bgm_start_seconds = self._leading_non_main_duration(timeline)
         bgm_duration = max(0.0, rendered_duration - bgm_start_seconds)
         source_music = self._source_music_detection(boundary, recording)
-        skip_bgm = source_music.has_music
+        source_music_windows, source_music_coverage = (
+            self._source_music_avoidance_windows(
+                source_music,
+                boundary=boundary,
+                timeline=timeline,
+                bgm_start_seconds=bgm_start_seconds,
+                rendered_duration=rendered_duration,
+            )
+        )
+        skip_bgm = self._source_music_requires_global_bgm_skip(
+            source_music,
+            source_music_coverage=source_music_coverage,
+        )
         default_assets = (
             self._default_audio_assets(boundary)
             if self.settings.editing.bgm_path is None
@@ -854,11 +881,12 @@ class EditingPlannerService:
                 "editing",
                 "skip bgm because source already has music "
                 f"session_id={boundary.session_id} match_index={boundary.match_index} "
-                f"confidence={source_music.confidence:.3f} reason={source_music.reason}",
+                f"confidence={source_music.confidence:.3f} "
+                f"coverage={source_music_coverage:.3f} reason={source_music.reason}",
             )
         elif bgm_path is not None:
             if bgm_path.is_file():
-                audio_beds.append(
+                audio_beds = [
                     AudioBed(
                         source_path=str(bgm_path),
                         timeline_start_seconds=bgm_start_seconds,
@@ -866,7 +894,7 @@ class EditingPlannerService:
                         gain_db=self.settings.editing.bgm_gain_db,
                         loop=True,
                     )
-                )
+                ]
             else:
                 log(
                     "editing",
@@ -880,11 +908,18 @@ class EditingPlannerService:
                     default_assets,
                     boundary=boundary,
                     highlight_plan=highlight_plan,
+                    timeline=timeline,
                     subtitle=subtitle,
                     streamer_name=streamer_name,
                     rendered_duration=bgm_duration,
                     timeline_start_seconds=bgm_start_seconds,
                 )
+            )
+        if audio_beds and source_music_windows:
+            audio_beds = self._bgm_beds_avoiding_source_music(
+                audio_beds,
+                source_music_windows,
+                rendered_duration=rendered_duration,
             )
 
         configured_sfx_path = self.settings.editing.sfx_path
@@ -975,11 +1010,12 @@ class EditingPlannerService:
             return SourceMusicDetection(False, 0.0, "missing_recording_span")
         if len(spans) == 1:
             span = spans[0]
-            return self.source_bgm_detector(
+            detection = self.source_bgm_detector(
                 Path(span.path),
                 start_seconds=span.local_start_seconds,
                 end_seconds=span.local_end_seconds,
             )
+            return self._translate_source_music_detection(detection, span)
         if self.source_bgm_detector is detect_source_background_music:
             return detect_source_background_music_spans(
                 spans,
@@ -987,20 +1023,38 @@ class EditingPlannerService:
                 end_seconds=boundary.ended_at_seconds,
             )
 
-        detections = [
-            self.source_bgm_detector(
+        detections: list[SourceMusicDetection] = []
+        source_spans: list[SourceMusicSpan] = []
+        for span in spans:
+            detection = self.source_bgm_detector(
                 Path(span.path),
                 start_seconds=span.local_start_seconds,
                 end_seconds=span.local_end_seconds,
             )
-            for span in spans
-        ]
+            translated = self._translate_source_music_detection(detection, span)
+            detections.append(translated)
+            source_spans.extend(translated.music_spans)
         if not detections:
             return SourceMusicDetection(False, 0.0, "missing_recording_span")
         confidence = round(
             sum(detection.confidence for detection in detections) / len(detections),
             3,
         )
+        music_spans = self._merge_source_music_spans(source_spans)
+        if music_spans:
+            return SourceMusicDetection(
+                any(detection.has_music for detection in detections),
+                confidence,
+                "persistent_music_like_audio"
+                if any(detection.has_music for detection in detections)
+                else "sampled_music_like_audio",
+                music_spans=music_spans,
+                coverage_ratio=self._source_music_span_coverage_ratio(
+                    music_spans,
+                    start_seconds=boundary.started_at_seconds,
+                    end_seconds=boundary.ended_at_seconds,
+                ),
+            )
         has_music_count = sum(1 for detection in detections if detection.has_music)
         required_music_count = max(1, (len(detections) * 3 + 4) // 5)
         has_music = has_music_count >= required_music_count
@@ -1009,6 +1063,247 @@ class EditingPlannerService:
             confidence,
             "persistent_music_like_audio" if has_music else "no_persistent_music_bed",
         )
+
+    def _translate_source_music_detection(
+        self,
+        detection: SourceMusicDetection,
+        span: MediaSpan,
+    ) -> SourceMusicDetection:
+        if not detection.music_spans:
+            return detection
+        translated = [
+            SourceMusicSpan(
+                start_seconds=round(
+                    span.source_start_seconds
+                    + (music_span.start_seconds - span.local_start_seconds),
+                    3,
+                ),
+                end_seconds=round(
+                    span.source_start_seconds
+                    + (music_span.end_seconds - span.local_start_seconds),
+                    3,
+                ),
+                confidence=music_span.confidence,
+            )
+            for music_span in detection.music_spans
+        ]
+        music_spans = self._merge_source_music_spans(translated)
+        return SourceMusicDetection(
+            detection.has_music,
+            detection.confidence,
+            detection.reason,
+            music_spans=music_spans,
+            coverage_ratio=self._source_music_span_coverage_ratio(
+                music_spans,
+                start_seconds=span.source_start_seconds,
+                end_seconds=span.source_end_seconds,
+            ),
+        )
+
+    @staticmethod
+    def _merge_source_music_spans(
+        spans: list[SourceMusicSpan],
+    ) -> tuple[SourceMusicSpan, ...]:
+        merged: list[SourceMusicSpan] = []
+        for span in sorted(spans, key=lambda item: (item.start_seconds, item.end_seconds)):
+            if span.end_seconds <= span.start_seconds:
+                continue
+            if not merged:
+                merged.append(span)
+                continue
+            previous = merged[-1]
+            if span.start_seconds <= previous.end_seconds + _SEGMENT_TOLERANCE_SECONDS:
+                merged[-1] = SourceMusicSpan(
+                    start_seconds=previous.start_seconds,
+                    end_seconds=max(previous.end_seconds, span.end_seconds),
+                    confidence=max(previous.confidence, span.confidence),
+                )
+            else:
+                merged.append(span)
+        return tuple(merged)
+
+    @staticmethod
+    def _source_music_span_coverage_ratio(
+        spans: tuple[SourceMusicSpan, ...],
+        *,
+        start_seconds: float,
+        end_seconds: float,
+    ) -> float:
+        duration = max(0.0, end_seconds - start_seconds)
+        if duration <= 0.0:
+            return 0.0
+        covered = 0.0
+        for span in spans:
+            overlap = min(end_seconds, span.end_seconds) - max(
+                start_seconds,
+                span.start_seconds,
+            )
+            if overlap > 0.0:
+                covered += overlap
+        return round(min(1.0, covered / duration), 3)
+
+    def _source_music_avoidance_windows(
+        self,
+        source_music: SourceMusicDetection,
+        *,
+        boundary: MatchBoundary,
+        timeline: list[TimelineSegment],
+        bgm_start_seconds: float,
+        rendered_duration: float,
+    ) -> tuple[list[tuple[float, float]], float]:
+        if not source_music.music_spans:
+            return [], 1.0 if source_music.has_music else 0.0
+        active_start = bgm_start_seconds
+        active_end = rendered_duration
+        if active_end <= active_start:
+            return [], 0.0
+        padding = self.settings.editing.bgm_source_music_padding_seconds
+        windows: list[tuple[float, float]] = []
+        for music_span in source_music.music_spans:
+            span_start = music_span.start_seconds - boundary.started_at_seconds
+            span_end = music_span.end_seconds - boundary.started_at_seconds
+            for start, end in self._source_interval_to_rendered_windows(
+                timeline,
+                source_start_seconds=span_start,
+                source_end_seconds=span_end,
+            ):
+                padded_start = max(active_start, start - padding)
+                padded_end = min(active_end, end + padding)
+                if padded_end - padded_start > _SEGMENT_TOLERANCE_SECONDS:
+                    windows.append((round(padded_start, 3), round(padded_end, 3)))
+        merged = self._merge_time_windows(windows)
+        coverage = self._time_window_coverage_ratio(
+            merged,
+            start_seconds=active_start,
+            end_seconds=active_end,
+        )
+        return merged, coverage
+
+    def _source_music_requires_global_bgm_skip(
+        self,
+        source_music: SourceMusicDetection,
+        *,
+        source_music_coverage: float,
+    ) -> bool:
+        if source_music.has_music and not source_music.music_spans:
+            return True
+        return (
+            source_music_coverage
+            > self.settings.editing.bgm_source_music_majority_threshold
+        )
+
+    @classmethod
+    def _source_interval_to_rendered_windows(
+        cls,
+        timeline: list[TimelineSegment],
+        *,
+        source_start_seconds: float,
+        source_end_seconds: float,
+    ) -> list[tuple[float, float]]:
+        if source_end_seconds <= source_start_seconds:
+            return []
+        windows: list[tuple[float, float]] = []
+        output_cursor = 0.0
+        for segment in timeline:
+            duration = cls._segment_duration(segment)
+            if segment.role == "main":
+                overlap_start = max(source_start_seconds, segment.source_start_seconds)
+                overlap_end = min(source_end_seconds, segment.source_end_seconds)
+                if overlap_end - overlap_start > _SEGMENT_TOLERANCE_SECONDS:
+                    windows.append(
+                        (
+                            round(
+                                output_cursor
+                                + (overlap_start - segment.source_start_seconds),
+                                3,
+                            ),
+                            round(
+                                output_cursor
+                                + (overlap_end - segment.source_start_seconds),
+                                3,
+                            ),
+                        )
+                    )
+            output_cursor += duration
+        return windows
+
+    @staticmethod
+    def _merge_time_windows(
+        windows: list[tuple[float, float]],
+    ) -> list[tuple[float, float]]:
+        merged: list[tuple[float, float]] = []
+        for start, end in sorted(windows):
+            if end <= start:
+                continue
+            if not merged or start > merged[-1][1] + _SEGMENT_TOLERANCE_SECONDS:
+                merged.append((start, end))
+                continue
+            previous_start, previous_end = merged[-1]
+            merged[-1] = (previous_start, max(previous_end, end))
+        return [(round(start, 3), round(end, 3)) for start, end in merged]
+
+    @staticmethod
+    def _time_window_coverage_ratio(
+        windows: list[tuple[float, float]],
+        *,
+        start_seconds: float,
+        end_seconds: float,
+    ) -> float:
+        duration = max(0.0, end_seconds - start_seconds)
+        if duration <= 0.0:
+            return 0.0
+        covered = 0.0
+        for start, end in windows:
+            overlap = min(end_seconds, end) - max(start_seconds, start)
+            if overlap > 0.0:
+                covered += overlap
+        return round(min(1.0, covered / duration), 3)
+
+    @staticmethod
+    def _bgm_beds_avoiding_source_music(
+        beds: list[AudioBed],
+        avoidance_windows: list[tuple[float, float]],
+        *,
+        rendered_duration: float,
+    ) -> list[AudioBed]:
+        if not beds or not avoidance_windows:
+            return beds
+        fragments: list[AudioBed] = []
+        for bed in beds:
+            bed_start = bed.timeline_start_seconds
+            bed_end = bed.timeline_end_seconds or rendered_duration
+            intervals = [(bed_start, bed_end)]
+            for avoid_start, avoid_end in avoidance_windows:
+                next_intervals: list[tuple[float, float]] = []
+                for start, end in intervals:
+                    if avoid_end <= start or avoid_start >= end:
+                        next_intervals.append((start, end))
+                        continue
+                    if avoid_start - start >= _BGM_MIN_FRAGMENT_SECONDS:
+                        next_intervals.append((start, min(end, avoid_start)))
+                    if end - avoid_end >= _BGM_MIN_FRAGMENT_SECONDS:
+                        next_intervals.append((max(start, avoid_end), end))
+                intervals = next_intervals
+                if not intervals:
+                    break
+            for start, end in intervals:
+                if end - start < _BGM_MIN_FRAGMENT_SECONDS:
+                    continue
+                fragments.append(
+                    bed.model_copy(
+                        update={
+                            "timeline_start_seconds": round(start, 3),
+                            "timeline_end_seconds": (
+                                None
+                                if bed.timeline_end_seconds is None
+                                and abs(end - rendered_duration)
+                                <= _SEGMENT_TOLERANCE_SECONDS
+                                else round(end, 3)
+                            ),
+                        }
+                    )
+                )
+        return fragments
 
     def _sound_effect_candidates(
         self,
@@ -1365,6 +1660,9 @@ class EditingPlannerService:
         self,
         assets: dict[str, Path],
         *,
+        timeline: list[TimelineSegment],
+        highlight_plan: HighlightPlanAsset | None,
+        subtitle: SubtitleAsset | None,
         rendered_duration: float,
         timeline_start_seconds: float = 0.0,
     ) -> list[AudioBed]:
@@ -1379,29 +1677,23 @@ class EditingPlannerService:
             and climax_path is not None
             and climax_path.is_file()
         ):
-            switch_at = round(
-                max(30.0, min(rendered_duration * 0.55, rendered_duration - 30.0)),
-                3,
+            phases = ("laning", "climax")
+            intervals = self._bgm_phase_intervals(
+                timeline,
+                highlight_plan=highlight_plan,
+                subtitle=subtitle,
+                rendered_duration=rendered_duration,
+                timeline_start_seconds=timeline_start_seconds,
+                phases=phases,
             )
-            timeline_switch_seconds = round(timeline_start_seconds + switch_at, 3)
-            return [
-                AudioBed(
-                    source_path=str(playful_path),
-                    timeline_start_seconds=timeline_start_seconds,
-                    timeline_end_seconds=timeline_switch_seconds,
-                    gain_db=self.settings.editing.bgm_gain_db,
-                    loop=True,
-                    reason="background_music_playful",
-                ),
-                AudioBed(
-                    source_path=str(climax_path),
-                    timeline_start_seconds=timeline_switch_seconds,
-                    timeline_end_seconds=None,
-                    gain_db=self.settings.editing.bgm_gain_db,
-                    loop=True,
-                    reason="background_music_climax",
-                ),
-            ]
+            return self._bgm_beds_from_paths(
+                [playful_path, climax_path],
+                intervals=intervals,
+                timeline_start_seconds=timeline_start_seconds,
+                rendered_duration=rendered_duration,
+                gain_db=self.settings.editing.bgm_gain_db,
+                reason_prefix="generated",
+            )
         return [
             AudioBed(
                 source_path=str(playful_path),
@@ -1419,17 +1711,23 @@ class EditingPlannerService:
         *,
         boundary: MatchBoundary,
         highlight_plan: HighlightPlanAsset,
+        timeline: list[TimelineSegment],
         subtitle: SubtitleAsset | None,
         streamer_name: str | None,
         rendered_duration: float,
         timeline_start_seconds: float = 0.0,
     ) -> list[AudioBed]:
+        requested_phases = self._requested_bgm_phases(
+            rendered_duration,
+            allow_three=True,
+        )
         selected_tracks = self._select_bgm_library_tracks(
             boundary=boundary,
             highlight_plan=highlight_plan,
             subtitle=subtitle,
             streamer_name=streamer_name,
             rendered_duration=rendered_duration,
+            requested_phases=requested_phases,
         )
         if selected_tracks:
             log(
@@ -1440,12 +1738,19 @@ class EditingPlannerService:
             )
             return self._bgm_beds_from_tracks(
                 selected_tracks,
+                requested_phases=requested_phases,
+                timeline=timeline,
+                highlight_plan=highlight_plan,
+                subtitle=subtitle,
                 rendered_duration=rendered_duration,
                 timeline_start_seconds=timeline_start_seconds,
                 gain_db=self.settings.editing.bgm_gain_db,
             )
         return self._default_bgm_beds(
             assets,
+            timeline=timeline,
+            highlight_plan=highlight_plan,
+            subtitle=subtitle,
             rendered_duration=rendered_duration,
             timeline_start_seconds=timeline_start_seconds,
         )
@@ -1458,6 +1763,7 @@ class EditingPlannerService:
         subtitle: SubtitleAsset | None,
         streamer_name: str | None,
         rendered_duration: float,
+        requested_phases: tuple[str, ...],
     ) -> list[BgmLibraryTrack]:
         tracks = self._bgm_library()
         if not tracks or highlight_plan is None:
@@ -1478,7 +1784,11 @@ class EditingPlannerService:
                 f"{','.join(tags)}:{','.join(highlight_reasons)}"
             ),
         )
-        selected = select_bgm_tracks(tracks, context)
+        selected = select_bgm_tracks(
+            tracks,
+            context,
+            requested_phases=requested_phases,
+        )
         if not selected:
             log(
                 "editing",
@@ -1488,10 +1798,14 @@ class EditingPlannerService:
             )
         return selected
 
-    @staticmethod
     def _bgm_beds_from_tracks(
+        self,
         tracks: list[BgmLibraryTrack],
         *,
+        requested_phases: tuple[str, ...],
+        timeline: list[TimelineSegment],
+        highlight_plan: HighlightPlanAsset | None,
+        subtitle: SubtitleAsset | None,
         rendered_duration: float,
         timeline_start_seconds: float = 0.0,
         gain_db: float,
@@ -1500,40 +1814,331 @@ class EditingPlannerService:
             return []
         if rendered_duration <= 0.0:
             return []
-        if len(tracks) == 1:
-            return [
+        phases = self._phases_for_selected_bgm_tracks(
+            requested_phases,
+            track_count=len(tracks),
+        )
+        intervals = self._bgm_phase_intervals(
+            timeline,
+            highlight_plan=highlight_plan,
+            subtitle=subtitle,
+            rendered_duration=rendered_duration,
+            timeline_start_seconds=timeline_start_seconds,
+            phases=phases,
+        )
+        return self._bgm_beds_from_paths(
+            [track.path for track in tracks],
+            intervals=intervals,
+            timeline_start_seconds=timeline_start_seconds,
+            rendered_duration=rendered_duration,
+            gain_db=gain_db,
+            reason_prefix="library",
+        )
+
+    def _requested_bgm_phases(
+        self,
+        rendered_duration: float,
+        *,
+        allow_three: bool,
+    ) -> tuple[str, ...]:
+        if rendered_duration < _BGM_SWITCH_MIN_DURATION_SECONDS:
+            return ("laning",)
+        if allow_three and (
+            rendered_duration >= self.settings.editing.bgm_multi_phase_min_seconds
+        ):
+            return ("laning", "momentum", "climax")
+        return ("laning", "climax")
+
+    @staticmethod
+    def _phases_for_selected_bgm_tracks(
+        requested_phases: tuple[str, ...],
+        *,
+        track_count: int,
+    ) -> tuple[str, ...]:
+        if track_count <= 0:
+            return ()
+        if track_count == 1:
+            return (requested_phases[0] if requested_phases else "laning",)
+        if track_count == 2 and len(requested_phases) >= 3:
+            return (requested_phases[0], requested_phases[-1])
+        return requested_phases[:track_count] or ("laning",)
+
+    def _bgm_phase_intervals(
+        self,
+        timeline: list[TimelineSegment],
+        *,
+        highlight_plan: HighlightPlanAsset | None,
+        subtitle: SubtitleAsset | None,
+        rendered_duration: float,
+        timeline_start_seconds: float,
+        phases: tuple[str, ...],
+    ) -> list[_BgmPhaseInterval]:
+        if rendered_duration <= 0.0 or not phases:
+            return []
+        phase_count = len(phases)
+        switch_points = self._bgm_switch_points(
+            timeline,
+            highlight_plan=highlight_plan,
+            subtitle=subtitle,
+            rendered_duration=rendered_duration,
+            timeline_start_seconds=timeline_start_seconds,
+            phase_count=phase_count,
+        )
+        boundaries = [0.0, *switch_points, rendered_duration]
+        intervals: list[_BgmPhaseInterval] = []
+        for index, phase in enumerate(phases):
+            start = round(boundaries[index], 3)
+            end = round(boundaries[index + 1], 3)
+            if end - start <= _SEGMENT_TOLERANCE_SECONDS:
+                continue
+            intervals.append(
+                _BgmPhaseInterval(
+                    phase=phase,
+                    start_seconds=start,
+                    end_seconds=end,
+                )
+            )
+        return intervals
+
+    def _bgm_switch_points(
+        self,
+        timeline: list[TimelineSegment],
+        *,
+        highlight_plan: HighlightPlanAsset | None,
+        subtitle: SubtitleAsset | None,
+        rendered_duration: float,
+        timeline_start_seconds: float,
+        phase_count: int,
+    ) -> list[float]:
+        if phase_count <= 1:
+            return []
+        fallback_points = self._fallback_bgm_switch_points(
+            rendered_duration,
+            phase_count=phase_count,
+        )
+        candidates = self._bgm_switch_candidates(
+            timeline,
+            highlight_plan=highlight_plan,
+            subtitle=subtitle,
+            rendered_duration=rendered_duration,
+            timeline_start_seconds=timeline_start_seconds,
+        )
+        selected: list[float] = []
+        used: set[int] = set()
+        for index, fallback in enumerate(fallback_points):
+            lower, upper = self._bgm_switch_bounds(
+                rendered_duration,
+                phase_count=phase_count,
+                switch_index=index,
+            )
+            if selected:
+                lower = max(
+                    lower,
+                    selected[-1] + self.settings.editing.bgm_switch_min_gap_seconds,
+                )
+            best: tuple[int, float, int, float] | None = None
+            for candidate_index, candidate in enumerate(candidates):
+                if candidate_index in used:
+                    continue
+                if not lower <= candidate.relative_seconds <= upper:
+                    continue
+                distance = abs(candidate.relative_seconds - fallback)
+                max_distance = max(
+                    self.settings.editing.bgm_switch_min_gap_seconds,
+                    rendered_duration * 0.25,
+                )
+                if distance > max_distance:
+                    continue
+                key = (
+                    -candidate.weight,
+                    distance,
+                    candidate_index,
+                    candidate.relative_seconds,
+                )
+                if best is None or key < best:
+                    best = key
+            if best is None:
+                selected_point = max(lower, min(fallback, upper))
+            else:
+                _weight, _distance, candidate_index, selected_point = best
+                used.add(candidate_index)
+            selected.append(round(selected_point, 3))
+        return selected
+
+    def _fallback_bgm_switch_points(
+        self,
+        rendered_duration: float,
+        *,
+        phase_count: int,
+    ) -> list[float]:
+        ratios = (0.55,) if phase_count == 2 else (0.40, 0.75)
+        return [
+            self._clamp_bgm_switch_point(
+                rendered_duration * ratio,
+                rendered_duration=rendered_duration,
+                phase_count=phase_count,
+                switch_index=index,
+            )
+            for index, ratio in enumerate(ratios[: phase_count - 1])
+        ]
+
+    def _clamp_bgm_switch_point(
+        self,
+        value: float,
+        *,
+        rendered_duration: float,
+        phase_count: int,
+        switch_index: int,
+    ) -> float:
+        lower, upper = self._bgm_switch_bounds(
+            rendered_duration,
+            phase_count=phase_count,
+            switch_index=switch_index,
+        )
+        return round(max(lower, min(value, upper)), 3)
+
+    def _bgm_switch_bounds(
+        self,
+        rendered_duration: float,
+        *,
+        phase_count: int,
+        switch_index: int,
+    ) -> tuple[float, float]:
+        min_gap = self.settings.editing.bgm_switch_min_gap_seconds
+        lower = min_gap * (switch_index + 1)
+        upper = rendered_duration - min_gap * (phase_count - switch_index - 1)
+        if lower <= upper:
+            return lower, upper
+        fallback_gap = rendered_duration / max(phase_count, 1)
+        return (
+            fallback_gap * (switch_index + 0.5),
+            fallback_gap * (switch_index + 1.5),
+        )
+
+    def _bgm_switch_candidates(
+        self,
+        timeline: list[TimelineSegment],
+        *,
+        highlight_plan: HighlightPlanAsset | None,
+        subtitle: SubtitleAsset | None,
+        rendered_duration: float,
+        timeline_start_seconds: float,
+    ) -> list[_BgmSwitchCandidate]:
+        candidates: list[_BgmSwitchCandidate] = []
+        for timestamp in self._kda_event_timestamps(subtitle):
+            rendered_second = self._source_timestamp_to_rendered_second(
+                timeline,
+                timestamp,
+                main_only=True,
+            )
+            if rendered_second is None:
+                continue
+            relative = rendered_second - timeline_start_seconds
+            if 0.0 < relative < rendered_duration:
+                candidates.append(_BgmSwitchCandidate(round(relative, 3), 5))
+        if highlight_plan is not None:
+            reason_weights = {
+                "highlight_keyword": 4,
+                "condensed_key_event": 4,
+                "condensed_tactical": 3,
+                "condensed_context": 1,
+                "condensed_match_context": 1,
+            }
+            for window in highlight_plan.windows:
+                weight = reason_weights.get(window.reason, 1)
+                timestamp = (window.started_at_seconds + window.ended_at_seconds) / 2.0
+                rendered_second = self._source_timestamp_to_rendered_second(
+                    timeline,
+                    timestamp,
+                    main_only=True,
+                )
+                if rendered_second is None:
+                    continue
+                relative = rendered_second - timeline_start_seconds
+                if 0.0 < relative < rendered_duration:
+                    candidates.append(_BgmSwitchCandidate(round(relative, 3), weight))
+        candidates.sort(key=lambda item: (-item.weight, item.relative_seconds))
+        return candidates
+
+    @classmethod
+    def _source_timestamp_to_rendered_second(
+        cls,
+        timeline: list[TimelineSegment],
+        source_timestamp_seconds: float,
+        *,
+        main_only: bool,
+    ) -> float | None:
+        output_cursor = 0.0
+        for segment in timeline:
+            duration = cls._segment_duration(segment)
+            can_map_role = segment.role == "main" or (
+                not main_only and segment.role == "teaser"
+            )
+            if can_map_role and cls._source_timestamp_in_segment(
+                source_timestamp_seconds,
+                segment,
+            ):
+                return round(
+                    output_cursor
+                    + (source_timestamp_seconds - segment.source_start_seconds),
+                    3,
+                )
+            output_cursor += duration
+        return None
+
+    def _bgm_beds_from_paths(
+        self,
+        paths: list[Path],
+        *,
+        intervals: list[_BgmPhaseInterval],
+        timeline_start_seconds: float,
+        rendered_duration: float,
+        gain_db: float,
+        reason_prefix: str,
+    ) -> list[AudioBed]:
+        beds: list[AudioBed] = []
+        if not paths or not intervals:
+            return beds
+        half_crossfade = self.settings.editing.bgm_crossfade_seconds / 2.0
+        for index, (path, interval) in enumerate(zip(paths, intervals, strict=False)):
+            start = interval.start_seconds
+            end = interval.end_seconds
+            if len(intervals) > 1 and index > 0:
+                start = max(0.0, start - half_crossfade)
+            if len(intervals) > 1 and index < len(intervals) - 1:
+                end = min(rendered_duration, end + half_crossfade)
+            timeline_end: float | None = round(timeline_start_seconds + end, 3)
+            if index == len(intervals) - 1:
+                timeline_end = None
+            beds.append(
                 AudioBed(
-                    source_path=str(tracks[0].path),
-                    timeline_start_seconds=timeline_start_seconds,
-                    timeline_end_seconds=None,
+                    source_path=str(path),
+                    timeline_start_seconds=round(timeline_start_seconds + start, 3),
+                    timeline_end_seconds=timeline_end,
                     gain_db=gain_db,
                     loop=True,
-                    reason="background_music_library",
+                    reason=self._bgm_reason(reason_prefix, interval.phase, index=index),
                 )
-            ]
-        switch_at = round(
-            max(30.0, min(rendered_duration * 0.55, rendered_duration - 30.0)),
-            3,
+            )
+        return beds
+
+    @staticmethod
+    def _bgm_reason(reason_prefix: str, phase: str, *, index: int) -> str:
+        if reason_prefix == "generated":
+            return (
+                "background_music_climax"
+                if phase == "climax"
+                else "background_music_playful"
+            )
+        if phase == "climax":
+            return "background_music_library_climax"
+        if phase == "momentum":
+            return "background_music_library_momentum"
+        return (
+            "background_music_library"
+            if index == 0
+            else f"background_music_library_{phase}"
         )
-        timeline_switch_seconds = round(timeline_start_seconds + switch_at, 3)
-        return [
-            AudioBed(
-                source_path=str(tracks[0].path),
-                timeline_start_seconds=timeline_start_seconds,
-                timeline_end_seconds=timeline_switch_seconds,
-                gain_db=gain_db,
-                loop=True,
-                reason="background_music_library",
-            ),
-            AudioBed(
-                source_path=str(tracks[1].path),
-                timeline_start_seconds=timeline_switch_seconds,
-                timeline_end_seconds=None,
-                gain_db=gain_db,
-                loop=True,
-                reason="background_music_library_climax",
-            ),
-        ]
 
     def _bgm_library(self) -> list[BgmLibraryTrack]:
         if self._bgm_library_tracks is None:

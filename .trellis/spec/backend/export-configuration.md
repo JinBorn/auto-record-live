@@ -539,6 +539,11 @@ windows = bridge_highlight_windows(windows, bridge_window_seconds=3.0)
   ARL_EDIT_BGM_LIBRARY_PATH=
   ARL_EDIT_BGM_PATH=
   ARL_EDIT_BGM_GAIN_DB=-28
+  ARL_EDIT_BGM_MULTI_PHASE_MIN_SECONDS=600
+  ARL_EDIT_BGM_SWITCH_MIN_GAP_SECONDS=60
+  ARL_EDIT_BGM_CROSSFADE_SECONDS=2
+  ARL_EDIT_BGM_SOURCE_MUSIC_PADDING_SECONDS=2
+  ARL_EDIT_BGM_SOURCE_MUSIC_MAJORITY_THRESHOLD=0.60
   ARL_EDIT_SFX_PATH=
   ARL_EDIT_SFX_GAIN_DB=-12
   ARL_EDIT_SFX_LIBRARY_PATH=data/sfx/library.json
@@ -653,11 +658,17 @@ windows = bridge_highlight_windows(windows, bridge_window_seconds=3.0)
     (relative to the manifest file or absolute), `tags`, `mood`, `energy`, and
     `phase`. The planner infers context tags from subtitle text, highlight
     reasons, and streamer name, then scores library tracks by tag overlap,
-    phase (`early` / `climax`), mood, and energy. Common Chinese aliases in
+    phase (`laning` / `momentum` / `climax` plus legacy `early` aliases),
+    mood, and energy. Common Chinese aliases in
     `tags`, `mood`, and `phase` are normalized before scoring, so operators may
     write manifests with Chinese-only values such as `机器人`, `套路`, `前期`,
-    `高潮`, `俏皮`, or `高燃`. Long edits may select one early track plus one
-    climax track with the same fade/switch behavior as generated default BGM.
+    `高潮`, `俏皮`, or `高燃`. Medium two-phase edits may select one
+    early/laning track plus one climax track.
+    At or above `ARL_EDIT_BGM_MULTI_PHASE_MIN_SECONDS`, library-backed BGM may
+    request `laning -> momentum -> climax` tracks. The planner must never repeat
+    the same source path merely to satisfy a phase count; small libraries
+    degrade to fewer phases/switches. For full three-phase behavior, operators
+    should keep at least two usable tracks per phase bucket.
     Library loading must log a compact diagnostic summary when a manifest path
     is configured, including loaded track count and skipped malformed or
     missing-file entries; no-match logs must include inferred context tags and
@@ -665,7 +676,8 @@ windows = bridge_highlight_windows(windows, bridge_window_seconds=3.0)
   - generated default WAV BGM assets under `data/tmp/editing-audio/` when
     `ARL_EDIT_BGM_PATH` is unset and the library is missing, invalid, empty, or
     has no positive match; long edit plans should split BGM into a playful early
-    bed and a higher-energy later bed
+    bed and a higher-energy later bed. Generated fallback BGM remains two-phase
+    unless a real third generated asset is added and tested.
   - `SoundEffectHit` rows may use either an explicit existing
     `ARL_EDIT_SFX_PATH` file, local SFX library tracks from
     `ARL_EDIT_SFX_LIBRARY_PATH`, or the deterministic generated default
@@ -698,13 +710,25 @@ windows = bridge_highlight_windows(windows, bridge_window_seconds=3.0)
   main-only timelines, BGM starts at `0.0`. This preserves the demo2 convention
   where the cold-open teaser/card has no added BGM and the music enters with
   the main video.
+- BGM phase switches should prefer content-aware rendered timeline positions
+  from mapped `kda_change` cues and high-signal highlight windows while
+  respecting `ARL_EDIT_BGM_SWITCH_MIN_GAP_SECONDS`. Flat or unmappable signals
+  fall back to proportional switch points: roughly 55% for two phases, and
+  roughly 40% / 75% for three phases. Adjacent phases represent crossfades as
+  overlapping `AudioBed` rows with total overlap
+  `ARL_EDIT_BGM_CROSSFADE_SECONDS`; exporter validation must allow that overlap
+  and still sidechain each bed before `amix`.
 - When `ARL_EDIT_SKIP_BGM_WHEN_SOURCE_HAS_MUSIC=1` (default), the planner must
   inspect the matching source `RecordingAsset` audio before adding any BGM bed.
-  If multiple sampled windows indicate a persistent music-like bed in the
-livestream recording, it skips both configured and default BGM for that match
-  while still allowing eligible SFX hits. Missing recording assets, missing ffmpeg, decode
-  errors, or low-confidence/no-music samples must not block edit planning and
-  must fall back to the normal BGM decision path.
+  Detectors should expose confident source-music sample spans. The planner maps
+  those spans through main timeline segments, pads them by
+  `ARL_EDIT_BGM_SOURCE_MUSIC_PADDING_SECONDS`, and subtracts only the rendered
+  overlap from planned BGM beds. If mapped source-music coverage is greater than
+  `ARL_EDIT_BGM_SOURCE_MUSIC_MAJORITY_THRESHOLD`, or a legacy detector reports
+  `has_music=True` with no spans, it skips both configured and default BGM for
+  that match while still allowing eligible SFX hits. Missing recording assets,
+  missing ffmpeg, decode errors, or low-confidence/no-music samples must not
+  block edit planning and must fall back to the normal BGM decision path.
   For segmented recordings, source-music detection must resolve the match
   boundary to `MediaSpan` rows and sample concrete chunk paths with chunk-local
   timestamps; the manifest JSON path must never be passed to FFmpeg as media.
@@ -1835,6 +1859,11 @@ def _video_quality_args(self) -> list[str]:
 | `ARL_EDIT_BGM_LIBRARY_PATH` | path | None | Optional JSON manifest for automatic local BGM matching; publish preset defaults it to `data/bgm/library.json` when no explicit BGM path/library is configured |
 | `ARL_EDIT_BGM_PATH` | path | None | Explicit local background-music file path |
 | `ARL_EDIT_BGM_GAIN_DB` | float | -28.0 | BGM gain in dB, clamped to `[-60.0, 0.0]` |
+| `ARL_EDIT_BGM_MULTI_PHASE_MIN_SECONDS` | float | `600.0` | Minimum BGM-active duration before library-backed BGM may request `laning -> momentum -> climax` phases |
+| `ARL_EDIT_BGM_SWITCH_MIN_GAP_SECONDS` | float | `60.0` | Minimum gap from BGM edges and adjacent BGM phase switches, clamped to at least 0 |
+| `ARL_EDIT_BGM_CROSSFADE_SECONDS` | float | `2.0` | Total overlap between adjacent BGM phase beds, clamped to `[1.0, 2.0]` |
+| `ARL_EDIT_BGM_SOURCE_MUSIC_PADDING_SECONDS` | float | `2.0` | Padding added around mapped source-music avoidance spans before subtracting BGM beds |
+| `ARL_EDIT_BGM_SOURCE_MUSIC_MAJORITY_THRESHOLD` | float | `0.60` | Rendered BGM-active source-music coverage above which the planner skips BGM for the match, clamped to `[0.0, 1.0]` |
 | `ARL_EDIT_SFX_PATH` | path | None | Explicit local sound-effect file path; when unset, audio mixing can use generated `coin.wav` for eligible SFX hits |
 | `ARL_EDIT_SFX_GAIN_DB` | float | -12.0 | SFX gain in dB, clamped to `[-60.0, 6.0]` |
 | `ARL_EDIT_SFX_LIBRARY_PATH` | path | `data/sfx/library.json` | Optional JSON manifest for local SFX categories (`kill_coin`, `multi_kill`, `transition_whoosh`, `teaser_impact`) |

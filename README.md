@@ -305,11 +305,18 @@ Publish edit defaults in current builds:
 - Teaser duration is dynamic: roughly 8-12% of planned edit duration, clamped by the configured min/max budget and still bounded by `ARL_EDIT_TEASER_MAX_TOTAL_SECONDS`.
 - Publish preset inserts a short `black_card` transition between teaser and main content unless `ARL_EDIT_TRANSITION_MODE` is explicitly set. The card text uses the LLM `hook_line` when available, otherwise `ARL_EDIT_TRANSITION_TEXT`.
 - If a teaser and transition exist, BGM starts at the first main segment, after both leading pieces. It does not cover the teaser or transition card.
+- Long BGM plans can use laning -> momentum -> climax phases with overlapping crossfades when `data/bgm/library.json` has distinct matching tracks. Keep at least two usable tracks in each `phase` bucket for consistent three-phase behavior.
+- Source-music protection suppresses BGM only over detected source-music spans plus padding. If detected source music covers most BGM-active output, the planner skips BGM for that match.
 - Zoom defaults to short eased close-ups (`ARL_EDIT_ZOOM_MODE=closeup`) around KDA kills, chat bursts, then fallback high-signal segments. Set `ARL_EDIT_ZOOM_MODE=legacy` to restore whole-segment static punch-ins.
 
 ```env
 ARL_EDIT_BGM_LIBRARY_PATH=data/bgm/library.json
 ARL_EDIT_SKIP_BGM_WHEN_SOURCE_HAS_MUSIC=1
+ARL_EDIT_BGM_MULTI_PHASE_MIN_SECONDS=600
+ARL_EDIT_BGM_SWITCH_MIN_GAP_SECONDS=60
+ARL_EDIT_BGM_CROSSFADE_SECONDS=2
+ARL_EDIT_BGM_SOURCE_MUSIC_PADDING_SECONDS=2
+ARL_EDIT_BGM_SOURCE_MUSIC_MAJORITY_THRESHOLD=0.60
 ```
 
 Zoom close-up controls:
