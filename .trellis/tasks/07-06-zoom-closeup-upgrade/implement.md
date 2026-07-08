@@ -32,8 +32,8 @@
 
 4. Exporter ease rendering
    - Keep the current static `scale,crop` filters when ease is `0`.
-   - For eased punch-ins, generate scale/crop expressions using `t`, configured
-     ease-in/out, and target scale.
+   - For eased punch-ins, generate `zoompan` filters using `in_time`,
+     configured ease-in/out, target scale, and probed source dimensions.
    - Keep invalid transform fallback behavior.
 
 5. Quality report

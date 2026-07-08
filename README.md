@@ -61,6 +61,8 @@ ARL_DIRECT_STREAM_TIMEOUT_SECONDS=7200
 ARL_SUBTITLES_ENABLED=1
 ARL_EXPORT_ENABLE_FFMPEG=1
 ARL_POSTPROCESS_PRESET=publish
+ARL_EDIT_ZOOM_MODE=closeup
+ARL_EDIT_ZOOM_MAX_SEGMENTS=3
 ARL_EDIT_BGM_LIBRARY_PATH=data/bgm/library.json
 ```
 
@@ -303,10 +305,22 @@ Publish edit defaults in current builds:
 - Teaser duration is dynamic: roughly 8-12% of planned edit duration, clamped by the configured min/max budget and still bounded by `ARL_EDIT_TEASER_MAX_TOTAL_SECONDS`.
 - Publish preset inserts a short `black_card` transition between teaser and main content unless `ARL_EDIT_TRANSITION_MODE` is explicitly set. The card text uses the LLM `hook_line` when available, otherwise `ARL_EDIT_TRANSITION_TEXT`.
 - If a teaser and transition exist, BGM starts at the first main segment, after both leading pieces. It does not cover the teaser or transition card.
+- Zoom defaults to short eased close-ups (`ARL_EDIT_ZOOM_MODE=closeup`) around KDA kills, chat bursts, then fallback high-signal segments. Set `ARL_EDIT_ZOOM_MODE=legacy` to restore whole-segment static punch-ins.
 
 ```env
 ARL_EDIT_BGM_LIBRARY_PATH=data/bgm/library.json
 ARL_EDIT_SKIP_BGM_WHEN_SOURCE_HAS_MUSIC=1
+```
+
+Zoom close-up controls:
+
+```env
+ARL_EDIT_ZOOM_MODE=closeup
+ARL_EDIT_ZOOM_MAX_SEGMENTS=3
+ARL_EDIT_ZOOM_CLOSEUP_SECONDS=6
+ARL_EDIT_ZOOM_EASE_SECONDS=0.4
+ARL_EDIT_ZOOM_MIN_INTERVAL_SECONDS=25
+ARL_EDIT_ZOOM_CHAT_BURST_ENABLED=1
 ```
 
 SFX library example:

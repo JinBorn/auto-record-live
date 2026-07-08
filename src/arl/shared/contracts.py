@@ -98,6 +98,8 @@ class TimelineVideoTransform(BaseModel):
     x_anchor: float = 0.5
     y_anchor: float = 0.5
     target: str | None = None
+    ease_in_seconds: float = 0.4
+    ease_out_seconds: float = 0.4
 
     @model_validator(mode="after")
     def _validate_transform(self) -> "TimelineVideoTransform":
@@ -111,6 +113,8 @@ class TimelineVideoTransform(BaseModel):
             raise ValueError("punch_in scale must be greater than 1.0 and at most 1.5")
         if self.target is not None:
             self.target = self.target.strip().lower() or None
+        self.ease_in_seconds = min(1.0, max(0.0, self.ease_in_seconds))
+        self.ease_out_seconds = min(1.0, max(0.0, self.ease_out_seconds))
         return self
 
 

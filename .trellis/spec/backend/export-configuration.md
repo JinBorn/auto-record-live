@@ -522,11 +522,18 @@ windows = bridge_highlight_windows(windows, bridge_window_seconds=3.0)
   ARL_EDIT_TRANSITION_SFX_PATH=
   ARL_EDIT_TRANSITION_SFX_GAIN_DB=-12
   ARL_EDIT_ZOOM_ENABLED=0
+  ARL_EDIT_ZOOM_MODE=closeup
   ARL_EDIT_ZOOM_TARGET=chat
   ARL_EDIT_ZOOM_SCALE=1.2
   ARL_EDIT_ZOOM_X_ANCHOR=0.5
   ARL_EDIT_ZOOM_Y_ANCHOR=0.5
   ARL_EDIT_ZOOM_MAX_SEGMENTS=1
+  ARL_EDIT_ZOOM_CLOSEUP_SECONDS=6
+  ARL_EDIT_ZOOM_EASE_SECONDS=0.4
+  ARL_EDIT_ZOOM_MIN_INTERVAL_SECONDS=25
+  ARL_EDIT_ZOOM_CHAT_BURST_ENABLED=1
+  ARL_EDIT_ZOOM_CHAT_BURST_SAMPLE_INTERVAL_SECONDS=0.5
+  ARL_EDIT_ZOOM_CHAT_BURST_THRESHOLD=0.08
   ARL_EDIT_ZOOM_MAX_DURATION_SECONDS=30
   ARL_EDIT_AUDIO_MIXING_ENABLED=0
   ARL_EDIT_BGM_LIBRARY_PATH=
@@ -604,25 +611,39 @@ windows = bridge_highlight_windows(windows, bridge_window_seconds=3.0)
   default discovery can fail with `Cannot load default config file` and force an
   otherwise valid export into fallback placeholder behavior. If no known font
   file exists, render a plain black card instead of failing the export.
-- Punch-in zoom is opt-in at planner time. When `ARL_EDIT_ZOOM_ENABLED=1`, the
-  planner may apply `TimelineVideoTransform(kind="punch_in")` to high-signal
-  `teaser` or `main` segments with reasons `highlight_keyword`,
-  `condensed_key_event`, or `condensed_tactical`, up to
-  `ARL_EDIT_ZOOM_MAX_SEGMENTS`. This keeps close-ups anchored to concrete
-  highlight moments instead of cropping the whole video.
-- `ARL_EDIT_ZOOM_MAX_DURATION_SECONDS` caps punch-in eligibility on `main`
-  segments. If a condensed optimizer merges many events into one long
-  high-signal main segment, the planner must skip punch-in for that segment
-  instead of transforming the whole span or inserting an arbitrary internal
-  transform cut. A long main segment must never be exported with a single
-  transform covering minutes of video.
-- `ARL_EDIT_ZOOM_TARGET=chat` is the default target and maps to the bottom-left
-  crop anchor (`x_anchor=0.0`, `y_anchor=1.0`) for in-game chat/HUD interaction
-  close-ups. Use `center` for legacy centered punch-in or `custom` to honor
-  `ARL_EDIT_ZOOM_X_ANCHOR` / `ARL_EDIT_ZOOM_Y_ANCHOR`.
-- Punch-in transforms must use a safe static transform: `1.0 < scale <= 1.5`
-  and anchors inside `[0.0, 1.0]`. Exporter renders them with per-segment
-  `scale` + `crop` filters and falls back for unsupported transform payloads.
+- Punch-in zoom is opt-in at planner time. In the default
+  `ARL_EDIT_ZOOM_MODE=closeup`, the planner chooses short close-up windows
+  inside eligible `teaser` or `main` segments, then replaces the source segment
+  with adjacent untransformed / transformed / untransformed timeline pieces.
+  Total source duration must be preserved exactly across the split.
+- Close-up triggers are deterministic: KDA kill cues from subtitle
+  `kda_change ... kills=a->b ... current_at=<seconds>` first, chat-burst frame
+  differences in the bottom-left chat region second, and reason-based fallback
+  segment midpoints last. `ARL_EDIT_ZOOM_MIN_INTERVAL_SECONDS` spaces selected
+  candidates globally, and `ARL_EDIT_ZOOM_MAX_SEGMENTS` caps the number of
+  transformed close-up pieces. Publish preset raises this cap to `3` unless
+  `ARL_EDIT_ZOOM_MAX_SEGMENTS` is explicitly set.
+- KDA close-ups default to center focus when the operator kept the default
+  `ARL_EDIT_ZOOM_TARGET=chat`; explicit `center` or `custom` zoom targets are
+  still honored. Chat-burst close-ups always use the bottom-left chat anchor
+  (`x_anchor=0.0`, `y_anchor=1.0`). Fallback close-ups use
+  `ARL_EDIT_ZOOM_TARGET`, where `chat` maps to the bottom-left anchor.
+- `ARL_EDIT_ZOOM_CLOSEUP_SECONDS` caps each close-up window and is clamped to
+  `3..8` seconds. Segments shorter than 3 seconds are not transformed in
+  close-up mode. `ARL_EDIT_ZOOM_EASE_SECONDS` is stored on
+  `TimelineVideoTransform.ease_in_seconds` / `ease_out_seconds` and clamped to
+  `0..1`.
+- `ARL_EDIT_ZOOM_MODE=legacy` restores the old whole-segment static punch-in
+  behavior for rollback comparisons. In legacy mode,
+  `ARL_EDIT_ZOOM_MAX_DURATION_SECONDS` caps `main` segment eligibility and
+  generated transforms set ease seconds to `0`.
+- Punch-in transforms must use safe values: `1.0 < scale <= 1.5`, anchors inside
+  `[0.0, 1.0]`, and ease seconds inside `[0.0, 1.0]`. Exporter renders ease
+  `0` as the historical static `scale` + `crop` filters; positive ease uses
+  `zoompan` with `in_time` expressions, probed source width/height, and
+  `x`/`y` anchoring tied to the current `zoom` value. If the source video
+  profile cannot be probed, exporter falls back to the historical static
+  transform instead of emitting invalid FFmpeg filters.
 - Audio mixing is opt-in at planner time. When
   `ARL_EDIT_AUDIO_MIXING_ENABLED=1`, the planner may emit:
   - one BGM `AudioBed` when `ARL_EDIT_BGM_PATH` is set and exists as a file
@@ -724,8 +745,8 @@ livestream recording, it skips both configured and default BGM for that match
 | Highlight windows collapse to one full-boundary main segment | Edit planner writes no edit plan; use full/highlight export instead |
 | Existing processed key but manifest row is missing | Edit planner compacts state and can regenerate |
 | Existing edit plan contains `full_validated_match` | Edit planner treats it as stale and can append a replacement; exporter ignores it and falls back |
-| Existing edit plan no longer matches current zoom settings or lacks required high-signal main punch-ins | Edit planner treats it as stale and can append a replacement |
-| Existing edit plan has a transformed `main` segment longer than `ARL_EDIT_ZOOM_MAX_DURATION_SECONDS` | Edit planner treats it as stale and can append a replacement without that long transform |
+| Existing edit plan no longer matches current zoom settings, lacks required close-up pieces, uses stale ease values, or exceeds the close-up budget | Edit planner treats it as stale and can append a replacement |
+| Existing close-up-mode edit plan has a transformed segment longer than `ARL_EDIT_ZOOM_CLOSEUP_SECONDS`; existing legacy-mode edit plan has a transformed `main` segment longer than `ARL_EDIT_ZOOM_MAX_DURATION_SECONDS` | Edit planner treats it as stale and can append a replacement with only valid short close-up pieces or valid legacy transforms |
 | Existing edit plan teaser segments differ from current strict `highlight_keyword` teaser selection and subtitle/event scoring | Edit planner treats it as stale and can append a replacement |
 | Existing edit plan lacks the expected `transition` segment or has stale transition text/duration | Edit planner treats it as stale and can append a replacement |
 | Existing edit plan audio instructions differ from the current timeline/library/source-music decision in path, start/end timing, gain, loop, or reason | Edit planner treats it as stale and can append a replacement so BGM starts at the first main segment, after any leading teaser |
@@ -737,7 +758,7 @@ livestream recording, it skips both configured and default BGM for that match
 | Main segment sequence lacks a segment starting at `0.0` or ending at boundary duration | Exporter ignores the edit plan and falls back |
 | Main segment sequence is a single full-boundary `full_validated_match` segment | Exporter ignores the edit plan and falls back |
 | Teaser appears after main, insert role appears, or `source_path` is set | Exporter ignores the edit plan and falls back |
-| Transform kind is not `none` or `punch_in`, punch-in scale is outside `(1.0, 1.5]`, or anchors are outside `[0.0, 1.0]` | Exporter ignores the edit plan and falls back |
+| Transform kind is not `none` or `punch_in`, punch-in scale is outside `(1.0, 1.5]`, anchors are outside `[0.0, 1.0]`, or ease seconds are outside `[0.0, 1.0]` | Exporter ignores the edit plan and falls back |
 | Audio source path is missing, not a file, out of output range, reversed, or has gain outside the safety range | Exporter ignores the edit plan and falls back |
 | `ARL_EXPORT_AUDIO_LOUDNORM_ENABLED=0` | Exporter keeps existing audio filter/map behavior |
 | `ARL_EXPORT_AUDIO_LOUDNORM_ENABLED=1` and filter is blank | Config normalizes the filter to `loudnorm=I=-16:TP=-1.5:LRA=11` |
@@ -782,12 +803,14 @@ livestream recording, it skips both configured and default BGM for that match
   an explicit SFX asset or generated `coin.wav` when the retained segment reason
   is `highlight_keyword` or `condensed_key_event`; tactical/setup windows remain
   free of transition sounds.
-- Good: With zoom enabled, a high-signal teaser or main segment carries
-  `TimelineVideoTransform(kind="punch_in", scale=1.2, target="chat", ...)`,
-  and exporter adds static `scale` / `crop` filters before concat.
-- Good: A 9-minute merged `condensed_key_event` main segment remains
-  untransformed. The output does not stay zoomed until the next cut, and the
-  planner does not create a new arbitrary internal transform boundary.
+- Good: With close-up zoom enabled, a KDA kill inside a retained
+  `condensed_key_event` segment splits that segment around the kill timestamp;
+  only the short transformed piece carries
+  `TimelineVideoTransform(kind="punch_in", target="center", ease_in_seconds=0.4,
+  ease_out_seconds=0.4, ...)`.
+- Good: A long merged `condensed_key_event` main segment can still receive one
+  short close-up piece, while the surrounding timeline pieces remain
+  untransformed and preserve the original total source duration.
 - Good: A main segment from `8.0` to `12.0` seconds on a recording split at
   `10.0` seconds becomes two FFmpeg inputs with local trims `8.0..10.0` and
   `0.0..2.0`, then rejoins through the same edit-plan concat graph.
@@ -804,11 +827,14 @@ livestream recording, it skips both configured and default BGM for that match
   key/tactical windows provide no high-confidence teaser.
 - Unit: edit planner treats legacy `full_validated_match` edit plans as stale
   and appends a replacement without `--force-reprocess`.
-- Unit: edit planner applies punch-in transforms to high-signal main segments
-  when no teaser consumes the zoom budget, and treats legacy no-main-zoom plans
-  as stale when zoom is enabled.
-- Unit: edit planner skips punch-in on long high-signal main segments and
-  treats legacy long transformed main segments as stale.
+- Unit: edit planner splits eligible long high-signal main segments into
+  duration-preserving close-up pieces, and treats legacy no-main-zoom plans as
+  stale when close-up zoom is enabled.
+- Unit: KDA kill subtitles produce a short center-target close-up, chat-burst
+  synthetic frame changes produce a bottom-left chat-target close-up, and
+  `ARL_EDIT_ZOOM_MODE=legacy` preserves whole-segment static transforms.
+- Unit: edit planner treats legacy long transformed main segments as stale and
+  replaces them with valid short close-up pieces in close-up mode.
 - Unit: edit planner skips missing/stale/invalid highlight input without marking
   processed.
 - Unit: edit planner supports session/match filters and `--force-reprocess`.
@@ -840,9 +866,9 @@ livestream recording, it skips both configured and default BGM for that match
   files or generated `coin.wav` only for concrete highlight-event reasons,
   including main-only edit plans without a teaser, and keeps tactical/setup
   windows SFX-free.
-- Config: zoom env values load, default off, and scale/anchor/max-segment
-  values clamp to safe ranges; max duration clamps to at least one second; default
-  zoom target is `chat`.
+- Config: zoom env values load, default off, mode aliases normalize, and
+  scale/anchor/max-segment/close-up/ease/chat-burst values clamp to safe ranges;
+  max duration clamps to at least one second; default zoom target is `chat`.
 - CLI/postprocess: parser includes `edit-planner`; postprocess order includes it
   between `highlight-planner` and `exporter`.
 - Exporter: edit plans are ignored by default, valid teaser-first and main-only edit plans build
@@ -857,7 +883,8 @@ livestream recording, it skips both configured and default BGM for that match
   `adelay`, and `amix`; missing/stale audio asset paths fall back.
 - Exporter: chunked edit plans expand cross-chunk timeline windows into
   concrete chunk inputs and offset BGM/SFX input indexes by media input count.
-- Exporter: punch-in edit plans add `scale`/`crop` filters; invalid transform
+- Exporter: static punch-in edit plans add `scale`/`crop` filters, eased
+  punch-ins use `zoompan` with `in_time` and probed output dimensions, and invalid transform
   rows fall back.
 - Exporter: legacy full-main edit plans are ignored and, when enabled, valid
   highlight plans are used as the fallback path.
@@ -1790,12 +1817,19 @@ def _video_quality_args(self) -> list[str]:
 | `ARL_EDIT_TRANSITION_SFX_PATH` | path | None | Optional whoosh SFX file for transition start |
 | `ARL_EDIT_TRANSITION_SFX_GAIN_DB` | float | -12.0 | Transition SFX gain in dB, clamped to `[-60.0, 6.0]` |
 | `ARL_EDIT_ZOOM_ENABLED` | bool | False | Emit safe punch-in transforms for high-signal teaser/main segments |
+| `ARL_EDIT_ZOOM_MODE` | string | `closeup` | `closeup` splits eligible segments into short transformed pieces; `legacy` restores whole-segment static punch-ins |
 | `ARL_EDIT_ZOOM_TARGET` | string | "chat" | Punch-in target preset: `chat`, `center`, or `custom` |
-| `ARL_EDIT_ZOOM_SCALE` | float | 1.2 | Static punch-in scale, clamped to `[1.0, 1.5]` |
+| `ARL_EDIT_ZOOM_SCALE` | float | 1.2 | Punch-in scale, clamped to `[1.0, 1.5]` |
 | `ARL_EDIT_ZOOM_X_ANCHOR` | float | 0.5 | Horizontal zoom crop anchor, clamped to `[0.0, 1.0]` |
 | `ARL_EDIT_ZOOM_Y_ANCHOR` | float | 0.5 | Vertical zoom crop anchor, clamped to `[0.0, 1.0]` |
-| `ARL_EDIT_ZOOM_MAX_SEGMENTS` | int | 1 | Maximum high-signal teaser/main segments that receive punch-in transforms |
-| `ARL_EDIT_ZOOM_MAX_DURATION_SECONDS` | float | 30.0 | Maximum punch-in duration on a main timeline segment, clamped to at least 1 second |
+| `ARL_EDIT_ZOOM_MAX_SEGMENTS` | int | 1 | Maximum transformed close-up pieces or legacy transformed segments; publish preset defaults this to at least `3` when env is unset |
+| `ARL_EDIT_ZOOM_CLOSEUP_SECONDS` | float | 6.0 | Close-up window duration cap in close-up mode, clamped to `3..8` seconds |
+| `ARL_EDIT_ZOOM_EASE_SECONDS` | float | 0.4 | Ease-in and ease-out duration stored on punch-in transforms, clamped to `[0.0, 1.0]` |
+| `ARL_EDIT_ZOOM_MIN_INTERVAL_SECONDS` | float | 25.0 | Minimum spacing between selected close-up trigger timestamps |
+| `ARL_EDIT_ZOOM_CHAT_BURST_ENABLED` | bool | True | Enable best-effort bottom-left chat-region frame-diff close-up triggers |
+| `ARL_EDIT_ZOOM_CHAT_BURST_SAMPLE_INTERVAL_SECONDS` | float | 0.5 | Frame sampling interval for chat-burst detection, clamped to at least `0.1` |
+| `ARL_EDIT_ZOOM_CHAT_BURST_THRESHOLD` | float | 0.08 | Mean grayscale crop-diff threshold for chat-burst triggers, clamped to `[0.0, 1.0]` |
+| `ARL_EDIT_ZOOM_MAX_DURATION_SECONDS` | float | 30.0 | Legacy-mode maximum punch-in duration on a main timeline segment, clamped to at least 1 second |
 | `ARL_EDIT_AUDIO_MIXING_ENABLED` | bool | False | Emit local BGM/SFX audio instructions into edit plans |
 | `ARL_EDIT_SKIP_BGM_WHEN_SOURCE_HAS_MUSIC` | bool | True | Skip adding edit BGM when the source recording already appears to contain a persistent music bed |
 | `ARL_EDIT_BGM_LIBRARY_PATH` | path | None | Optional JSON manifest for automatic local BGM matching; publish preset defaults it to `data/bgm/library.json` when no explicit BGM path/library is configured |

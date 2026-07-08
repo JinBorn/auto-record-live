@@ -111,8 +111,8 @@ they should continue to map against the final timeline.
 ## Ease Rendering
 
 Exporter should render static transforms exactly as before when ease is `0`.
-When ease is positive, render the close-up piece with a time-varying scale
-expression that ramps:
+When ease is positive, render the close-up piece with `zoompan` using a
+time-varying zoom expression that ramps:
 
 ```text
 1.0 -> target scale over ease_in
@@ -120,10 +120,12 @@ target scale plateau
 target scale -> 1.0 over ease_out
 ```
 
-Keep crop anchoring tied to the same scale expression so the target area remains
-stable. Unit tests should assert the generated FFmpeg filter includes time
-variables (`t`) and the configured ease values; visual validation can be one
-short export spot check.
+Keep `zoompan` `x`/`y` anchoring tied to the current `zoom` value so the target
+area remains stable, and set `s=<source width>x<source height>` from `ffprobe`
+so the segment output resolution stays compatible with concat. Unit tests
+should assert the generated FFmpeg filter includes `zoompan`, `in_time`, source
+dimensions, and the configured ease values; visual validation can be one short
+export spot check.
 
 ## Compatibility and Rollback
 

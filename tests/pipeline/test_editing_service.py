@@ -8,6 +8,8 @@ from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
+
 from arl.config import EditingSettings, Settings, StorageSettings
 from arl.copywriter.models import CopywriterSemanticAsset, LlmCopywritingResult
 from arl.editing.models import EditPlannerStateFile
@@ -158,6 +160,7 @@ class EditingPlannerServiceTest(unittest.TestCase):
     def test_semantic_teaser_recommendation_overrides_fallback_teaser(self) -> None:
         session_id = "session-edit-llm-teaser"
         self.settings.editing.zoom_enabled = True
+        self.settings.editing.zoom_mode = "legacy"
         self._append_boundary(session_id, duration=600.0)
         self._append_highlight_plan(
             session_id,
@@ -353,6 +356,7 @@ class EditingPlannerServiceTest(unittest.TestCase):
     def test_zoom_enabled_marks_high_signal_segments_with_budget(self) -> None:
         session_id = "session-edit-zoom"
         self.settings.editing.zoom_enabled = True
+        self.settings.editing.zoom_mode = "legacy"
         self.settings.editing.zoom_target = "custom"
         self.settings.editing.zoom_scale = 1.25
         self.settings.editing.zoom_x_anchor = 0.4
@@ -390,12 +394,15 @@ class EditingPlannerServiceTest(unittest.TestCase):
         self.assertEqual(first_teaser.transform.x_anchor, 0.4)
         self.assertEqual(first_teaser.transform.y_anchor, 0.35)
         self.assertEqual(first_teaser.transform.target, "custom")
+        self.assertEqual(first_teaser.transform.ease_in_seconds, 0.0)
+        self.assertEqual(first_teaser.transform.ease_out_seconds, 0.0)
         self.assertIsNone(second_teaser.transform)
         self.assertIsNone(first_main.transform)
 
     def test_planner_emits_fallback_teaser_for_generic_condensed_key_events(self) -> None:
         session_id = "session-edit-fallback-teaser"
         self.settings.editing.zoom_enabled = True
+        self.settings.editing.zoom_mode = "legacy"
         self._append_boundary(session_id, duration=600.0)
         self._append_highlight_plan(
             session_id,
@@ -437,10 +444,10 @@ class EditingPlannerServiceTest(unittest.TestCase):
         self.assertTrue(any(segment.source_start_seconds == 0.0 for segment in plan.timeline))
         self.assertTrue(any(segment.source_end_seconds == 600.0 for segment in plan.timeline))
 
-    def test_zoom_skips_long_main_segment(self) -> None:
+    def test_zoom_splits_long_main_segment_into_short_closeup(self) -> None:
         session_id = "session-edit-long-main-zoom"
         self.settings.editing.zoom_enabled = True
-        self.settings.editing.zoom_max_duration_seconds = 30.0
+        self.settings.editing.teaser_max_segments = 0
         self._append_boundary(session_id, duration=700.0)
         self._append_highlight_plan(
             session_id,
@@ -473,13 +480,34 @@ class EditingPlannerServiceTest(unittest.TestCase):
             segment for segment in plan.timeline if segment.reason == "condensed_key_event"
         ]
         self.assertEqual(
+            round(
+                sum(
+                    segment.source_end_seconds - segment.source_start_seconds
+                    for segment in key_segments
+                ),
+                3,
+            ),
+            120.0,
+        )
+        transformed = [
+            segment for segment in key_segments if segment.transform is not None
+        ]
+        self.assertEqual(len(transformed), 1)
+        closeup = transformed[0]
+        self.assertEqual(
             [
                 (segment.source_start_seconds, segment.source_end_seconds)
                 for segment in key_segments
             ],
-            [(100.0, 220.0)],
+            [(100.0, 157.0), (157.0, 163.0), (163.0, 220.0)],
         )
-        self.assertIsNone(key_segments[0].transform)
+        self.assertLessEqual(
+            closeup.source_end_seconds - closeup.source_start_seconds,
+            self.settings.editing.zoom_closeup_seconds,
+        )
+        assert closeup.transform is not None
+        self.assertEqual(closeup.transform.target, "chat")
+        self.assertEqual(closeup.transform.ease_in_seconds, 0.4)
 
     def test_zoom_default_targets_bottom_left_chat_area(self) -> None:
         session_id = "session-edit-chat-zoom"
@@ -501,12 +529,131 @@ class EditingPlannerServiceTest(unittest.TestCase):
 
         plans = load_models(self.edit_plans_path, EditPlanAsset)
         self.assertEqual(len(plans), 1)
-        teaser = plans[0].timeline[0]
-        self.assertIsNotNone(teaser.transform)
-        assert teaser.transform is not None
-        self.assertEqual(teaser.transform.target, "chat")
-        self.assertEqual(teaser.transform.x_anchor, 0.0)
-        self.assertEqual(teaser.transform.y_anchor, 1.0)
+        transformed = [
+            segment for segment in plans[0].timeline if segment.transform is not None
+        ]
+        self.assertEqual(len(transformed), 1)
+        transform = transformed[0].transform
+        assert transform is not None
+        self.assertEqual(transform.target, "chat")
+        self.assertEqual(transform.x_anchor, 0.0)
+        self.assertEqual(transform.y_anchor, 1.0)
+        self.assertLessEqual(
+            transformed[0].source_end_seconds - transformed[0].source_start_seconds,
+            self.settings.editing.zoom_closeup_seconds,
+        )
+
+    def test_zoom_kda_kill_splits_main_segment_with_center_target(self) -> None:
+        session_id = "session-edit-kda-zoom"
+        self.settings.editing.zoom_enabled = True
+        self.settings.editing.teaser_max_segments = 0
+        self._append_subtitle(
+            session_id,
+            "1\n00:02:04,000 --> 00:02:06,000\n"
+            "kda_change kills=2->3 deaths=0->0 previous_at=110.000 current_at=125.000\n",
+        )
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=100.0,
+                    ended_at_seconds=150.0,
+                    reason="condensed_key_event",
+                )
+            ],
+            duration=600.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        key_segments = [
+            segment for segment in plan.timeline if segment.reason == "condensed_key_event"
+        ]
+        self.assertEqual(
+            round(
+                sum(
+                    segment.source_end_seconds - segment.source_start_seconds
+                    for segment in key_segments
+                ),
+                3,
+            ),
+            50.0,
+        )
+        transformed = [
+            segment for segment in key_segments if segment.transform is not None
+        ]
+        self.assertEqual(len(transformed), 1)
+        closeup = transformed[0]
+        self.assertLessEqual(
+            closeup.source_end_seconds - closeup.source_start_seconds,
+            self.settings.editing.zoom_closeup_seconds,
+        )
+        self.assertLessEqual(closeup.source_start_seconds, 125.0)
+        self.assertGreaterEqual(closeup.source_end_seconds, 125.0)
+        transform = closeup.transform
+        assert transform is not None
+        self.assertEqual(transform.target, "center")
+        self.assertEqual(transform.x_anchor, 0.5)
+        self.assertEqual(transform.y_anchor, 0.5)
+        self.assertEqual(transform.ease_in_seconds, 0.4)
+
+    def test_zoom_chat_burst_uses_injected_sampler_and_chat_target(self) -> None:
+        session_id = "session-edit-chat-burst-zoom"
+        self.settings.editing.zoom_enabled = True
+        self.settings.editing.teaser_max_segments = 0
+        self._append_recording(session_id)
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=100.0,
+                    ended_at_seconds=130.0,
+                    reason="highlight_keyword",
+                )
+            ],
+            duration=600.0,
+        )
+        frame_a = np.zeros((100, 100, 3), dtype=np.uint8)
+        frame_b = frame_a.copy()
+        frame_b[55:95, 0:36] = 255
+        sampler_calls: list[tuple[Path, float, float, float]] = []
+
+        def _sampler(
+            path: Path,
+            start_seconds: float,
+            end_seconds: float,
+            *,
+            interval_seconds: float,
+        ) -> list[tuple[float, np.ndarray]]:
+            sampler_calls.append((path, start_seconds, end_seconds, interval_seconds))
+            return [(100.0, frame_a), (105.0, frame_b), (110.0, frame_b)]
+
+        EditingPlannerService(
+            self.settings,
+            chat_frame_sampler=_sampler,
+        ).run()
+
+        self.assertEqual(len(sampler_calls), 1)
+        _path, start_seconds, end_seconds, interval_seconds = sampler_calls[0]
+        self.assertEqual(start_seconds, 100.0)
+        self.assertEqual(end_seconds, 130.0)
+        self.assertEqual(interval_seconds, 0.5)
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        transformed = [
+            segment for segment in plan.timeline if segment.transform is not None
+        ]
+        self.assertEqual(len(transformed), 1)
+        closeup = transformed[0]
+        self.assertLessEqual(closeup.source_start_seconds, 105.0)
+        self.assertGreaterEqual(closeup.source_end_seconds, 105.0)
+        transform = closeup.transform
+        assert transform is not None
+        self.assertEqual(transform.target, "chat")
+        self.assertEqual(transform.x_anchor, 0.0)
+        self.assertEqual(transform.y_anchor, 1.0)
 
     def test_zoom_max_segments_zero_emits_no_transforms(self) -> None:
         session_id = "session-edit-zoom-zero"
@@ -1639,15 +1786,34 @@ class EditingPlannerServiceTest(unittest.TestCase):
         latest_key_segments = [
             segment for segment in latest.timeline if segment.reason == "condensed_key_event"
         ]
-        self.assertEqual(len(latest_key_segments), 1)
-        self.assertIsNotNone(latest_key_segments[0].transform)
-        assert latest_key_segments[0].transform is not None
-        self.assertEqual(latest_key_segments[0].transform.kind, "punch_in")
+        self.assertEqual(
+            round(
+                sum(
+                    segment.source_end_seconds - segment.source_start_seconds
+                    for segment in latest_key_segments
+                ),
+                3,
+            ),
+            30.0,
+        )
+        transformed_key_segments = [
+            segment
+            for segment in latest_key_segments
+            if segment.transform is not None
+        ]
+        self.assertEqual(len(transformed_key_segments), 1)
+        self.assertLessEqual(
+            transformed_key_segments[0].source_end_seconds
+            - transformed_key_segments[0].source_start_seconds,
+            self.settings.editing.zoom_closeup_seconds,
+        )
+        assert transformed_key_segments[0].transform is not None
+        self.assertEqual(transformed_key_segments[0].transform.kind, "punch_in")
         self.assertTrue(
             all(
                 segment.transform is None
                 for segment in latest.timeline
-                if segment is not latest_key_segments[0]
+                if segment is not transformed_key_segments[0]
             )
         )
 
@@ -1733,14 +1899,29 @@ class EditingPlannerServiceTest(unittest.TestCase):
         transformed_segments = [
             segment for segment in latest.timeline if segment.transform is not None
         ]
-        self.assertEqual(transformed_segments, [])
-        self.assertTrue(
+        self.assertEqual(len(transformed_segments), 1)
+        self.assertLessEqual(
+            transformed_segments[0].source_end_seconds
+            - transformed_segments[0].source_start_seconds,
+            self.settings.editing.zoom_closeup_seconds,
+        )
+        self.assertFalse(
             any(
                 segment.source_start_seconds == 100.0
                 and segment.source_end_seconds == 220.0
-                and segment.transform is None
                 for segment in latest.timeline
             )
+        )
+        self.assertEqual(
+            round(
+                sum(
+                    segment.source_end_seconds - segment.source_start_seconds
+                    for segment in latest.timeline
+                    if segment.reason == "condensed_key_event"
+                ),
+                3,
+            ),
+            120.0,
         )
 
     def test_filters_by_session_and_match_index(self) -> None:

@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from arl.config import Settings
 from arl.copywriter.models import CopywriterSemanticAsset
@@ -105,12 +106,22 @@ class _SfxCandidate:
     segment_index: int
 
 
+@dataclass(frozen=True)
+class _ZoomCandidate:
+    source_timestamp_seconds: float
+    priority: int
+    x_anchor: float
+    y_anchor: float
+    target: str
+
+
 class EditingPlannerService:
     def __init__(
         self,
         settings: Settings,
         *,
         source_bgm_detector: Callable[..., SourceMusicDetection] | None = None,
+        chat_frame_sampler: Callable[..., list[tuple[float, Any]]] | None = None,
     ) -> None:
         self.settings = settings
         self.boundaries_path = settings.storage.temp_dir / "match-boundaries.jsonl"
@@ -123,6 +134,7 @@ class EditingPlannerService:
         self.edit_plans_path = settings.storage.temp_dir / "edit-plans.jsonl"
         self.state_path = settings.storage.temp_dir / "editing-state.json"
         self.source_bgm_detector = source_bgm_detector or detect_source_background_music
+        self.chat_frame_sampler = chat_frame_sampler
         self._source_music_cache: dict[tuple[str, int], SourceMusicDetection] = {}
         self._bgm_library_tracks: list[BgmLibraryTrack] | None = None
         self._sfx_library_tracks: list[SfxLibraryTrack] | None = None
@@ -354,7 +366,12 @@ class EditingPlannerService:
         if transition_segment is not None:
             timeline.append(transition_segment)
         timeline.extend(main_segments)
-        self._apply_zoom_transforms(timeline)
+        self._apply_zoom_transforms(
+            timeline,
+            boundary=boundary,
+            recording=recording,
+            subtitle=subtitle,
+        )
         audio_beds, sound_effects = self._build_audio_instructions(
             boundary,
             highlight_plan,
@@ -409,9 +426,32 @@ class EditingPlannerService:
             3,
         )
 
-    def _apply_zoom_transforms(self, timeline: list[TimelineSegment]) -> None:
+    def _apply_zoom_transforms(
+        self,
+        timeline: list[TimelineSegment],
+        *,
+        boundary: MatchBoundary,
+        recording: RecordingAsset | None,
+        subtitle: SubtitleAsset | None,
+    ) -> None:
         if not self.settings.editing.zoom_enabled:
             return
+        if self.settings.editing.zoom_mode == "legacy":
+            self._apply_legacy_zoom_transforms(timeline)
+            return
+        selected = self._selected_zoom_candidates(
+            self._zoom_candidates(
+                timeline,
+                boundary=boundary,
+                recording=recording,
+                subtitle=subtitle,
+            )
+        )
+        if not selected:
+            return
+        timeline[:] = self._timeline_with_closeups(timeline, selected)
+
+    def _apply_legacy_zoom_transforms(self, timeline: list[TimelineSegment]) -> None:
         remaining = self.settings.editing.zoom_max_segments
         if remaining <= 0:
             return
@@ -436,12 +476,334 @@ class EditingPlannerService:
                 x_anchor=x_anchor,
                 y_anchor=y_anchor,
                 target=target,
+                ease_in_seconds=0.0,
+                ease_out_seconds=0.0,
             )
             segment.transform = transform
             index += 1
             remaining -= 1
             if remaining <= 0:
                 return
+
+    def _selected_zoom_candidates(
+        self,
+        candidates: list[_ZoomCandidate],
+    ) -> list[_ZoomCandidate]:
+        if self.settings.editing.zoom_max_segments <= 0:
+            return []
+        candidates = sorted(
+            candidates,
+            key=lambda candidate: (
+                candidate.priority,
+                candidate.source_timestamp_seconds,
+                candidate.target,
+            ),
+        )
+        selected: list[_ZoomCandidate] = []
+        for candidate in candidates:
+            if len(selected) >= self.settings.editing.zoom_max_segments:
+                break
+            if any(
+                abs(candidate.source_timestamp_seconds - existing.source_timestamp_seconds)
+                < self.settings.editing.zoom_min_interval_seconds
+                for existing in selected
+            ):
+                continue
+            selected.append(candidate)
+        return sorted(selected, key=lambda candidate: candidate.source_timestamp_seconds)
+
+    def _zoom_candidates(
+        self,
+        timeline: list[TimelineSegment],
+        *,
+        boundary: MatchBoundary,
+        recording: RecordingAsset | None,
+        subtitle: SubtitleAsset | None,
+    ) -> list[_ZoomCandidate]:
+        candidates: list[_ZoomCandidate] = []
+        kda_x, kda_y, kda_target = self._kda_zoom_focus()
+        for event in self._kda_kill_events(subtitle):
+            if self._timestamp_in_zoomable_segment(
+                event.source_timestamp_seconds,
+                timeline,
+            ):
+                candidates.append(
+                    _ZoomCandidate(
+                        source_timestamp_seconds=event.source_timestamp_seconds,
+                        priority=0,
+                        x_anchor=kda_x,
+                        y_anchor=kda_y,
+                        target=kda_target,
+                    )
+                )
+
+        candidates.extend(
+            self._chat_burst_zoom_candidates(
+                timeline,
+                boundary=boundary,
+                recording=recording,
+            )
+        )
+
+        primary_timestamps = [
+            candidate.source_timestamp_seconds
+            for candidate in candidates
+            if candidate.priority < 2
+        ]
+        fallback_x, fallback_y, fallback_target = self._zoom_focus()
+        for segment in timeline:
+            if not self._segment_can_receive_closeup(segment):
+                continue
+            if any(
+                self._source_timestamp_in_segment(timestamp, segment)
+                for timestamp in primary_timestamps
+            ):
+                continue
+            candidates.append(
+                _ZoomCandidate(
+                    source_timestamp_seconds=(
+                        segment.source_start_seconds + self._segment_duration(segment) / 2.0
+                    ),
+                    priority=2,
+                    x_anchor=fallback_x,
+                    y_anchor=fallback_y,
+                    target=fallback_target,
+                )
+            )
+        return candidates
+
+    def _chat_burst_zoom_candidates(
+        self,
+        timeline: list[TimelineSegment],
+        *,
+        boundary: MatchBoundary,
+        recording: RecordingAsset | None,
+    ) -> list[_ZoomCandidate]:
+        if not self.settings.editing.zoom_chat_burst_enabled:
+            return []
+        if recording is None:
+            return []
+        recording_path = Path(recording.path)
+        if not recording_path.is_file():
+            return []
+        candidates: list[_ZoomCandidate] = []
+        for segment in timeline:
+            if not self._segment_can_receive_closeup(segment):
+                continue
+            try:
+                frames = self._sample_chat_frames(
+                    recording_path,
+                    boundary_start_seconds=boundary.started_at_seconds,
+                    segment=segment,
+                )
+            except Exception as exc:
+                log(
+                    "editing",
+                    "skip chat burst zoom "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    f"reason={exc.__class__.__name__}",
+                )
+                continue
+            for timestamp in self._chat_burst_timestamps_from_frames(
+                frames,
+                threshold=self.settings.editing.zoom_chat_burst_threshold,
+            ):
+                candidates.append(
+                    _ZoomCandidate(
+                        source_timestamp_seconds=timestamp
+                        - boundary.started_at_seconds,
+                        priority=1,
+                        x_anchor=0.0,
+                        y_anchor=1.0,
+                        target="chat",
+                    )
+                )
+        return candidates
+
+    def _sample_chat_frames(
+        self,
+        recording_path: Path,
+        *,
+        boundary_start_seconds: float,
+        segment: TimelineSegment,
+    ) -> list[tuple[float, Any]]:
+        sampler = self.chat_frame_sampler
+        if sampler is None:
+            from arl.vision.frame_sampler import sample_frame_window
+
+            sampler = sample_frame_window
+        return sampler(
+            recording_path,
+            boundary_start_seconds + segment.source_start_seconds,
+            boundary_start_seconds + segment.source_end_seconds,
+            interval_seconds=self.settings.editing.zoom_chat_burst_sample_interval_seconds,
+        )
+
+    @classmethod
+    def _chat_burst_timestamps_from_frames(
+        cls,
+        frames: list[tuple[float, Any]],
+        *,
+        threshold: float,
+    ) -> list[float]:
+        if len(frames) < 2:
+            return []
+        scored: list[tuple[float, float]] = []
+        previous_crop = cls._chat_region_crop(frames[0][1])
+        for timestamp, frame in frames[1:]:
+            current_crop = cls._chat_region_crop(frame)
+            if current_crop is None or previous_crop is None:
+                previous_crop = current_crop
+                continue
+            if current_crop.shape != previous_crop.shape:
+                previous_crop = current_crop
+                continue
+            score = cls._chat_region_diff_score(previous_crop, current_crop)
+            if score >= threshold:
+                scored.append((timestamp, score))
+            previous_crop = current_crop
+        scored.sort(key=lambda item: (-item[1], item[0]))
+        return [timestamp for timestamp, _score in scored]
+
+    @staticmethod
+    def _chat_region_crop(frame: Any) -> Any | None:
+        try:
+            import cv2
+        except ModuleNotFoundError:
+            return None
+        if frame is None or not hasattr(frame, "shape"):
+            return None
+        height, width = frame.shape[:2]
+        if height <= 0 or width <= 0:
+            return None
+        x1 = 0
+        x2 = max(1, int(width * 0.36))
+        y1 = max(0, int(height * 0.55))
+        y2 = max(y1 + 1, int(height * 0.95))
+        crop = frame[y1:y2, x1:x2]
+        if crop.size == 0:
+            return None
+        if len(crop.shape) == 3:
+            crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        return crop
+
+    @staticmethod
+    def _chat_region_diff_score(previous: Any, current: Any) -> float:
+        try:
+            import cv2
+        except ModuleNotFoundError:
+            return 0.0
+        diff = cv2.absdiff(previous, current)
+        return float(diff.mean() / 255.0)
+
+    def _timeline_with_closeups(
+        self,
+        timeline: list[TimelineSegment],
+        selected: list[_ZoomCandidate],
+    ) -> list[TimelineSegment]:
+        rebuilt: list[TimelineSegment] = []
+        consumed: set[_ZoomCandidate] = set()
+        for segment in timeline:
+            segment_candidates = [
+                candidate
+                for candidate in selected
+                if candidate not in consumed
+                if self._source_timestamp_in_segment(
+                    candidate.source_timestamp_seconds,
+                    segment,
+                )
+                and self._segment_can_receive_closeup(segment)
+            ]
+            if not segment_candidates:
+                rebuilt.append(segment)
+                continue
+            cursor = segment.source_start_seconds
+            for candidate in sorted(
+                segment_candidates,
+                key=lambda item: item.source_timestamp_seconds,
+            ):
+                window = self._closeup_window(segment, candidate.source_timestamp_seconds)
+                if window is None:
+                    continue
+                window_start, window_end = window
+                if window_end <= cursor + _SEGMENT_TOLERANCE_SECONDS:
+                    continue
+                if window_start > cursor + _SEGMENT_TOLERANCE_SECONDS:
+                    rebuilt.append(self._segment_piece(segment, cursor, window_start))
+                rebuilt.append(
+                    self._segment_piece(
+                        segment,
+                        max(cursor, window_start),
+                        window_end,
+                        transform=TimelineVideoTransform(
+                            kind="punch_in",
+                            scale=self.settings.editing.zoom_scale,
+                            x_anchor=candidate.x_anchor,
+                            y_anchor=candidate.y_anchor,
+                            target=candidate.target,
+                            ease_in_seconds=self.settings.editing.zoom_ease_seconds,
+                            ease_out_seconds=self.settings.editing.zoom_ease_seconds,
+                        ),
+                    )
+                )
+                cursor = max(cursor, window_end)
+                consumed.add(candidate)
+            if cursor < segment.source_end_seconds - _SEGMENT_TOLERANCE_SECONDS:
+                rebuilt.append(self._segment_piece(segment, cursor, segment.source_end_seconds))
+        if not any(segment.transform is not None for segment in rebuilt):
+            return timeline
+        return rebuilt
+
+    def _closeup_window(
+        self,
+        segment: TimelineSegment,
+        source_timestamp_seconds: float,
+    ) -> tuple[float, float] | None:
+        duration = self._segment_duration(segment)
+        if duration < 3.0 - _SEGMENT_TOLERANCE_SECONDS:
+            return None
+        closeup_duration = min(self.settings.editing.zoom_closeup_seconds, duration)
+        window_start = source_timestamp_seconds - closeup_duration / 2.0
+        window_start = max(segment.source_start_seconds, window_start)
+        window_start = min(window_start, segment.source_end_seconds - closeup_duration)
+        window_end = min(segment.source_end_seconds, window_start + closeup_duration)
+        if window_end - window_start < 3.0 - _SEGMENT_TOLERANCE_SECONDS:
+            return None
+        return round(window_start, 3), round(window_end, 3)
+
+    @staticmethod
+    def _segment_piece(
+        segment: TimelineSegment,
+        start_seconds: float,
+        end_seconds: float,
+        *,
+        transform: TimelineVideoTransform | None = None,
+    ) -> TimelineSegment:
+        return segment.model_copy(
+            update={
+                "source_start_seconds": round(start_seconds, 3),
+                "source_end_seconds": round(end_seconds, 3),
+                "transform": transform,
+            }
+        )
+
+    def _timestamp_in_zoomable_segment(
+        self,
+        source_timestamp_seconds: float,
+        timeline: list[TimelineSegment],
+    ) -> bool:
+        return any(
+            self._segment_can_receive_closeup(segment)
+            and self._source_timestamp_in_segment(source_timestamp_seconds, segment)
+            for segment in timeline
+        )
+
+    def _segment_can_receive_closeup(self, segment: TimelineSegment) -> bool:
+        if segment.role not in {"teaser", "main"}:
+            return False
+        if segment.reason not in _ZOOM_REASONS:
+            return False
+        return self._segment_duration(segment) >= 3.0 - _SEGMENT_TOLERANCE_SECONDS
 
     def _zoom_focus(self) -> tuple[float, float, str]:
         target = self.settings.editing.zoom_target
@@ -454,6 +816,11 @@ class EditingPlannerService:
             self.settings.editing.zoom_y_anchor,
             "custom",
         )
+
+    def _kda_zoom_focus(self) -> tuple[float, float, str]:
+        if self.settings.editing.zoom_target == "chat":
+            return 0.5, 0.5, "center"
+        return self._zoom_focus()
 
     def _build_audio_instructions(
         self,
@@ -1779,11 +2146,12 @@ class EditingPlannerService:
         teaser_segments = [
             segment for segment in plan.timeline if segment.role == "teaser"
         ]
-        if len(teaser_segments) != len(expected_windows):
+        teaser_windows = self._merged_role_windows(teaser_segments)
+        if len(teaser_windows) != len(expected_windows):
             return False
         return all(
             self._timeline_segment_matches_window(segment, window)
-            for segment, window in zip(teaser_segments, expected_windows, strict=True)
+            for segment, window in zip(teaser_windows, expected_windows, strict=True)
         )
 
     def _edit_plan_has_current_transition_shape(
@@ -1839,6 +2207,24 @@ class EditingPlannerService:
         )
 
     @staticmethod
+    def _merged_role_windows(segments: list[TimelineSegment]) -> list[TimelineSegment]:
+        merged: list[TimelineSegment] = []
+        for segment in segments:
+            if (
+                merged
+                and merged[-1].reason == segment.reason
+                and abs(merged[-1].source_end_seconds - segment.source_start_seconds)
+                <= _SEGMENT_TOLERANCE_SECONDS
+            ):
+                previous = merged[-1]
+                merged[-1] = previous.model_copy(
+                    update={"source_end_seconds": segment.source_end_seconds}
+                )
+                continue
+            merged.append(segment)
+        return merged
+
+    @staticmethod
     def _edit_plan_has_current_main_shape(
         plan: EditPlanAsset,
         duration: float,
@@ -1869,6 +2255,46 @@ class EditingPlannerService:
         return starts_at_beginning and ends_at_boundary
 
     def _edit_plan_has_current_zoom_shape(self, plan: EditPlanAsset) -> bool:
+        if self.settings.editing.zoom_mode == "closeup":
+            return self._edit_plan_has_current_closeup_zoom_shape(plan)
+        return self._edit_plan_has_current_legacy_zoom_shape(plan)
+
+    def _edit_plan_has_current_closeup_zoom_shape(self, plan: EditPlanAsset) -> bool:
+        if not self.settings.editing.zoom_enabled:
+            return all(segment.transform is None for segment in plan.timeline)
+        if self.settings.editing.zoom_max_segments <= 0:
+            return all(segment.transform is None for segment in plan.timeline)
+        transformed = [
+            segment for segment in plan.timeline if segment.transform is not None
+        ]
+        if len(transformed) > self.settings.editing.zoom_max_segments:
+            return False
+        has_zoomable = any(
+            self._segment_can_receive_closeup(segment) for segment in plan.timeline
+        )
+        if has_zoomable and not transformed:
+            return False
+        for segment in transformed:
+            transform = segment.transform
+            if transform is None or transform.kind != "punch_in":
+                return False
+            if not self._segment_can_receive_closeup(segment):
+                return False
+            if (
+                self._segment_duration(segment)
+                > self.settings.editing.zoom_closeup_seconds
+                + _SEGMENT_TOLERANCE_SECONDS
+            ):
+                return False
+            if abs(transform.scale - self.settings.editing.zoom_scale) > 0.001:
+                return False
+            if abs(transform.ease_in_seconds - self.settings.editing.zoom_ease_seconds) > 0.001:
+                return False
+            if abs(transform.ease_out_seconds - self.settings.editing.zoom_ease_seconds) > 0.001:
+                return False
+        return True
+
+    def _edit_plan_has_current_legacy_zoom_shape(self, plan: EditPlanAsset) -> bool:
         expected_indices = self._expected_zoom_segment_indices(plan.timeline)
         for index, segment in enumerate(plan.timeline):
             transform = segment.transform

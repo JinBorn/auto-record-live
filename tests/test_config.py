@@ -381,6 +381,8 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertTrue(settings.editing.enabled)
         self.assertTrue(settings.editing.zoom_enabled)
         self.assertEqual(settings.editing.zoom_target, "chat")
+        self.assertEqual(settings.editing.zoom_mode, "closeup")
+        self.assertEqual(settings.editing.zoom_max_segments, 3)
         self.assertTrue(settings.editing.audio_mixing_enabled)
         self.assertEqual(settings.editing.bgm_library_path, Path("data/bgm/library.json"))
         self.assertTrue(settings.export.enable_ffmpeg)
@@ -424,6 +426,8 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(published.highlights.keep_edge_seconds, 10.0)
         self.assertEqual(published.highlights.condensed_start_edge_seconds, 1.0)
         self.assertTrue(published.editing.enabled)
+        self.assertEqual(settings.editing.zoom_max_segments, 1)
+        self.assertEqual(published.editing.zoom_max_segments, 3)
         self.assertEqual(
             published.editing.bgm_library_path,
             Path("data/bgm/library.json"),
@@ -436,6 +440,15 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertTrue(published.export.audio_loudnorm_enabled)
         self.assertEqual(settings.subtitles.model_size, "small")
         self.assertEqual(published.subtitles.model_size, "medium")
+
+    def test_publish_preset_preserves_explicit_zoom_max_segments_env(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_POSTPROCESS_PRESET"] = "publish"
+            os.environ["ARL_EDIT_ZOOM_MAX_SEGMENTS"] = "2"
+            settings = load_settings()
+
+        self.assertTrue(settings.editing.zoom_enabled)
+        self.assertEqual(settings.editing.zoom_max_segments, 2)
 
     def test_apply_publish_preset_keeps_cpu_subtitle_model_small(self) -> None:
         settings = Settings(subtitles={"device": "cpu"})
@@ -677,6 +690,13 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             os.environ["ARL_EDIT_ZOOM_Y_ANCHOR"] = "1.5"
             os.environ["ARL_EDIT_ZOOM_MAX_SEGMENTS"] = "-1"
             os.environ["ARL_EDIT_ZOOM_MAX_DURATION_SECONDS"] = "0"
+            os.environ["ARL_EDIT_ZOOM_MODE"] = "static"
+            os.environ["ARL_EDIT_ZOOM_CLOSEUP_SECONDS"] = "99"
+            os.environ["ARL_EDIT_ZOOM_EASE_SECONDS"] = "-1"
+            os.environ["ARL_EDIT_ZOOM_MIN_INTERVAL_SECONDS"] = "-5"
+            os.environ["ARL_EDIT_ZOOM_CHAT_BURST_ENABLED"] = "0"
+            os.environ["ARL_EDIT_ZOOM_CHAT_BURST_SAMPLE_INTERVAL_SECONDS"] = "0"
+            os.environ["ARL_EDIT_ZOOM_CHAT_BURST_THRESHOLD"] = "2"
             settings = load_settings()
 
         self.assertTrue(settings.editing.zoom_enabled)
@@ -686,6 +706,13 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(settings.editing.zoom_y_anchor, 1.0)
         self.assertEqual(settings.editing.zoom_max_segments, 0)
         self.assertEqual(settings.editing.zoom_max_duration_seconds, 1.0)
+        self.assertEqual(settings.editing.zoom_mode, "legacy")
+        self.assertEqual(settings.editing.zoom_closeup_seconds, 8.0)
+        self.assertEqual(settings.editing.zoom_ease_seconds, 0.0)
+        self.assertEqual(settings.editing.zoom_min_interval_seconds, 0.0)
+        self.assertFalse(settings.editing.zoom_chat_burst_enabled)
+        self.assertEqual(settings.editing.zoom_chat_burst_sample_interval_seconds, 0.1)
+        self.assertEqual(settings.editing.zoom_chat_burst_threshold, 1.0)
 
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
             settings = load_settings()
@@ -697,6 +724,13 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(settings.editing.zoom_y_anchor, 0.5)
         self.assertEqual(settings.editing.zoom_max_segments, 1)
         self.assertEqual(settings.editing.zoom_max_duration_seconds, 30.0)
+        self.assertEqual(settings.editing.zoom_mode, "closeup")
+        self.assertEqual(settings.editing.zoom_closeup_seconds, 6.0)
+        self.assertEqual(settings.editing.zoom_ease_seconds, 0.4)
+        self.assertEqual(settings.editing.zoom_min_interval_seconds, 25.0)
+        self.assertTrue(settings.editing.zoom_chat_burst_enabled)
+        self.assertEqual(settings.editing.zoom_chat_burst_sample_interval_seconds, 0.5)
+        self.assertEqual(settings.editing.zoom_chat_burst_threshold, 0.08)
 
     def test_highlight_planner_envs_load(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):

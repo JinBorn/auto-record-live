@@ -198,6 +198,8 @@ class ReferenceValidationTest(unittest.TestCase):
                             scale=1.25,
                             x_anchor=0.4,
                             y_anchor=0.35,
+                            ease_in_seconds=0.0,
+                            ease_out_seconds=0.0,
                         ),
                         reason="highlight_keyword",
                     ),

@@ -314,6 +314,13 @@ class EditingSettings(BaseModel):
     zoom_y_anchor: float = 0.5
     zoom_max_segments: int = 1
     zoom_max_duration_seconds: float = 30.0
+    zoom_mode: str = "closeup"
+    zoom_closeup_seconds: float = 6.0
+    zoom_ease_seconds: float = 0.4
+    zoom_min_interval_seconds: float = 25.0
+    zoom_chat_burst_enabled: bool = True
+    zoom_chat_burst_sample_interval_seconds: float = 0.5
+    zoom_chat_burst_threshold: float = 0.08
     audio_mixing_enabled: bool = False
     skip_bgm_when_source_has_music: bool = True
     bgm_library_path: Path | None = None
@@ -343,6 +350,19 @@ class EditingSettings(BaseModel):
         if raw not in aliases:
             raise ValueError("zoom_target must be one of chat, center, or custom")
         self.zoom_target = aliases[raw]
+        zoom_mode_aliases = {
+            "closeup": "closeup",
+            "close-up": "closeup",
+            "close_up": "closeup",
+            "split": "closeup",
+            "legacy": "legacy",
+            "segment": "legacy",
+            "static": "legacy",
+        }
+        zoom_mode = self.zoom_mode.strip().lower()
+        if zoom_mode not in zoom_mode_aliases:
+            raise ValueError("zoom_mode must be one of closeup or legacy")
+        self.zoom_mode = zoom_mode_aliases[zoom_mode]
         transition_aliases = {
             "none": "none",
             "off": "none",
@@ -384,6 +404,17 @@ class EditingSettings(BaseModel):
         self.sfx_multikill_window_seconds = max(
             0.0,
             self.sfx_multikill_window_seconds,
+        )
+        self.zoom_closeup_seconds = min(8.0, max(3.0, self.zoom_closeup_seconds))
+        self.zoom_ease_seconds = min(1.0, max(0.0, self.zoom_ease_seconds))
+        self.zoom_min_interval_seconds = max(0.0, self.zoom_min_interval_seconds)
+        self.zoom_chat_burst_sample_interval_seconds = max(
+            0.1,
+            self.zoom_chat_burst_sample_interval_seconds,
+        )
+        self.zoom_chat_burst_threshold = min(
+            1.0,
+            max(0.0, self.zoom_chat_burst_threshold),
         )
         return self
 
@@ -563,6 +594,9 @@ def apply_publish_preset(settings: Settings) -> Settings:
         and os.getenv("ARL_EDIT_TRANSITION_MODE", "").strip() == ""
     ):
         transition_mode = "black_card"
+    zoom_max_segments = settings.editing.zoom_max_segments
+    if os.getenv("ARL_EDIT_ZOOM_MAX_SEGMENTS", "").strip() == "":
+        zoom_max_segments = max(zoom_max_segments, 3)
 
     return settings.model_copy(
         deep=True,
@@ -590,6 +624,7 @@ def apply_publish_preset(settings: Settings) -> Settings:
                 update={
                     "enabled": True,
                     "zoom_enabled": True,
+                    "zoom_max_segments": zoom_max_segments,
                     "audio_mixing_enabled": True,
                     "bgm_library_path": bgm_library_path,
                     "transition_mode": transition_mode,
@@ -1315,6 +1350,31 @@ def load_settings() -> Settings:
             zoom_max_duration_seconds=max(
                 1.0,
                 _env_float("ARL_EDIT_ZOOM_MAX_DURATION_SECONDS", 30.0),
+            ),
+            zoom_mode=os.getenv("ARL_EDIT_ZOOM_MODE", "closeup"),
+            zoom_closeup_seconds=min(
+                8.0,
+                max(3.0, _env_float("ARL_EDIT_ZOOM_CLOSEUP_SECONDS", 6.0)),
+            ),
+            zoom_ease_seconds=min(
+                1.0,
+                max(0.0, _env_float("ARL_EDIT_ZOOM_EASE_SECONDS", 0.4)),
+            ),
+            zoom_min_interval_seconds=max(
+                0.0,
+                _env_float("ARL_EDIT_ZOOM_MIN_INTERVAL_SECONDS", 25.0),
+            ),
+            zoom_chat_burst_enabled=_env_bool(
+                "ARL_EDIT_ZOOM_CHAT_BURST_ENABLED",
+                True,
+            ),
+            zoom_chat_burst_sample_interval_seconds=max(
+                0.1,
+                _env_float("ARL_EDIT_ZOOM_CHAT_BURST_SAMPLE_INTERVAL_SECONDS", 0.5),
+            ),
+            zoom_chat_burst_threshold=min(
+                1.0,
+                max(0.0, _env_float("ARL_EDIT_ZOOM_CHAT_BURST_THRESHOLD", 0.08)),
             ),
             audio_mixing_enabled=_env_bool(
                 "ARL_EDIT_AUDIO_MIXING_ENABLED",

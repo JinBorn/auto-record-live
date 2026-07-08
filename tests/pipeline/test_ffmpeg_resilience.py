@@ -4355,6 +4355,8 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
                 scale=1.25,
                 x_anchor=0.4,
                 y_anchor=0.35,
+                ease_in_seconds=0.0,
+                ease_out_seconds=0.0,
             ),
         )
 
@@ -4382,6 +4384,46 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertIn("[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[v][a]", filter_complex)
         self.assertNotIn("[0:v]subtitles=", filter_complex)
         self.assertIn("[v]subtitles=", filter_complex)
+
+    def test_edit_plan_eased_punch_in_transform_uses_frame_expressions(self) -> None:
+        self._seed_export_inputs(boundary_ended_at_seconds=120.0)
+        settings = self.settings.model_copy(deep=True)
+        settings.export.use_edit_plans = True
+        self._append_edit_plan(
+            duration=120.0,
+            teaser_transform=TimelineVideoTransform(
+                kind="punch_in",
+                scale=1.25,
+                x_anchor=0.4,
+                y_anchor=0.35,
+                ease_in_seconds=0.4,
+                ease_out_seconds=0.4,
+            ),
+        )
+
+        with patch(
+            "arl.exporter.service.shutil.which",
+            side_effect=self._which_ffmpeg_and_ffprobe,
+        ), patch(
+            "arl.exporter.service.subprocess.run",
+            side_effect=self._fake_successful_export_run,
+        ) as mocked_run:
+            ExporterService(settings).run()
+
+        command = [
+            list(call.args[0])
+            for call in mocked_run.call_args_list
+            if call.args[0][0].endswith("ffmpeg")
+        ][0]
+        filter_complex = command[command.index("-filter_complex") + 1]
+        self.assertIn("zoompan=z='if(lt(in_time,0.400)", filter_complex)
+        self.assertIn("gt(in_time,14.600)", filter_complex)
+        self.assertIn("15.000-in_time", filter_complex)
+        self.assertIn("x='(iw-iw/zoom)*0.400'", filter_complex)
+        self.assertIn("y='(ih-ih/zoom)*0.350'", filter_complex)
+        self.assertIn("d=1:s=1920x1080:fps=30.000", filter_complex)
+        self.assertNotIn("crop=iw/(if(", filter_complex)
+        self.assertNotIn(":eval=frame", filter_complex)
 
     def test_edit_plan_invalid_transform_falls_back(self) -> None:
         self._seed_export_inputs(boundary_ended_at_seconds=120.0)

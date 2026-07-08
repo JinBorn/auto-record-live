@@ -59,6 +59,7 @@ class ExporterService:
         self.state_path = settings.storage.temp_dir / "exporter-state.json"
         self.audit_path = settings.storage.temp_dir / "exporter-events.jsonl"
         self.stderr_dir = settings.storage.temp_dir / "exporter-stderr"
+        self._video_profile_cache: dict[str, tuple[int, int, str] | None] = {}
 
     def run(
         self,
@@ -1076,7 +1077,10 @@ class ExporterService:
                     )
                 )
             else:
-                video_filters = self._timeline_video_filters(segment)
+                video_filters = self._timeline_video_filters(
+                    segment,
+                    video_profile=self._video_profile(recording_path),
+                )
                 filter_parts.append(f"[0:v]{','.join(video_filters)}[{video_label}]")
                 filter_parts.append(
                     "[0:a]"
@@ -1178,7 +1182,11 @@ class ExporterService:
                     )
                 )
             else:
-                video_filters = self._media_span_video_filters(span, transform)
+                video_filters = self._media_span_video_filters(
+                    span,
+                    transform,
+                    video_profile=self._video_profile(span.path),
+                )
                 filter_parts.append(
                     f"[{next_media_input_index}:v]{','.join(video_filters)}[{video_label}]"
                 )
@@ -1496,6 +1504,8 @@ class ExporterService:
         self,
         span: MediaSpan,
         transform: TimelineVideoTransform | None,
+        *,
+        video_profile: tuple[int, int, str] | None = None,
     ) -> list[str]:
         filters: list[str] = [
             (
@@ -1504,12 +1514,23 @@ class ExporterService:
             ),
             "setpts=PTS-STARTPTS",
         ]
-        filters.extend(self._timeline_transform_filters(transform))
+        filters.extend(
+            self._timeline_transform_filters(
+                transform,
+                duration_seconds=max(
+                    0.0,
+                    span.local_end_seconds - span.local_start_seconds,
+                ),
+                video_profile=video_profile,
+            )
+        )
         return filters
 
     def _timeline_video_filters(
         self,
         segment: TimelineSegment,
+        *,
+        video_profile: tuple[int, int, str] | None = None,
     ) -> list[str]:
         filters: list[str] = [
             (
@@ -1518,7 +1539,16 @@ class ExporterService:
             ),
             "setpts=PTS-STARTPTS",
         ]
-        filters.extend(self._timeline_transform_filters(segment.transform))
+        filters.extend(
+            self._timeline_transform_filters(
+                segment.transform,
+                duration_seconds=max(
+                    0.0,
+                    segment.source_end_seconds - segment.source_start_seconds,
+                ),
+                video_profile=video_profile,
+            )
+        )
         return filters
 
     def _transition_filter_parts(
@@ -1593,12 +1623,39 @@ class ExporterService:
     def _timeline_transform_filters(
         self,
         transform: TimelineVideoTransform | None,
+        *,
+        duration_seconds: float,
+        video_profile: tuple[int, int, str] | None = None,
     ) -> list[str]:
         if transform is None or transform.kind == "none":
             return []
         if transform.kind != "punch_in":
             return []
         scale = transform.scale
+        ease_in = min(transform.ease_in_seconds, max(0.0, duration_seconds / 2.0))
+        ease_out = min(transform.ease_out_seconds, max(0.0, duration_seconds / 2.0))
+        if ease_in > 0.0 or ease_out > 0.0:
+            if video_profile is not None:
+                width, height, fps = video_profile
+                zoom_expr = self._eased_zoompan_expr(
+                    scale,
+                    duration_seconds=duration_seconds,
+                    ease_in_seconds=ease_in,
+                    ease_out_seconds=ease_out,
+                )
+                return [
+                    (
+                        "zoompan="
+                        f"z='{zoom_expr}':"
+                        f"x='(iw-iw/zoom)*{transform.x_anchor:.3f}':"
+                        f"y='(ih-ih/zoom)*{transform.y_anchor:.3f}':"
+                        f"d=1:s={width}x{height}:fps={fps}"
+                    )
+                ]
+            log(
+                "exporter",
+                "eased punch-in fell back to static filters reason=missing_video_profile",
+            )
         return [
             f"scale=iw*{scale:.3f}:ih*{scale:.3f}",
             (
@@ -1607,6 +1664,114 @@ class ExporterService:
                 f"y=(ih-ih/{scale:.3f})*{transform.y_anchor:.3f}"
             ),
         ]
+
+    @staticmethod
+    def _eased_zoompan_expr(
+        scale: float,
+        *,
+        duration_seconds: float,
+        ease_in_seconds: float,
+        ease_out_seconds: float,
+    ) -> str:
+        target = f"{scale:.3f}"
+        duration = max(0.001, duration_seconds)
+        if ease_in_seconds > 0.0 and ease_out_seconds > 0.0:
+            plateau_end = max(ease_in_seconds, duration - ease_out_seconds)
+            expr = (
+                f"if(lt(in_time,{ease_in_seconds:.3f}),"
+                f"1+({target}-1)*in_time/{ease_in_seconds:.3f},"
+                f"if(gt(in_time,{plateau_end:.3f}),"
+                f"1+({target}-1)*({duration:.3f}-in_time)/{ease_out_seconds:.3f},"
+                f"{target}))"
+            )
+        elif ease_in_seconds > 0.0:
+            expr = (
+                f"if(lt(in_time,{ease_in_seconds:.3f}),"
+                f"1+({target}-1)*in_time/{ease_in_seconds:.3f},"
+                f"{target})"
+            )
+        elif ease_out_seconds > 0.0:
+            plateau_end = max(0.0, duration - ease_out_seconds)
+            expr = (
+                f"if(gt(in_time,{plateau_end:.3f}),"
+                f"1+({target}-1)*({duration:.3f}-in_time)/{ease_out_seconds:.3f},"
+                f"{target})"
+            )
+        else:
+            expr = target
+        return expr
+
+    def _video_profile(self, path: str) -> tuple[int, int, str] | None:
+        cached = self._video_profile_cache.get(path)
+        if path in self._video_profile_cache:
+            return cached
+        profile = self._probe_video_profile(path)
+        self._video_profile_cache[path] = profile
+        return profile
+
+    def _probe_video_profile(self, path: str) -> tuple[int, int, str] | None:
+        ffprobe_path = shutil.which("ffprobe")
+        if ffprobe_path is None:
+            return None
+        command = [
+            ffprobe_path,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height,avg_frame_rate,r_frame_rate",
+            "-of",
+            "json",
+            path,
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            )
+            payload = json.loads(result.stdout or "{}")
+        except Exception as exc:
+            log(
+                "exporter",
+                f"video profile probe skipped path={path} reason={exc.__class__.__name__}",
+            )
+            return None
+        streams = payload.get("streams")
+        if not isinstance(streams, list) or not streams:
+            return None
+        stream = streams[0]
+        if not isinstance(stream, dict):
+            return None
+        width = self._optional_int(stream.get("width"))
+        height = self._optional_int(stream.get("height"))
+        if width is None or height is None or width <= 0 or height <= 0:
+            return None
+        fps = self._frame_rate_filter_value(
+            stream.get("avg_frame_rate") or stream.get("r_frame_rate")
+        )
+        return width, height, fps
+
+    @staticmethod
+    def _frame_rate_filter_value(value: object) -> str:
+        if isinstance(value, str):
+            raw = value.strip()
+            if raw and raw != "0/0":
+                if "/" in raw:
+                    numerator, denominator = raw.split("/", 1)
+                    try:
+                        fps = float(numerator) / float(denominator)
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        fps = 30.0
+                    return f"{fps:.3f}"
+                try:
+                    return f"{float(raw):.3f}"
+                except ValueError:
+                    pass
+        return "30.000"
 
     @staticmethod
     def _valid_timeline_transform(transform: TimelineVideoTransform | None) -> bool:
@@ -1620,6 +1785,8 @@ class ExporterService:
             1.0 < transform.scale <= 1.5
             and 0.0 <= transform.x_anchor <= 1.0
             and 0.0 <= transform.y_anchor <= 1.0
+            and 0.0 <= transform.ease_in_seconds <= 1.0
+            and 0.0 <= transform.ease_out_seconds <= 1.0
         )
 
     def _highlight_select_expr(self, plan: HighlightPlanAsset) -> str:
