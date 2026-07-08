@@ -500,3 +500,36 @@ Implemented KDA-aligned kill SFX scheduling, SFX library variants, config/docs/s
 ### Next Steps
 
 - None - task complete
+
+
+## Session 63: ASR subtitle coverage smoothing
+
+**Date**: 2026-07-08
+**Task**: ASR subtitle coverage smoothing
+**Branch**: `main`
+
+### Summary
+
+Added configurable post-ASR subtitle display smoothing, documented ASR tuning envs, updated subtitle generation spec, validated match 2 quality-report at 71.6% active subtitle ratio with zero warnings, and archived the ASR quality task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `eb34326` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 62
+- **Total Sessions**: 63
 - **Last Active**: 2026-07-08
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~502 | Active |
+| `journal-2.md` | ~535 | Active |
 | `journal-1.md` | ~1986 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 63 | 2026-07-08 | ASR subtitle coverage smoothing | `eb34326` | `main` |
 | 62 | 2026-07-08 | SFX precision and multi-kill variants | `b727f4e` | `main` |
 | 61 | 2026-07-07 | LLM copywriting engine | `026bb16` | `main` |
 | 60 | 2026-07-07 | Export quality report CLI | `d0d8548` | `main` |
