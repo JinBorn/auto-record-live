@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 64
-- **Last Active**: 2026-07-08
+- **Total Sessions**: 65
+- **Last Active**: 2026-07-09
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~568 | Active |
+| `journal-2.md` | ~602 | Active |
 | `journal-1.md` | ~1986 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 65 | 2026-07-09 | BGM arrangement enhancement | `f3d080e`, `f257f83` | `main` |
 | 64 | 2026-07-08 | Zoom close-up upgrade | `bdfce0d` | `main` |
 | 63 | 2026-07-08 | ASR subtitle coverage smoothing | `eb34326` | `main` |
 | 62 | 2026-07-08 | SFX precision and multi-kill variants | `b727f4e` | `main` |

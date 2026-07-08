@@ -566,3 +566,37 @@ Implemented close-up zoom mode with KDA/chat/fallback triggers, eased zoompan ex
 ### Next Steps
 
 - None - task complete
+
+
+## Session 65: BGM arrangement enhancement
+
+**Date**: 2026-07-09
+**Task**: BGM arrangement enhancement
+**Branch**: `main`
+
+### Summary
+
+Planned and implemented BGM arrangement enhancement: configurable multi-phase BGM, source-music span avoidance, crossfade-shaped audio beds, library guidance, focused tests, full pytest and compileall validation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f3d080e` | (see git log) |
+| `f257f83` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
