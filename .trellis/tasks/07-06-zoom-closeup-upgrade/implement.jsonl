@@ -1,1 +1,6 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file":".trellis/spec/backend/export-configuration.md","reason":"Authoritative edit-plan, zoom transform, exporter filter, publish preset, stale-plan, and quality-report contracts."}
+{"file":".trellis/spec/backend/orchestration-contracts.md","reason":"Cross-stage edit-plan/exporter/subtitle manifest behavior and postprocess ordering must stay compatible."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Backend stage changes require focused contract tests, UTF-8 persistence discipline, and no ad hoc schemas."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Chat-burst/media fallback diagnostics should stay compact and avoid raw transcript or media secrets."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"KDA parsing and frame sampling helpers already exist and should be reused rather than duplicated."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Zoom close-ups span shared contracts, edit planning, exporter filters, reports, docs, and runtime envs."}

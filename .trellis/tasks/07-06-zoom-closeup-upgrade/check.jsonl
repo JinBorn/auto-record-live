@@ -1,1 +1,4 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file":".trellis/spec/backend/export-configuration.md","reason":"Verify close-up splitting, ease filters, zoom env defaults, stale-plan behavior, and quality-report zoom metrics."}
+{"file":".trellis/spec/backend/orchestration-contracts.md","reason":"Verify edit-plan and exporter contracts remain compatible with subtitle retiming, manifests, and postprocess ordering."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Verify tests cover the changed backend stage contract and no durable schema drift is introduced."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Check data flow across config, shared contracts, edit planner, exporter, quality report, and docs."}
