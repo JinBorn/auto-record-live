@@ -1,1 +1,10 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file":".trellis/spec/backend/export-configuration.md","reason":"Authoritative edit-plan audio, BGM library, source-music skip, sidechain, loudnorm, stale-plan, env, and quality-report contracts."}
+{"file":".trellis/spec/backend/orchestration-contracts.md","reason":"Chunked recording media-span resolution, edit-plan exporter input indexing, and postprocess ordering must stay compatible."}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"Keep BGM planning in the editing stage, rendering in exporter, settings in config, and shared contracts only where needed."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Backend stage changes require focused contract tests, idempotent state behavior, and UTF-8 persistence discipline."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"New source-music and library diagnostics must stay compact, greppable, and avoid raw transcript dumps."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Reuse existing KDA, timeline, library-selection, source-music, and exporter audio helpers instead of duplicating logic."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"BGM changes span config, editing, source-media resolution, exporter filters, reports, README, and spec updates."}
+{"file":".trellis/tasks/07-06-demo2-quality-parity/prd.md","reason":"Parent task constraints: demo2 parity, opt-in publish behavior, user-supplied audio assets, and no runtime data commits."}
+{"file":".trellis/tasks/archive/2026-07/07-06-teaser-robustness-transition/design.md","reason":"Preserve teaser/main timeline rules and BGM-after-teaser policy while changing audio bed planning."}
+{"file":".trellis/tasks/archive/2026-07/07-06-sfx-precision-multikill/design.md","reason":"Follow the local audio asset library pattern and SFX/BGM separation used by recent audio work."}

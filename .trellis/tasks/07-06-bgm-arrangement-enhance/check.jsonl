@@ -1,1 +1,8 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file":".trellis/spec/backend/export-configuration.md","reason":"Verify BGM phase planning, source-music avoidance, crossfade rendering, stale-plan behavior, env docs, and quality-report evidence."}
+{"file":".trellis/spec/backend/orchestration-contracts.md","reason":"Verify media-span resolution, chunked edit-plan export, and audio input indexing remain compatible."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Verify changed backend contracts have focused tests and no schema/persistence drift."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Verify new logs are compact, component-scoped, and do not expose transcript text or local secrets."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Check data flow across config, source detection, edit-plan rows, exporter filters, reports, and docs."}
+{"file":".trellis/tasks/07-06-bgm-arrangement-enhance/prd.md","reason":"Acceptance criteria for partial source-music sample, long-export switches, unchanged mix hierarchy, and library guidance."}
+{"file":".trellis/tasks/07-06-bgm-arrangement-enhance/design.md","reason":"Check implementation matches the approved technical design and rollback shape."}
+{"file":".trellis/tasks/07-06-bgm-arrangement-enhance/implement.md","reason":"Check completed work against the ordered implementation and validation plan."}
