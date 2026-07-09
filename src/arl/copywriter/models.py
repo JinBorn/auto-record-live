@@ -24,6 +24,15 @@ class CopyDraft(BaseModel):
     created_at: datetime
 
 
+class CoverCandidate(BaseModel):
+    path: str
+    rank: int
+    source_timestamp_seconds: float = 0.0
+    score: float = 0.0
+    reasons: list[str] = Field(default_factory=list)
+    published_path: str | None = None
+
+
 class PublishingPackage(BaseModel):
     session_id: str
     match_index: int
@@ -40,6 +49,7 @@ class PublishingPackage(BaseModel):
     cover_lines: list[str]
     tags: list[str]
     cover_path: str | None = None
+    cover_candidates: list[CoverCandidate] = Field(default_factory=list)
     published_package_dir: str | None = None
     published_video_path: str | None = None
     published_cover_path: str | None = None

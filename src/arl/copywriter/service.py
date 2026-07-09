@@ -11,7 +11,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from arl.config import Settings
-from arl.copywriter.cover import render_cover
+from arl.copywriter.cover import (
+    CoverFrameSeed,
+    render_cover,
+    select_cover_frame_candidates,
+)
 from arl.copywriter.llm import (
     LlmProvider,
     LlmProviderError,
@@ -19,6 +23,7 @@ from arl.copywriter.llm import (
     parse_llm_copywriting_result,
 )
 from arl.copywriter.models import (
+    CoverCandidate,
     CopyDraft,
     CopywriterSemanticAsset,
     CopywriterStateFile,
@@ -28,6 +33,7 @@ from arl.copywriter.models import (
 from arl.orchestrator.models import OrchestratorStateFile
 from arl.shared.contracts import (
     CopyAsset,
+    EditPlanAsset,
     ExportAsset,
     HighlightPlanAsset,
     MatchBoundary,
@@ -47,6 +53,22 @@ _HIGHLIGHT_REASON_PRIORITY = {
     "match_end_context": 4,
     "condensed_context": 5,
 }
+_COVER_HIGH_SIGNAL_REASONS = {
+    "highlight_keyword",
+    "condensed_key_event",
+    "condensed_tactical",
+    "llm_teaser",
+    "teaser_fallback_top_scored",
+}
+_COVER_HIGHLIGHT_PRIORITIES = {
+    "highlight_keyword": 24.0,
+    "condensed_key_event": 20.0,
+    "condensed_tactical": 16.0,
+    "llm_teaser": 30.0,
+    "teaser_fallback_top_scored": 18.0,
+}
+_KDA_KILLS_RE = re.compile(r"\bkills=(\d+)->(\d+)")
+_KDA_CURRENT_AT_RE = re.compile(r"\bcurrent_at=([0-9]+(?:\.[0-9]+)?)")
 
 
 @dataclass(frozen=True)
@@ -62,6 +84,7 @@ class CopywriterService:
         settings: Settings,
         *,
         cover_renderer: Callable[..., bool] | None = None,
+        cover_frame_sampler: Callable[..., list[tuple[float, object]]] | None = None,
         llm_provider: LlmProvider | None = None,
     ) -> None:
         self.settings = settings
@@ -70,6 +93,7 @@ class CopywriterService:
         self.recording_assets_path = settings.storage.temp_dir / "recording-assets.jsonl"
         self.boundaries_path = settings.storage.temp_dir / "match-boundaries.jsonl"
         self.highlight_plans_path = settings.storage.temp_dir / "highlight-plans.jsonl"
+        self.edit_plans_path = settings.storage.temp_dir / "edit-plans.jsonl"
         self.semantic_assets_path = (
             settings.storage.temp_dir / "copywriter-semantic-assets.jsonl"
         )
@@ -77,6 +101,7 @@ class CopywriterService:
         self.publishing_packages_path = settings.storage.temp_dir / "publishing-packages.jsonl"
         self.state_path = settings.storage.temp_dir / "copywriter-state.json"
         self.cover_renderer = cover_renderer or render_cover
+        self.cover_frame_sampler = cover_frame_sampler
         self.llm_provider = llm_provider
 
     def run(
@@ -248,6 +273,10 @@ class CopywriterService:
             (item.session_id, item.match_index): item
             for item in load_models(self.highlight_plans_path, HighlightPlanAsset)
         }
+        edit_plan_map = {
+            (item.session_id, item.match_index): item
+            for item in load_models(self.edit_plans_path, EditPlanAsset)
+        }
         semantic_assets = self._latest_semantic_assets_by_match(
             load_models(self.semantic_assets_path, CopywriterSemanticAsset)
         )
@@ -320,6 +349,10 @@ class CopywriterService:
                 highlight_plan_map.get((subtitle.session_id, subtitle.match_index)),
                 boundary,
             )
+            edit_plan = self._valid_edit_plan(
+                edit_plan_map.get((subtitle.session_id, subtitle.match_index)),
+                boundary,
+            )
             draft, package = self._build_outputs(
                 subtitle=subtitle,
                 export=export,
@@ -354,6 +387,7 @@ class CopywriterService:
                 recording=recording,
                 boundary=boundary,
                 highlight_plan=highlight_plan,
+                edit_plan=edit_plan,
             )
             package_output_path = self._package_output_path(
                 package.session_id,
@@ -667,6 +701,42 @@ class CopywriterService:
             if source_cover.exists():
                 target_cover = package_dir / f"cover{source_cover.suffix or '.jpg'}"
                 published_cover_path = self._copy_file(source_cover, target_cover)
+        published_candidates: list[CoverCandidate] = []
+        for candidate in package.cover_candidates:
+            source_candidate = Path(candidate.path)
+            published_candidate_path: Path | None = None
+            if source_candidate.exists():
+                target_candidate = (
+                    package_dir
+                    / f"cover-{candidate.rank:02d}{source_candidate.suffix or '.jpg'}"
+                )
+                published_candidate_path = self._copy_file(
+                    source_candidate,
+                    target_candidate,
+                )
+            published_candidates.append(
+                candidate.model_copy(
+                    update={
+                        "published_path": (
+                            str(published_candidate_path)
+                            if published_candidate_path is not None
+                            else candidate.published_path
+                        )
+                    }
+                )
+            )
+        package = package.model_copy(
+            update={
+                "published_package_dir": str(package_dir),
+                "published_video_path": (
+                    str(published_video_path) if published_video_path is not None else None
+                ),
+                "published_cover_path": (
+                    str(published_cover_path) if published_cover_path is not None else None
+                ),
+                "cover_candidates": published_candidates,
+            }
+        )
         published_metadata_path: Path | None = None
         if published_video_path is not None:
             published_metadata_path = self._write_published_metadata(
@@ -682,13 +752,6 @@ class CopywriterService:
 
         return package.model_copy(
             update={
-                "published_package_dir": str(package_dir),
-                "published_video_path": (
-                    str(published_video_path) if published_video_path is not None else None
-                ),
-                "published_cover_path": (
-                    str(published_cover_path) if published_cover_path is not None else None
-                ),
                 "published_metadata_path": (
                     str(published_metadata_path)
                     if published_metadata_path is not None
@@ -746,6 +809,22 @@ class CopywriterService:
             "Cover Lines:",
             *[f"- {line}" for line in package.cover_lines],
         ]
+        if package.cover_candidates:
+            rows.extend(
+                [
+                    "",
+                    "Cover Candidates:",
+                    *[
+                        (
+                            f"- {candidate.rank:02d}: "
+                            f"{candidate.published_path or candidate.path} "
+                            f"(source={candidate.source_timestamp_seconds:.3f}s "
+                            f"score={candidate.score:.3f})"
+                        )
+                        for candidate in package.cover_candidates
+                    ],
+                ]
+            )
         if package.evidence:
             rows.extend(
                 [
@@ -914,6 +993,27 @@ class CopywriterService:
             or abs(plan.source_boundary_end_seconds - boundary.ended_at_seconds)
             > tolerance_seconds
         ):
+            return None
+        return plan
+
+    def _valid_edit_plan(
+        self,
+        plan: EditPlanAsset | None,
+        boundary: MatchBoundary | None,
+    ) -> EditPlanAsset | None:
+        if plan is None:
+            return None
+        if boundary is None:
+            return plan
+        tolerance_seconds = 1.0
+        if (
+            abs(plan.source_boundary_start_seconds - boundary.started_at_seconds)
+            > tolerance_seconds
+            or abs(plan.source_boundary_end_seconds - boundary.ended_at_seconds)
+            > tolerance_seconds
+        ):
+            return None
+        if not plan.timeline:
             return None
         return plan
 
@@ -1367,6 +1467,9 @@ class CopywriterService:
             return False
         if package.cover_path is not None and not Path(package.cover_path).exists():
             return False
+        for candidate in package.cover_candidates:
+            if not Path(candidate.path).exists():
+                return False
         if (
             package.published_package_dir is not None
             and not Path(package.published_package_dir).is_dir()
@@ -1407,6 +1510,12 @@ class CopywriterService:
             or not Path(package.published_cover_path).exists()
         ):
             return False
+        if source_export_exists:
+            for candidate in package.cover_candidates:
+                if candidate.published_path is None or not Path(
+                    candidate.published_path
+                ).exists():
+                    return False
         return True
 
     def _package_output_path(self, session_id: str, match_index: int) -> Path:
@@ -1424,6 +1533,7 @@ class CopywriterService:
         recording: RecordingAsset | None,
         boundary: MatchBoundary | None,
         highlight_plan: HighlightPlanAsset | None,
+        edit_plan: EditPlanAsset | None,
     ) -> PublishingPackage:
         source_path: Path | None = None
         use_source_timeline = False
@@ -1440,34 +1550,227 @@ class CopywriterService:
                     source_path = export_path
         if source_path is None:
             return package
-        cover_path = (
+        render_inputs = self._cover_render_inputs(
+            package,
+            source_path=source_path,
+            use_source_timeline=use_source_timeline,
+            boundary=boundary,
+            highlight_plan=highlight_plan,
+            edit_plan=edit_plan,
+        )
+        rendered_candidates: list[CoverCandidate] = []
+        for rank, (at_seconds, score, reasons) in enumerate(render_inputs, start=1):
+            cover_path = self._cover_candidate_path(package, rank)
+            try:
+                rendered = self.cover_renderer(
+                    source_path,
+                    cover_path,
+                    package.cover_lines,
+                    at_seconds=at_seconds,
+                )
+            except Exception as exc:
+                log(
+                    "copywriter",
+                    "cover render skipped "
+                    f"session_id={package.session_id} match_index={package.match_index} "
+                    f"rank={rank} reason={exc.__class__.__name__}",
+                )
+                continue
+            if not rendered:
+                continue
+            rendered_candidates.append(
+                CoverCandidate(
+                    path=str(cover_path),
+                    rank=rank,
+                    source_timestamp_seconds=round(at_seconds, 3),
+                    score=round(score, 3),
+                    reasons=reasons,
+                )
+            )
+        if not rendered_candidates:
+            return package
+        return package.model_copy(
+            update={
+                "cover_path": rendered_candidates[0].path,
+                "cover_candidates": rendered_candidates,
+            }
+        )
+
+    def _cover_render_inputs(
+        self,
+        package: PublishingPackage,
+        *,
+        source_path: Path,
+        use_source_timeline: bool,
+        boundary: MatchBoundary | None,
+        highlight_plan: HighlightPlanAsset | None,
+        edit_plan: EditPlanAsset | None,
+    ) -> list[tuple[float, float, list[str]]]:
+        if not use_source_timeline:
+            return [(0.0, 0.0, ["export_fallback"])]
+
+        ranked = select_cover_frame_candidates(
+            source_path,
+            self._cover_frame_seeds(
+                package,
+                boundary=boundary,
+                highlight_plan=highlight_plan,
+                edit_plan=edit_plan,
+            ),
+            sampler=self.cover_frame_sampler,
+        )
+        if ranked:
+            return [
+                (item.timestamp_seconds, item.score, list(item.reasons))
+                for item in ranked
+            ]
+
+        fallback_at = self._cover_source_time(package, boundary, highlight_plan)
+        return [(fallback_at, 0.0, ["legacy_fallback"])]
+
+    def _cover_candidate_path(self, package: PublishingPackage, rank: int) -> Path:
+        return (
             self.settings.storage.processed_dir
             / package.session_id
-            / f"match-{package.match_index:02d}-cover.jpg"
+            / f"match-{package.match_index:02d}-cover-{rank:02d}.jpg"
         )
-        at_seconds = (
-            self._cover_source_time(package, boundary, highlight_plan)
-            if use_source_timeline
-            else 0.0
+
+    def _cover_frame_seeds(
+        self,
+        package: PublishingPackage,
+        *,
+        boundary: MatchBoundary | None,
+        highlight_plan: HighlightPlanAsset | None,
+        edit_plan: EditPlanAsset | None,
+    ) -> list[CoverFrameSeed]:
+        seeds: list[CoverFrameSeed] = []
+        seeds.extend(self._kda_cover_frame_seeds(package, boundary))
+        if edit_plan is not None:
+            seeds.extend(self._edit_plan_cover_frame_seeds(edit_plan, boundary))
+        if highlight_plan is not None:
+            seeds.extend(self._highlight_cover_frame_seeds(highlight_plan, boundary))
+        seeds.append(
+            CoverFrameSeed(
+                timestamp_seconds=self._cover_source_time(package, boundary, highlight_plan),
+                reason="legacy_fallback",
+                priority=4.0,
+            )
         )
-        try:
-            rendered = self.cover_renderer(
-                source_path,
-                cover_path,
-                package.cover_lines,
-                at_seconds=at_seconds,
+        return self._dedupe_cover_frame_seeds(seeds)
+
+    def _kda_cover_frame_seeds(
+        self,
+        package: PublishingPackage,
+        boundary: MatchBoundary | None,
+    ) -> list[CoverFrameSeed]:
+        subtitle_path = Path(package.source_subtitle_path)
+        if not subtitle_path.exists():
+            return []
+        seeds: list[CoverFrameSeed] = []
+        for cue in self._parse_subtitle_cues(subtitle_path):
+            if not cue.text.startswith("kda_change "):
+                continue
+            kills_match = _KDA_KILLS_RE.search(cue.text)
+            if kills_match is None:
+                continue
+            previous_kills = int(kills_match.group(1))
+            current_kills = int(kills_match.group(2))
+            if current_kills <= previous_kills:
+                continue
+            relative_timestamp = self._kda_cover_timestamp(cue)
+            seeds.append(
+                CoverFrameSeed(
+                    timestamp_seconds=self._source_timestamp(
+                        relative_timestamp,
+                        boundary,
+                    ),
+                    reason="kda_kill",
+                    priority=40.0,
+                )
             )
-        except Exception as exc:
-            log(
-                "copywriter",
-                "cover render skipped "
-                f"session_id={package.session_id} match_index={package.match_index} "
-                f"reason={exc.__class__.__name__}",
+        return seeds
+
+    @staticmethod
+    def _kda_cover_timestamp(cue: _SubtitleCue) -> float:
+        match = _KDA_CURRENT_AT_RE.search(cue.text)
+        if match is not None:
+            return float(match.group(1))
+        return (cue.started_at_seconds + cue.ended_at_seconds) / 2.0
+
+    def _edit_plan_cover_frame_seeds(
+        self,
+        edit_plan: EditPlanAsset,
+        boundary: MatchBoundary | None,
+    ) -> list[CoverFrameSeed]:
+        seeds: list[CoverFrameSeed] = []
+        for segment in edit_plan.timeline:
+            if segment.source_end_seconds <= segment.source_start_seconds:
+                continue
+            if segment.role == "teaser":
+                priority = 32.0
+                reason = f"edit_plan:{segment.reason}"
+            elif segment.reason in _COVER_HIGH_SIGNAL_REASONS:
+                priority = _COVER_HIGHLIGHT_PRIORITIES.get(segment.reason, 14.0)
+                reason = f"edit_plan:{segment.reason}"
+            else:
+                continue
+            midpoint = (segment.source_start_seconds + segment.source_end_seconds) / 2.0
+            seeds.append(
+                CoverFrameSeed(
+                    timestamp_seconds=self._source_timestamp(midpoint, boundary),
+                    reason=reason,
+                    priority=priority,
+                )
             )
-            return package
-        if not rendered:
-            return package
-        return package.model_copy(update={"cover_path": str(cover_path)})
+        return seeds
+
+    def _highlight_cover_frame_seeds(
+        self,
+        highlight_plan: HighlightPlanAsset,
+        boundary: MatchBoundary | None,
+    ) -> list[CoverFrameSeed]:
+        seeds: list[CoverFrameSeed] = []
+        for window in highlight_plan.windows:
+            if window.ended_at_seconds <= window.started_at_seconds:
+                continue
+            priority = _COVER_HIGHLIGHT_PRIORITIES.get(window.reason)
+            if priority is None:
+                continue
+            midpoint = (window.started_at_seconds + window.ended_at_seconds) / 2.0
+            seeds.append(
+                CoverFrameSeed(
+                    timestamp_seconds=self._source_timestamp(midpoint, boundary),
+                    reason=f"highlight:{window.reason}",
+                    priority=priority,
+                )
+            )
+        return seeds
+
+    @staticmethod
+    def _source_timestamp(
+        relative_seconds: float,
+        boundary: MatchBoundary | None,
+    ) -> float:
+        if boundary is None:
+            return max(0.0, relative_seconds)
+        return max(0.0, boundary.started_at_seconds + relative_seconds)
+
+    @staticmethod
+    def _dedupe_cover_frame_seeds(
+        seeds: list[CoverFrameSeed],
+    ) -> list[CoverFrameSeed]:
+        selected: list[CoverFrameSeed] = []
+        for seed in sorted(
+            seeds,
+            key=lambda item: (-item.priority, item.timestamp_seconds, item.reason),
+        ):
+            if any(
+                abs(seed.timestamp_seconds - existing.timestamp_seconds) < 0.5
+                for existing in selected
+            ):
+                continue
+            selected.append(seed)
+        return selected[:12]
 
     def _cover_source_time(
         self,

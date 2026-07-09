@@ -8,6 +8,7 @@ from pathlib import Path
 
 from arl.config import Settings, StorageSettings
 from arl.copywriter.models import (
+    CoverCandidate,
     CopywriterSemanticAsset,
     CopywriterStateFile,
     LlmCopywritingResult,
@@ -67,6 +68,9 @@ class PostProcessResetServiceTest(unittest.TestCase):
             self.settings.storage.processed_dir / target / "match-01-publishing.json"
         )
         target_cover = self.settings.storage.processed_dir / target / "match-01-cover.jpg"
+        target_cover_candidate = (
+            self.settings.storage.processed_dir / target / "match-01-cover-01.jpg"
+        )
         target_package_dir = (
             self.settings.storage.export_dir
             / "bilibili"
@@ -74,6 +78,7 @@ class PostProcessResetServiceTest(unittest.TestCase):
         )
         target_published_video = target_package_dir / "video.mp4"
         target_published_cover = target_package_dir / "cover.jpg"
+        target_published_cover_candidate = target_package_dir / "cover-01.jpg"
         target_published_metadata = target_package_dir / "upload.txt"
         other_subtitle = self.settings.storage.processed_dir / other / "match-01.srt"
         other_export = self.settings.storage.export_dir / "bilibili" / f"{other}_match01.mp4"
@@ -82,6 +87,9 @@ class PostProcessResetServiceTest(unittest.TestCase):
             self.settings.storage.processed_dir / other / "match-01-publishing.json"
         )
         other_cover = self.settings.storage.processed_dir / other / "match-01-cover.jpg"
+        other_cover_candidate = (
+            self.settings.storage.processed_dir / other / "match-01-cover-01.jpg"
+        )
         other_package_dir = (
             self.settings.storage.export_dir
             / "bilibili"
@@ -89,6 +97,7 @@ class PostProcessResetServiceTest(unittest.TestCase):
         )
         other_published_video = other_package_dir / "video.mp4"
         other_published_cover = other_package_dir / "cover.jpg"
+        other_published_cover_candidate = other_package_dir / "cover-01.jpg"
         other_published_metadata = other_package_dir / "upload.txt"
         for path in [
             target_subtitle,
@@ -96,16 +105,20 @@ class PostProcessResetServiceTest(unittest.TestCase):
             target_copy,
             target_publishing,
             target_cover,
+            target_cover_candidate,
             target_published_video,
             target_published_cover,
+            target_published_cover_candidate,
             target_published_metadata,
             other_subtitle,
             other_export,
             other_copy,
             other_publishing,
             other_cover,
+            other_cover_candidate,
             other_published_video,
             other_published_cover,
+            other_published_cover_candidate,
             other_published_metadata,
         ]:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -122,6 +135,8 @@ class PostProcessResetServiceTest(unittest.TestCase):
             target_published_cover,
             target_published_metadata,
             now,
+            cover_candidate_path=target_cover_candidate,
+            published_cover_candidate_path=target_published_cover_candidate,
         )
         self._append_postprocess_rows(
             other,
@@ -134,6 +149,8 @@ class PostProcessResetServiceTest(unittest.TestCase):
             other_published_cover,
             other_published_metadata,
             now,
+            cover_candidate_path=other_cover_candidate,
+            published_cover_candidate_path=other_published_cover_candidate,
         )
         append_model(
             self.temp_root / "match-stage-signals.jsonl",
@@ -200,15 +217,17 @@ class PostProcessResetServiceTest(unittest.TestCase):
         result = PostProcessResetService(self.settings).run(session_ids={target})
 
         self.assertEqual(result.session_ids, [target])
-        self.assertEqual(len(result.deleted_files), 8)
+        self.assertEqual(len(result.deleted_files), 10)
         self.assertEqual(result.skipped_files, [])
         self.assertFalse(target_subtitle.exists())
         self.assertFalse(target_export.exists())
         self.assertFalse(target_copy.exists())
         self.assertFalse(target_publishing.exists())
         self.assertFalse(target_cover.exists())
+        self.assertFalse(target_cover_candidate.exists())
         self.assertFalse(target_published_video.exists())
         self.assertFalse(target_published_cover.exists())
+        self.assertFalse(target_published_cover_candidate.exists())
         self.assertFalse(target_published_metadata.exists())
         self.assertFalse(target_package_dir.exists())
         self.assertTrue(other_subtitle.exists())
@@ -216,8 +235,10 @@ class PostProcessResetServiceTest(unittest.TestCase):
         self.assertTrue(other_copy.exists())
         self.assertTrue(other_publishing.exists())
         self.assertTrue(other_cover.exists())
+        self.assertTrue(other_cover_candidate.exists())
         self.assertTrue(other_published_video.exists())
         self.assertTrue(other_published_cover.exists())
+        self.assertTrue(other_published_cover_candidate.exists())
         self.assertTrue(other_published_metadata.exists())
         self.assertTrue(other_package_dir.exists())
 
@@ -334,6 +355,8 @@ class PostProcessResetServiceTest(unittest.TestCase):
         published_cover_path: Path,
         published_metadata_path: Path,
         created_at: datetime,
+        cover_candidate_path: Path | None = None,
+        published_cover_candidate_path: Path | None = None,
     ) -> None:
         append_model(
             self.temp_root / "match-stage-hints.jsonl",
@@ -478,6 +501,24 @@ class PostProcessResetServiceTest(unittest.TestCase):
                 cover_lines=["cover", "line"],
                 tags=["tag"],
                 cover_path=str(cover_path),
+                cover_candidates=(
+                    [
+                        CoverCandidate(
+                            path=str(cover_candidate_path),
+                            rank=1,
+                            source_timestamp_seconds=10.0,
+                            score=1.0,
+                            reasons=["fixture"],
+                            published_path=(
+                                str(published_cover_candidate_path)
+                                if published_cover_candidate_path is not None
+                                else None
+                            ),
+                        )
+                    ]
+                    if cover_candidate_path is not None
+                    else []
+                ),
                 published_package_dir=str(published_video_path.parent),
                 published_video_path=str(published_video_path),
                 published_cover_path=str(published_cover_path),

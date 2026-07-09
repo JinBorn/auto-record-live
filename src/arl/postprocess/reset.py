@@ -162,8 +162,13 @@ class PostProcessResetService:
             lambda item: [
                 item.path,
                 item.cover_path,
+                *[candidate.path for candidate in item.cover_candidates],
                 item.published_video_path,
                 item.published_cover_path,
+                *[
+                    candidate.published_path
+                    for candidate in item.cover_candidates
+                ],
                 item.published_metadata_path,
             ],
             result=result,

@@ -7,8 +7,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
+
 from arl.config import OrchestratorSettings, Settings, StorageSettings
-from arl.copywriter.cover import _draw_cover_text, render_cover
+from arl.copywriter.cover import (
+    CoverFrameSeed,
+    _draw_cover_text,
+    render_cover,
+    score_cover_frame,
+)
 from arl.copywriter.llm import LlmProviderResponse
 from arl.copywriter.models import (
     CopywriterSemanticAsset,
@@ -23,6 +30,7 @@ from arl.orchestrator.models import (
 )
 from arl.shared.contracts import (
     CopyAsset,
+    EditPlanAsset,
     ExportAsset,
     HighlightClipWindow,
     HighlightPlanAsset,
@@ -30,6 +38,7 @@ from arl.shared.contracts import (
     RecordingAsset,
     SourceType,
     SubtitleAsset,
+    TimelineSegment,
 )
 from arl.shared.jsonl_store import append_model, load_models
 
@@ -136,11 +145,77 @@ class CopywriterServiceTest(unittest.TestCase):
             1,
         )
 
-        package_output_path = Path(package.path or "")
-        output_path.unlink()
+    def test_publishing_package_defaults_cover_candidates_for_legacy_rows(self) -> None:
+        payload = {
+            "session_id": "session-legacy-cover-candidates",
+            "match_index": 1,
+            "source_subtitle_path": "subtitle.srt",
+            "source_export_path": None,
+            "source_recording_path": None,
+            "transcript_excerpt": ["cue"],
+            "evidence": ["00:01 cue"],
+            "title_candidates": ["title"],
+            "recommended_title": "title",
+            "summary": "summary",
+            "cover_lines": ["cover", "line"],
+            "tags": ["tag"],
+            "cover_path": None,
+            "status": "generated",
+            "created_at": self._now().isoformat(),
+        }
+
+        package = PublishingPackage.model_validate(payload)
+
+        self.assertEqual(package.cover_candidates, [])
+
+    def test_missing_copy_and_publishing_json_are_regenerated_without_duplicate_rows(
+        self,
+    ) -> None:
+        session_id = "session-copywriter-missing-generated-json"
+        subtitle_path = self._write_subtitle(
+            session_id,
+            "1\n00:00:00,000 --> 00:00:02,000\nmissing output regression subtitle\n",
+        )
+        export_path = self._write_export(session_id)
+        append_model(
+            self.temp_root / "subtitle-assets.jsonl",
+            SubtitleAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(subtitle_path),
+                format="srt",
+            ),
+        )
+        append_model(
+            self.temp_root / "export-assets.jsonl",
+            ExportAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(export_path),
+                subtitle_path=str(subtitle_path),
+                created_at=self._now(),
+            ),
+        )
+        service = CopywriterService(
+            self.settings,
+            cover_renderer=lambda *args, **kwargs: False,
+        )
+
+        service.run()
+        copy_assets = load_models(self.temp_root / "copy-assets.jsonl", CopyAsset)
+        packages = load_models(self.temp_root / "publishing-packages.jsonl", PublishingPackage)
+        self.assertEqual(len(copy_assets), 1)
+        self.assertEqual(len(packages), 1)
+        copy_output_path = Path(copy_assets[0].path)
+        package_output_path = Path(packages[0].path or "")
+        self.assertTrue(copy_output_path.exists())
+        self.assertTrue(package_output_path.exists())
+
+        copy_output_path.unlink()
         package_output_path.unlink()
-        CopywriterService(self.settings).run()
-        self.assertTrue(output_path.exists())
+        service.run()
+
+        self.assertTrue(copy_output_path.exists())
         self.assertTrue(package_output_path.exists())
         self.assertEqual(len(load_models(self.temp_root / "copy-assets.jsonl", CopyAsset)), 1)
         self.assertEqual(
@@ -723,6 +798,180 @@ class CopywriterServiceTest(unittest.TestCase):
         self.assertIn("Hashtags:", metadata_text)
         self.assertIn("Evidence:", metadata_text)
 
+    def test_cover_renderer_writes_ranked_candidates_and_metadata(self) -> None:
+        session_id = "session-copywriter-cover-candidates"
+        subtitle_path = self._write_subtitle(
+            session_id,
+            "1\n00:00:20,000 --> 00:00:21,000\n"
+            "kda_change kills=1->2 deaths=0->0 previous_at=15 current_at=20\n\n"
+            "2\n00:01:10,000 --> 00:01:12,000\n"
+            "candidate cover subtitle\n",
+        )
+        export_path = self._write_export(session_id)
+        recording_path = self._write_recording(session_id)
+        append_model(
+            self.temp_root / "subtitle-assets.jsonl",
+            SubtitleAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(subtitle_path),
+                format="srt",
+            ),
+        )
+        append_model(
+            self.temp_root / "export-assets.jsonl",
+            ExportAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(export_path),
+                subtitle_path=str(subtitle_path),
+                created_at=self._now(),
+            ),
+        )
+        append_model(
+            self.temp_root / "recording-assets.jsonl",
+            RecordingAsset(
+                session_id=session_id,
+                source_type=SourceType.DIRECT_STREAM,
+                path=str(recording_path),
+                started_at=self._now(),
+                ended_at=self._now(),
+            ),
+        )
+        append_model(
+            self.temp_root / "match-boundaries.jsonl",
+            MatchBoundary(
+                session_id=session_id,
+                match_index=1,
+                started_at_seconds=10.0,
+                ended_at_seconds=220.0,
+                confidence=0.95,
+            ),
+        )
+        append_model(
+            self.temp_root / "highlight-plans.jsonl",
+            HighlightPlanAsset(
+                session_id=session_id,
+                match_index=1,
+                source_boundary_start_seconds=10.0,
+                source_boundary_end_seconds=220.0,
+                windows=[
+                    HighlightClipWindow(
+                        started_at_seconds=70.0,
+                        ended_at_seconds=80.0,
+                        reason="highlight_keyword",
+                    ),
+                    HighlightClipWindow(
+                        started_at_seconds=130.0,
+                        ended_at_seconds=140.0,
+                        reason="condensed_key_event",
+                    ),
+                    HighlightClipWindow(
+                        started_at_seconds=180.0,
+                        ended_at_seconds=190.0,
+                        reason="condensed_tactical",
+                    ),
+                ],
+                created_at=self._now(),
+            ),
+        )
+        append_model(
+            self.temp_root / "edit-plans.jsonl",
+            EditPlanAsset(
+                session_id=session_id,
+                match_index=1,
+                source_boundary_start_seconds=10.0,
+                source_boundary_end_seconds=220.0,
+                timeline=[
+                    TimelineSegment(
+                        role="teaser",
+                        source_start_seconds=70.0,
+                        source_end_seconds=78.0,
+                        reason="highlight_keyword",
+                    ),
+                    TimelineSegment(
+                        role="main",
+                        source_start_seconds=0.0,
+                        source_end_seconds=210.0,
+                        reason="condensed_key_event",
+                    ),
+                ],
+                created_at=self._now(),
+            ),
+        )
+        render_calls: list[tuple[Path, Path, float]] = []
+
+        def _cover_renderer(
+            source: Path,
+            output: Path,
+            cover_lines: list[str],
+            *,
+            at_seconds: float,
+        ) -> bool:
+            render_calls.append((source, output, at_seconds))
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(f"cover {at_seconds:.3f}", encoding="utf-8")
+            return True
+
+        def _sampler(
+            path: Path,
+            start_seconds: float,
+            end_seconds: float,
+            *,
+            interval_seconds: float,
+        ) -> list[tuple[float, np.ndarray]]:
+            timestamp = round((start_seconds + end_seconds) / 2.0, 3)
+            base = np.zeros((120, 160, 3), dtype=np.uint8)
+            base[:, 80:] = 220
+            chat = base.copy()
+            chat[70:112, 0:58] = 255
+            return [(timestamp - 1.0, base), (timestamp, chat)]
+
+        CopywriterService(
+            self.settings,
+            cover_renderer=_cover_renderer,
+            cover_frame_sampler=_sampler,
+        ).run()
+
+        packages = load_models(self.temp_root / "publishing-packages.jsonl", PublishingPackage)
+        self.assertEqual(len(packages), 1)
+        package = packages[0]
+        self.assertEqual(len(package.cover_candidates), 3)
+        self.assertEqual(package.cover_path, package.cover_candidates[0].path)
+        self.assertEqual([candidate.rank for candidate in package.cover_candidates], [1, 2, 3])
+        self.assertEqual(
+            [Path(candidate.path).name for candidate in package.cover_candidates],
+            ["match-01-cover-01.jpg", "match-01-cover-02.jpg", "match-01-cover-03.jpg"],
+        )
+        self.assertEqual(len(render_calls), 3)
+        self.assertTrue(all(call[0] == recording_path for call in render_calls))
+        source_times = [
+            candidate.source_timestamp_seconds for candidate in package.cover_candidates
+        ]
+        self.assertTrue(all(time >= 10.0 for time in source_times))
+        self.assertTrue(
+            all(
+                abs(left - right) >= 5.0
+                for index, left in enumerate(source_times)
+                for right in source_times[index + 1 :]
+            )
+        )
+        published_package_dir = Path(package.published_package_dir or "")
+        self.assertEqual(Path(package.published_cover_path or "").name, "cover.jpg")
+        for candidate in package.cover_candidates:
+            self.assertIsNotNone(candidate.published_path)
+            published_candidate = Path(candidate.published_path or "")
+            self.assertEqual(published_candidate.parent, published_package_dir)
+            self.assertEqual(published_candidate.name, f"cover-{candidate.rank:02d}.jpg")
+            self.assertTrue(published_candidate.exists())
+        metadata_text = Path(package.published_metadata_path or "").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Cover Candidates:", metadata_text)
+        self.assertIn("cover-01.jpg", metadata_text)
+        package_payload = json.loads(Path(package.path or "").read_text(encoding="utf-8"))
+        self.assertEqual(len(package_payload["cover_candidates"]), 3)
+
     def test_cover_renderer_uses_export_when_recording_is_unavailable(self) -> None:
         session_id = "session-copywriter-cover-export-fallback"
         subtitle_path = self._write_subtitle(
@@ -1030,16 +1279,16 @@ class CopywriterServiceTest(unittest.TestCase):
         self.assertFalse(rendered)
         self.assertFalse(output_path.exists())
 
-    def test_cover_text_renderer_omits_panel_and_preserves_secondary_size(self) -> None:
+    def test_cover_text_renderer_uses_stacked_yellow_safe_layout(self) -> None:
         draw = _FakeCoverDraw()
 
         _draw_cover_text(
             draw,
             (1920, 1080),
             [
-                "Very long explosive headline that has to shrink to fit the cover image",
+                "Explosive",
                 "Fast clear",
-                "Ladder trick",
+                "Ladder win",
             ],
             _FakeCoverFontFactory,
         )
@@ -1047,13 +1296,31 @@ class CopywriterServiceTest(unittest.TestCase):
         self.assertEqual(draw.panels, [])
         self.assertEqual(len(draw.text_calls), 3)
         self.assertEqual(draw.text_calls[0]["fill"], (255, 238, 0))
-        self.assertEqual(draw.text_calls[1]["fill"], (255, 255, 255))
-        self.assertLess(draw.text_calls[0]["font"].size, 126)
-        self.assertEqual(draw.text_calls[1]["font"].size, 96)
-        self.assertGreater(
-            draw.text_calls[0]["stroke_width"],
-            draw.text_calls[1]["stroke_width"],
+        self.assertEqual(draw.text_calls[1]["fill"], (255, 238, 0))
+        self.assertLessEqual(draw.text_calls[0]["font"].size, 122)
+        self.assertEqual(
+            draw.text_calls[0]["font"].size,
+            draw.text_calls[1]["font"].size,
         )
+        self.assertGreaterEqual(draw.text_calls[0]["stroke_width"], 6)
+        for call in draw.text_calls:
+            x, y = call["xy"]
+            self.assertEqual(x, int(1920 * 0.08))
+            self.assertGreaterEqual(y, int(1080 * 0.42))
+            self.assertLessEqual(y, int(1080 * 0.86))
+
+    def test_cover_frame_score_rewards_chat_activity(self) -> None:
+        base = np.zeros((120, 160, 3), dtype=np.uint8)
+        base[:, 80:] = 220
+        chat = base.copy()
+        chat[70:112, 0:58] = 255
+        seed = CoverFrameSeed(timestamp_seconds=30.0, reason="unit", priority=0.0)
+
+        quiet = score_cover_frame(30.0, base, seed=seed, previous_frame=base)
+        active = score_cover_frame(30.0, chat, seed=seed, previous_frame=base)
+
+        self.assertGreater(active.score, quiet.score)
+        self.assertIn("chat_activity", active.reasons)
 
     def _write_subtitle(self, session_id: str, content: str) -> Path:
         path = self.processed_root / session_id / "match-01.srt"

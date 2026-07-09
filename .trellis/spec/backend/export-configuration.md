@@ -1632,6 +1632,133 @@ a short continuity snippet can still skip the actual kill/death.
 include both max-source-gap summaries and KDA uncovered counts in manual
 validation reports for regenerated exports.
 
+## Scenario: Publishing Cover Candidates
+
+### 1. Scope / Trigger
+- Trigger: Final publishing packages may contain multiple generated cover
+  candidates for manual selection while keeping one default cover path for
+  existing upload flows.
+- Trigger: This spans `PublishingPackage`, copywriter cover rendering,
+  published package directory layout, upload metadata, and postprocess reset.
+
+### 2. Signatures
+- Model additions:
+  ```python
+  class CoverCandidate(BaseModel):
+      path: str
+      rank: int
+      source_timestamp_seconds: float = 0.0
+      score: float = 0.0
+      reasons: list[str] = Field(default_factory=list)
+      published_path: str | None = None
+
+  class PublishingPackage(BaseModel):
+      cover_path: str | None = None
+      cover_candidates: list[CoverCandidate] = Field(default_factory=list)
+      published_cover_path: str | None = None
+  ```
+- Generated processed files:
+  ```text
+  data/processed/<session_id>/match-NN-cover-01.jpg
+  data/processed/<session_id>/match-NN-cover-02.jpg
+  data/processed/<session_id>/match-NN-cover-03.jpg
+  ```
+- Published package files:
+  ```text
+  cover.jpg        # default rank-1 cover for legacy upload workflow
+  cover-01.jpg
+  cover-02.jpg
+  cover-03.jpg
+  upload.txt
+  video.mp4
+  ```
+
+### 3. Contracts
+- The schema change is additive. Existing publishing rows without
+  `cover_candidates` must load with an empty list.
+- `cover_path` always points at the top-ranked successfully rendered candidate.
+  `published_cover_path` always points at `cover.jpg`, a copy of the same
+  rank-1 candidate inside the published package directory.
+- `cover_candidates[*].path` records every successfully rendered processed
+  candidate. `cover_candidates[*].published_path` records the matching
+  `cover-XX.jpg` copy after publishing.
+- Final copywriter publishing may read a valid matching `EditPlanAsset` for
+  teaser/high-signal source windows, but cover generation must still work when
+  edit plans are missing or stale.
+- Candidate frame scoring is deterministic and best-effort. It may use KDA cue
+  timestamps, edit-plan teaser/high-signal windows, highlight windows, scene
+  classification, sharpness/brightness, and bottom-left chat-region activity.
+  It must not OCR chat text or derive new cover copy from raw subtitles.
+- Cover text consumes `PublishingPackage.cover_lines` as produced by heuristic
+  or LLM copywriting. The cover renderer must not create its own title text.
+- Typography defaults to stacked left-aligned yellow (`#FFEE00`) headline lines
+  with a heavy black stroke, fitted inside conservative safe margins for a
+  1920x1080 JPEG at quality 92.
+- Missing recording/export media, ffmpeg, Pillow, cv2, fonts, or frame-sampling
+  failures degrade to the existing single fallback timestamp or to no cover
+  output. The copywriter stage still writes publishing metadata.
+- Output completeness checks must treat missing processed candidate files or
+  missing published candidate copies as incomplete so reruns repair the package.
+- `postprocess-reset` must delete candidate processed paths and published
+  candidate copies referenced by removed `PublishingPackage` rows when those
+  paths are under generated roots.
+
+### 4. Validation & Error Matrix
+| Condition | Behavior |
+|-----------|----------|
+| Existing row lacks `cover_candidates` | Load with `cover_candidates=[]` |
+| Recording media can be sampled | Render up to 3 ranked `cover-XX.jpg` candidates |
+| Sampling/scoring fails | Render one legacy fallback candidate if normal cover prerequisites work |
+| Only export media is available | Render one export-time fallback candidate at `0.0` |
+| Some candidate renders fail | Keep successful candidates; default points at the first successful candidate |
+| Published `cover-02.jpg` is deleted | Next copywriter run treats package outputs as incomplete and repairs |
+
+### 5. Good/Base/Bad Cases
+- Good: Recording media is available, frame scoring selects distinct source
+  timestamps, `cover_path` points to rank 1, and the package directory contains
+  both `cover.jpg` and `cover-XX.jpg` candidates.
+- Base: Only exported media is available, so copywriter renders one fallback
+  candidate at export time `0.0` and still writes the publishing JSON and
+  upload metadata.
+- Bad: A rerun sees `copywriter-state.json` marked processed while
+  `cover-02.jpg` or its published copy is missing, then skips the match instead
+  of rebuilding the package artifacts.
+
+### 6. Tests Required
+- Model: legacy `PublishingPackage` rows default `cover_candidates=[]`.
+- Copywriter: ranked candidates preserve `cover_path` / `published_cover_path`
+  defaults, publish `cover-XX.jpg`, and list candidates in JSON and `upload.txt`.
+- Copywriter: export-only fallback remains a single candidate at `0.0`.
+- Cover helper: synthetic frame scoring covers sharpness/brightness, scene
+  penalty/bonus, chat activity, event priority, spacing, and degraded sampling.
+- Reset: candidate processed and published paths are deleted with other
+  generated publishing artifacts.
+
+### 7. Wrong vs Correct
+#### Wrong
+```python
+package = package.model_copy(update={"cover_path": str(rank_1_path)})
+```
+
+This only preserves the legacy default and leaves operators with no ranked
+candidate list, no published `cover-XX.jpg` copies, and no missing-output repair
+signal for non-default covers.
+
+#### Correct
+```python
+package = package.model_copy(
+    update={
+        "cover_path": candidates[0].path,
+        "cover_candidates": candidates,
+    }
+)
+```
+
+Then publishing fills `published_cover_path` with `cover.jpg` for rank 1 and
+`cover_candidates[*].published_path` with the matching `cover-XX.jpg` copies.
+
+---
+
 ## Scenario: LLM Copywriter Semantic Assets
 
 ### 1. Scope / Trigger
