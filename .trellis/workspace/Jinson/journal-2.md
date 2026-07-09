@@ -600,3 +600,37 @@ Planned and implemented BGM arrangement enhancement: configurable multi-phase BG
 ### Next Steps
 
 - None - task complete
+
+
+## Session 66: Cover visual upgrade
+
+**Date**: 2026-07-09
+**Task**: Cover visual upgrade
+**Branch**: `main`
+
+### Summary
+
+Planned and implemented ranked cover candidates, yellow stacked cover typography, publishing package metadata/copying, reset cleanup, and regression coverage.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d312339` | (see git log) |
+| `4a8efd2` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
