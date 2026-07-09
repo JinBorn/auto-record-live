@@ -18,6 +18,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Orchestration Contracts](./orchestration-contracts.md) | Windows agent and orchestrator event/state contracts | Active |
 | [Database Guidelines](./database-guidelines.md) | Current file-backed persistence and migration guardrails | Active |
 | [Export Configuration](./export-configuration.md) | FFmpeg quality modes, hardware encoding, highlight condensing | Active |
+| [Editing Quality](./editing-quality.md) | Publish acceptance thresholds, quality-report workflow, cross-stage lessons | Active |
 | [Error Handling](./error-handling.md) | Error types, handling strategies | Partial |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | Active |
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | Active |

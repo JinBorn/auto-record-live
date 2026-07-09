@@ -14,6 +14,7 @@ from arl.media.recording_resolver import (
 from arl.shared.contracts import (
     HighlightClipWindow,
     HighlightPlanAsset,
+    KdaEventCue,
     MatchBoundary,
     RecordingAsset,
     SubtitleAsset,
@@ -2206,6 +2207,14 @@ class HighlightPlannerService:
                     reason=w.reason,
                 )
                 for w in windows
+            ],
+            kda_events=[
+                KdaEventCue(
+                    started_at_seconds=round(cue.started_at_seconds, 3),
+                    ended_at_seconds=round(cue.ended_at_seconds, 3),
+                    text=cue.text,
+                )
+                for cue in kda_event_cues
             ],
             created_at=datetime.now(timezone.utc),
         )

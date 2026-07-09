@@ -318,6 +318,9 @@ class HighlightPlannerServiceTest(unittest.TestCase):
                 for window in plans[0].windows
             )
         )
+        self.assertEqual(len(plans[0].kda_events), 1)
+        self.assertIn("kda_change kills=0->1", plans[0].kda_events[0].text)
+        self.assertIn("current_at=100.000", plans[0].kda_events[0].text)
 
     def test_kda_event_detection_samples_chunked_recording_spans(self) -> None:
         service = HighlightPlannerService(self.settings)

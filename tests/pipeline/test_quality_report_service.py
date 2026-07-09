@@ -295,5 +295,37 @@ class QualityReportServiceTest(unittest.TestCase):
         return export_path, subtitle_path
 
 
+class QualityReportMetricUnitTest(unittest.TestCase):
+    def test_kda_coverage_merges_zoom_split_adjacent_spans(self) -> None:
+        # Close-up zoom splits one key-event span at the kill timestamp into
+        # adjacent pieces; the merged span must still count as covering the
+        # KDA event interval.
+        windows = QualityReportService._merge_adjacent_windows(
+            [(100.0, 120.0), (120.0, 126.0), (126.0, 150.0), (200.0, 210.0)]
+        )
+        self.assertEqual(windows, [(100.0, 150.0), (200.0, 210.0)])
+        events = [
+            ClassifiedCue(
+                started_at_seconds=110.0,
+                ended_at_seconds=130.0,
+                text="kda_change kills=1->2 deaths=0->0 previous_at=110.000 current_at=123.000",
+                category="key_event",
+                priority=1.0,
+            )
+        ]
+        self.assertEqual(
+            QualityReportService._kda_uncovered_count(events, windows),
+            0,
+        )
+        # Without merging, the same adjacent pieces would false-positive.
+        self.assertEqual(
+            QualityReportService._kda_uncovered_count(
+                events,
+                [(100.0, 120.0), (120.0, 126.0), (126.0, 150.0)],
+            ),
+            1,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

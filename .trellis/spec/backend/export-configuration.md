@@ -692,14 +692,20 @@ windows = bridge_highlight_windows(windows, bridge_window_seconds=3.0)
     `kill_coin`, `multi_kill`, `transition_whoosh`, and `teaser_impact`.
     Missing, invalid, or malformed manifests must not block edit planning.
   - Kill SFX should align to `kda_change` cue timestamps when
-    `ARL_EDIT_SFX_KDA_ALIGNMENT_ENABLED=1`. The planner parses kill increases,
+    `ARL_EDIT_SFX_KDA_ALIGNMENT_ENABLED=1`. KDA cues come from
+    `HighlightPlanAsset.kda_events` (planner OCR events persisted on the plan)
+    merged with any subtitle-provided `kda_change` cues; real SRT files never
+    contain such lines. The planner parses kill increases,
     maps `current_at` source seconds onto the rendered teaser/main timeline,
     applies `ARL_EDIT_SFX_TIMING_OFFSET_SECONDS`, and selects `multi_kill` when
     the kill delta is at least 2 or nearby subtitle text contains a multi-kill
     announcement. Death-only KDA changes must not emit coin SFX.
-  - Segment-start SFX is only a fallback for eligible teaser/main segments
-    (`highlight_keyword` and `condensed_key_event`) with no `kda_change` cue
-    inside the segment. `condensed_tactical` setup windows must stay SFX-free by
+  - Segment-start SFX is a whole-match fallback: it applies only when no kill
+    event maps onto the rendered timeline at all, and then only for eligible
+    teaser/main segments (`highlight_keyword` and `condensed_key_event`).
+    When any mapped kill event exists, segment-start coins are suppressed so
+    every coin plays at a kill moment.
+    `condensed_tactical` setup windows must stay SFX-free by
     default. The planner must rate-limit kill SFX with
     `ARL_EDIT_SFX_MIN_INTERVAL_SECONDS` and cap kill hits with
     `ARL_EDIT_SFX_MAX_HITS`; transition whoosh hits are independent of that

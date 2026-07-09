@@ -141,6 +141,10 @@ class EditingPlannerService:
         self.settings = settings
         self.boundaries_path = settings.storage.temp_dir / "match-boundaries.jsonl"
         self.highlight_plans_path = settings.storage.temp_dir / "highlight-plans.jsonl"
+        # KDA cues from the highlight plan being processed. The planner's OCR
+        # events are persisted on the plan (not in SRT files), so SFX/zoom/BGM
+        # cue parsing merges them with subtitle cues per match.
+        self._active_highlight_plan: HighlightPlanAsset | None = None
         self.semantic_assets_path = (
             settings.storage.temp_dir / "copywriter-semantic-assets.jsonl"
         )
@@ -339,6 +343,7 @@ class EditingPlannerService:
         duration = boundary.ended_at_seconds - boundary.started_at_seconds
         if duration <= 0.0:
             return None
+        self._active_highlight_plan = highlight_plan
 
         main_segments = self._build_main_segments(highlight_plan.windows, duration)
         if not main_segments:
@@ -1344,22 +1349,26 @@ class EditingPlannerService:
                 )
             )
 
-        timeline_cursor = 0.0
-        for segment_index, segment in enumerate(timeline):
-            segment_duration = self._segment_duration(segment)
-            if (
-                segment_index not in segments_with_kda
-                and self._segment_is_sfx_eligible(segment)
-            ):
-                candidates.append(
-                    _SfxCandidate(
-                        at_seconds=round(timeline_cursor, 3),
-                        reason=segment.reason,
-                        category="kill_coin",
-                        segment_index=segment_index,
+        # Segment-start coins are a fallback for matches with no mappable
+        # kill event at all. When real kills are aligned, extra segment-start
+        # coins play far from any kill and make cuts feel artificial.
+        if not mapped:
+            timeline_cursor = 0.0
+            for segment_index, segment in enumerate(timeline):
+                segment_duration = self._segment_duration(segment)
+                if (
+                    segment_index not in segments_with_kda
+                    and self._segment_is_sfx_eligible(segment)
+                ):
+                    candidates.append(
+                        _SfxCandidate(
+                            at_seconds=round(timeline_cursor, 3),
+                            reason=segment.reason,
+                            category="kill_coin",
+                            segment_index=segment_index,
+                        )
                     )
-                )
-            timeline_cursor += max(0.0, segment_duration)
+                timeline_cursor += max(0.0, segment_duration)
 
         candidates.sort(
             key=lambda candidate: (
@@ -1488,8 +1497,21 @@ class EditingPlannerService:
             f"skipped_missing_file={report.skipped_missing_file_count}",
         )
 
+    def _highlight_plan_kda_cues(self) -> list[SrtCue]:
+        plan = self._active_highlight_plan
+        if plan is None:
+            return []
+        return [
+            SrtCue(
+                started_at_seconds=event.started_at_seconds,
+                ended_at_seconds=event.ended_at_seconds,
+                text=event.text,
+            )
+            for event in plan.kda_events
+        ]
+
     def _kda_kill_events(self, subtitle: SubtitleAsset | None) -> list[_KdaKillEvent]:
-        cues = self._subtitle_cues(subtitle)
+        cues = self._subtitle_cues(subtitle) + self._highlight_plan_kda_cues()
         events: list[_KdaKillEvent] = []
         for cue in cues:
             if not cue.text.startswith("kda_change "):
@@ -1502,7 +1524,8 @@ class EditingPlannerService:
 
     def _kda_event_timestamps(self, subtitle: SubtitleAsset | None) -> list[float]:
         timestamps: list[float] = []
-        for cue in self._subtitle_cues(subtitle):
+        cues = self._subtitle_cues(subtitle) + self._highlight_plan_kda_cues()
+        for cue in cues:
             if cue.text.startswith("kda_change "):
                 timestamps.append(self._kda_event_timestamp(cue))
         timestamps.sort()
@@ -2603,6 +2626,7 @@ class EditingPlannerService:
     ) -> bool:
         if plan is None:
             return False
+        self._active_highlight_plan = highlight_plan
         duration = boundary.ended_at_seconds - boundary.started_at_seconds
         matches_shape = self._boundary_metadata_matches(
             plan.source_boundary_start_seconds,

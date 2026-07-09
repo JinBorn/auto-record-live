@@ -83,12 +83,27 @@ class HighlightClipWindow(BaseModel):
     reason: str
 
 
+class KdaEventCue(BaseModel):
+    """Synthetic KDA kill/death cue detected by the highlight planner OCR pass.
+
+    Persisted on the highlight plan so downstream stages (edit-planner SFX
+    alignment, zoom triggers, BGM switch points) consume the same events the
+    planner protected. ``text`` keeps the ``kda_change kills=a->b deaths=c->d
+    previous_at=... current_at=...`` shape existing cue parsers expect.
+    """
+
+    started_at_seconds: float
+    ended_at_seconds: float
+    text: str
+
+
 class HighlightPlanAsset(BaseModel):
     session_id: str
     match_index: int
     source_boundary_start_seconds: float
     source_boundary_end_seconds: float
     windows: list[HighlightClipWindow]
+    kda_events: list[KdaEventCue] = Field(default_factory=list)
     created_at: datetime
 
 

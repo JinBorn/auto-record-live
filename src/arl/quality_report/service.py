@@ -564,18 +564,35 @@ class QualityReportService:
         highlight_plan: HighlightPlanAsset | None,
     ) -> list[tuple[float, float]]:
         if edit_plan is not None:
-            return [
+            windows = [
                 (segment.source_start_seconds, segment.source_end_seconds)
                 for segment in edit_plan.timeline
                 if segment.reason in _KEY_EVENT_COVERAGE_REASONS
             ]
-        if highlight_plan is not None:
-            return [
+        elif highlight_plan is not None:
+            windows = [
                 (window.started_at_seconds, window.ended_at_seconds)
                 for window in highlight_plan.windows
                 if window.reason in _KEY_EVENT_COVERAGE_REASONS
             ]
-        return []
+        else:
+            return []
+        # Close-up zoom splits one retained key-event span into adjacent
+        # timeline pieces around the kill timestamp; coverage is judged on the
+        # merged source-time span, not on any single piece.
+        return self._merge_adjacent_windows(windows)
+
+    @staticmethod
+    def _merge_adjacent_windows(
+        windows: list[tuple[float, float]],
+    ) -> list[tuple[float, float]]:
+        merged: list[tuple[float, float]] = []
+        for start, end in sorted(windows):
+            if merged and start <= merged[-1][1] + _SECONDS_EPSILON:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+                continue
+            merged.append((start, end))
+        return merged
 
     @staticmethod
     def _kda_uncovered_count(
@@ -755,12 +772,19 @@ class QualityReportService:
                     ],
                 )
             )
-        if len(row.sfx_hits) > thresholds.sfx_max_hits:
+        # Transition whoosh hits are rate-limited independently of kill SFX;
+        # only kill-accent hits count against the configured maximum.
+        kill_sfx_count = sum(
+            1
+            for hit in row.sfx_hits
+            if not hit.reason.startswith("transition")
+        )
+        if kill_sfx_count > thresholds.sfx_max_hits:
             warnings.append(
                 QualityWarning(
                     code="sfx_hit_count_above_limit",
                     message="SFX hit count exceeds the configured maximum.",
-                    value=len(row.sfx_hits),
+                    value=kill_sfx_count,
                     threshold=thresholds.sfx_max_hits,
                 )
             )

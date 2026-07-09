@@ -1063,6 +1063,17 @@ class ExporterService:
     ) -> list[str]:
         duration = boundary.ended_at_seconds - boundary.started_at_seconds
         has_audio_mix = bool(edit_plan.audio_beds or edit_plan.sound_effects)
+        # Teaser segments replay late-match moments before main playback starts.
+        # If they share input 0, ffmpeg must decode up to the teaser position
+        # while every retained main-segment frame queues unconsumed in its trim
+        # branch, which can exhaust system memory on long boundaries. Give each
+        # teaser its own seeked input so concat consumes every input in decode
+        # order.
+        teaser_input_indices: dict[int, int] = {}
+        for index, segment in enumerate(edit_plan.timeline):
+            if segment.role == "teaser":
+                teaser_input_indices[index] = 1 + len(teaser_input_indices)
+        media_input_count = 1 + len(teaser_input_indices)
         filter_parts: list[str] = []
         concat_inputs: list[str] = []
         for index, segment in enumerate(edit_plan.timeline):
@@ -1077,15 +1088,22 @@ class ExporterService:
                     )
                 )
             else:
+                input_index = teaser_input_indices.get(index, 0)
+                time_offset = (
+                    segment.source_start_seconds if input_index else 0.0
+                )
                 video_filters = self._timeline_video_filters(
                     segment,
                     video_profile=self._video_profile(recording_path),
+                    time_offset_seconds=time_offset,
                 )
-                filter_parts.append(f"[0:v]{','.join(video_filters)}[{video_label}]")
                 filter_parts.append(
-                    "[0:a]"
-                    f"atrim=start={segment.source_start_seconds:.3f}:"
-                    f"end={segment.source_end_seconds:.3f},"
+                    f"[{input_index}:v]{','.join(video_filters)}[{video_label}]"
+                )
+                filter_parts.append(
+                    f"[{input_index}:a]"
+                    f"atrim=start={segment.source_start_seconds - time_offset:.3f}:"
+                    f"end={segment.source_end_seconds - time_offset:.3f},"
                     f"asetpts=PTS-STARTPTS[{audio_label}]"
                 )
             concat_inputs.extend([f"[{video_label}]", f"[{audio_label}]"])
@@ -1102,13 +1120,19 @@ class ExporterService:
                 f"[v]{self._subtitle_filter_arg(subtitle_path)}[{video_output_label}]"
             )
         if has_audio_mix:
-            filter_parts.extend(self._edit_plan_audio_filters(edit_plan))
+            filter_parts.extend(
+                self._edit_plan_audio_filters(
+                    edit_plan,
+                    first_audio_input_index=media_input_count,
+                )
+            )
         audio_output_label = self._append_audio_loudnorm_filter(filter_parts)
         log(
             "exporter",
             "edit plan export "
             f"session_id={boundary.session_id} match_index={boundary.match_index} "
-            f"segments={len(edit_plan.timeline)}",
+            f"segments={len(edit_plan.timeline)} "
+            f"teaser_inputs={len(teaser_input_indices)}",
         )
         command = [
             "ffmpeg",
@@ -1124,6 +1148,25 @@ class ExporterService:
             "-i",
             recording_path,
         ]
+        for index in teaser_input_indices:
+            segment = edit_plan.timeline[index]
+            segment_duration = max(
+                0.0,
+                segment.source_end_seconds - segment.source_start_seconds,
+            )
+            command.extend(
+                [
+                    "-ss",
+                    str(
+                        boundary.started_at_seconds
+                        + segment.source_start_seconds
+                    ),
+                    "-t",
+                    str(segment_duration + 1.0),
+                    "-i",
+                    recording_path,
+                ]
+            )
         command.extend(self._edit_plan_audio_inputs(edit_plan))
         command.extend(
             [
@@ -1531,11 +1574,12 @@ class ExporterService:
         segment: TimelineSegment,
         *,
         video_profile: tuple[int, int, str] | None = None,
+        time_offset_seconds: float = 0.0,
     ) -> list[str]:
         filters: list[str] = [
             (
-                f"trim=start={segment.source_start_seconds:.3f}:"
-                f"end={segment.source_end_seconds:.3f}"
+                f"trim=start={segment.source_start_seconds - time_offset_seconds:.3f}:"
+                f"end={segment.source_end_seconds - time_offset_seconds:.3f}"
             ),
             "setpts=PTS-STARTPTS",
         ]

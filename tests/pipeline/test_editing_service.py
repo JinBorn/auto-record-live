@@ -26,6 +26,7 @@ from arl.shared.contracts import (
     EditPlanAsset,
     HighlightClipWindow,
     HighlightPlanAsset,
+    KdaEventCue,
     MatchBoundary,
     RecordingAsset,
     RecordingChunk,
@@ -778,6 +779,52 @@ class EditingPlannerServiceTest(unittest.TestCase):
                 )
             ],
             duration=600.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        self.assertEqual(len(plan.sound_effects), 1)
+        self.assertEqual(plan.sound_effects[0].source_path, str(sfx_path))
+        self.assertEqual(plan.sound_effects[0].at_seconds, 55.0)
+        self.assertEqual(plan.sound_effects[0].reason, "condensed_key_event")
+
+    def test_audio_mixing_aligns_sfx_to_highlight_plan_kda_events(self) -> None:
+        """Real pipelines never write kda_change lines into SRT files; the
+        planner's OCR events arrive via HighlightPlanAsset.kda_events and must
+        drive SFX alignment the same way."""
+        session_id = "session-edit-plan-kda-sfx"
+        sfx_path = self.temp_root / "audio" / "coin.wav"
+        sfx_path.parent.mkdir(parents=True, exist_ok=True)
+        sfx_path.write_text("fake sfx", encoding="utf-8")
+        self.settings.editing.audio_mixing_enabled = True
+        self.settings.editing.sfx_path = sfx_path
+        self.settings.editing.teaser_max_segments = 0
+        self._append_subtitle(
+            session_id,
+            "1\n00:02:04,000 --> 00:02:06,000\nordinary speech line\n",
+        )
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=100.0,
+                    ended_at_seconds=150.0,
+                    reason="condensed_key_event",
+                )
+            ],
+            duration=600.0,
+            kda_events=[
+                KdaEventCue(
+                    started_at_seconds=110.0,
+                    ended_at_seconds=130.0,
+                    text=(
+                        "kda_change kills=2->3 deaths=0->0 "
+                        "previous_at=110.000 current_at=125.000"
+                    ),
+                )
+            ],
         )
 
         EditingPlannerService(self.settings).run()
@@ -2249,6 +2296,7 @@ class EditingPlannerServiceTest(unittest.TestCase):
         windows: list[HighlightClipWindow],
         duration: float,
         include_edges: bool = True,
+        kda_events: list[KdaEventCue] | None = None,
     ) -> None:
         persisted_windows = list(windows)
         if include_edges:
@@ -2273,6 +2321,7 @@ class EditingPlannerServiceTest(unittest.TestCase):
                 source_boundary_start_seconds=0.0,
                 source_boundary_end_seconds=duration,
                 windows=persisted_windows,
+                kda_events=kda_events or [],
                 created_at=datetime(2026, 6, 26, 12, 0, tzinfo=timezone.utc),
             ),
         )

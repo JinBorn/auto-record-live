@@ -3845,8 +3845,13 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertIn("-filter_complex", command)
         filter_complex = command[command.index("-filter_complex") + 1]
         self.assertNotIn("[0:v]subtitles=", filter_complex)
-        self.assertIn("trim=start=90.000:end=105.000,setpts=PTS-STARTPTS[v0]", filter_complex)
-        self.assertIn("atrim=start=90.000:end=105.000,asetpts=PTS-STARTPTS[a0]", filter_complex)
+        self.assertIn("[1:v]trim=start=0.000:end=15.000,setpts=PTS-STARTPTS[v0]", filter_complex)
+        self.assertIn("[1:a]atrim=start=0.000:end=15.000,asetpts=PTS-STARTPTS[a0]", filter_complex)
+        teaser_input_args = command.index("-i") + 2
+        self.assertEqual(
+            command[teaser_input_args:teaser_input_args + 4],
+            ["-ss", "90.0", "-t", "16.0"],
+        )
         self.assertIn("trim=start=0.000:end=30.000,setpts=PTS-STARTPTS[v1]", filter_complex)
         self.assertIn("trim=start=90.000:end=120.000,setpts=PTS-STARTPTS[v2]", filter_complex)
         self.assertIn("[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[v][a]", filter_complex)
@@ -3922,7 +3927,7 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
             if call.args[0][0].endswith("ffmpeg")
         ][0]
         filter_complex = command[command.index("-filter_complex") + 1]
-        self.assertIn("trim=start=90.000:end=105.000,setpts=PTS-STARTPTS[v0]", filter_complex)
+        self.assertIn("[1:v]trim=start=0.000:end=15.000,setpts=PTS-STARTPTS[v0]", filter_complex)
         self.assertIn("color=c=black:s=1920x1080:r=30:d=1.250", filter_complex)
         self.assertIn("drawtext=", filter_complex)
         self.assertIn("text='Back to match start'", filter_complex)
@@ -4233,9 +4238,9 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         self.assertIn(str(bgm_path), command)
         self.assertIn(str(sfx_path), command)
         filter_complex = command[command.index("-filter_complex") + 1]
-        self.assertIn("trim=start=90.000:end=105.000,setpts=PTS-STARTPTS[v0]", filter_complex)
+        self.assertIn("[1:v]trim=start=0.000:end=15.000,setpts=PTS-STARTPTS[v0]", filter_complex)
         self.assertIn("concat=n=3:v=1:a=1[v][basea]", filter_complex)
-        self.assertIn("[1:a]atrim=start=0.000:duration=75.000", filter_complex)
+        self.assertIn("[2:a]atrim=start=0.000:duration=75.000", filter_complex)
         self.assertIn(
             "volume=0.063096,afade=t=in:st=0.000:d=2.000,"
             "afade=t=out:st=73.000:d=2.000[bgmraw0]",
@@ -4249,7 +4254,7 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
             "threshold=0.030:ratio=6.0:attack=20:release=350:makeup=1[bgm0]",
             filter_complex,
         )
-        self.assertIn("[2:a]asetpts=PTS-STARTPTS,volume=0.251189,adelay=15000|15000[sfx0]", filter_complex)
+        self.assertIn("[3:a]asetpts=PTS-STARTPTS,volume=0.251189,adelay=15000|15000[sfx0]", filter_complex)
         self.assertIn("[basemix][bgm0][sfx0]amix=inputs=3:duration=first:dropout_transition=0[a]", filter_complex)
 
     def test_edit_plan_export_appends_loudnorm_and_maps_audio_output(self) -> None:
@@ -4324,13 +4329,13 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         ][0]
         filter_complex = command[command.index("-filter_complex") + 1]
         self.assertIn(
-            "[1:a]atrim=start=0.000:duration=41.000,asetpts=PTS-STARTPTS,"
+            "[2:a]atrim=start=0.000:duration=41.000,asetpts=PTS-STARTPTS,"
             "volume=0.063096,afade=t=in:st=0.000:d=2.000,"
             "afade=t=out:st=39.000:d=2.000[bgmraw0]",
             filter_complex,
         )
         self.assertIn(
-            "[2:a]atrim=start=0.000:duration=36.000,asetpts=PTS-STARTPTS,"
+            "[3:a]atrim=start=0.000:duration=36.000,asetpts=PTS-STARTPTS,"
             "volume=0.063096,afade=t=in:st=0.000:d=2.000,"
             "afade=t=out:st=34.000:d=2.000,adelay=39000|39000[bgmraw1]",
             filter_complex,
@@ -4376,7 +4381,7 @@ class ExporterFfmpegAuditTest(unittest.TestCase):
         ][0]
         filter_complex = command[command.index("-filter_complex") + 1]
         self.assertIn(
-            "trim=start=90.000:end=105.000,setpts=PTS-STARTPTS,"
+            "[1:v]trim=start=0.000:end=15.000,setpts=PTS-STARTPTS,"
             "scale=iw*1.250:ih*1.250,"
             "crop=iw/1.250:ih/1.250:x=(iw-iw/1.250)*0.400:y=(ih-ih/1.250)*0.350[v0]",
             filter_complex,

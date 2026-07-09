@@ -258,13 +258,13 @@ class ReferenceValidationTest(unittest.TestCase):
         self.assertIn("subtitles=", filter_complex)
         self.assertIn(".ass", filter_complex)
         self.assertIn(
-            "trim=start=90.000:end=105.000,setpts=PTS-STARTPTS,"
+            "[1:v]trim=start=0.000:end=15.000,setpts=PTS-STARTPTS,"
             "scale=iw*1.250:ih*1.250,"
             "crop=iw/1.250:ih/1.250:x=(iw-iw/1.250)*0.400:y=(ih-ih/1.250)*0.350[v0]",
             filter_complex,
         )
         self.assertIn(
-            "atrim=start=90.000:end=105.000,asetpts=PTS-STARTPTS[a0]",
+            "[1:a]atrim=start=0.000:end=15.000,asetpts=PTS-STARTPTS[a0]",
             filter_complex,
         )
         self.assertIn(
@@ -279,7 +279,7 @@ class ReferenceValidationTest(unittest.TestCase):
         self.assertIn("[v]subtitles=", filter_complex)
         self.assertIn("[vsub]", filter_complex)
         self.assertIn("[basea]asplit=2[basemix][basechain0]", filter_complex)
-        self.assertIn("[1:a]atrim=start=0.000:duration=75.000", filter_complex)
+        self.assertIn("[2:a]atrim=start=0.000:duration=75.000", filter_complex)
         self.assertIn(
             "volume=0.063096,afade=t=in:st=0.000:d=2.000,"
             "afade=t=out:st=73.000:d=2.000[bgmraw0]",
@@ -291,7 +291,7 @@ class ReferenceValidationTest(unittest.TestCase):
             filter_complex,
         )
         self.assertIn(
-            "[2:a]asetpts=PTS-STARTPTS,volume=0.251189,adelay=15000|15000[sfx0]",
+            "[3:a]asetpts=PTS-STARTPTS,volume=0.251189,adelay=15000|15000[sfx0]",
             filter_complex,
         )
         self.assertIn(
