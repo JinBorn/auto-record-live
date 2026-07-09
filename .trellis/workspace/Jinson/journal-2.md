@@ -634,3 +634,36 @@ Planned and implemented ranked cover candidates, yellow stacked cover typography
 ### Next Steps
 
 - None - task complete
+
+
+## Session 67: Demo2 quality parity final integration review
+
+**Date**: 2026-07-10
+**Task**: Demo2 quality parity final integration review
+**Branch**: `main`
+
+### Summary
+
+Ran the parent-task integration review: regenerated 4 validation samples end-to-end (new ASR subtitles, LLM copywriting, teaser/SFX/zoom/BGM), diagnosed and fixed 4 cross-stage defects (late-teaser ffmpeg OOM that froze the machine 3x and mimicked a GPU driver failure, kda_change cue pipeline gap so SFX alignment never ran on real exports, segment-start SFX fallback noise, quality-report KDA coverage false positives), fixed data/sfx/library.json trailing comma, added editing-quality spec, and passed all cross-child acceptance criteria with 0 report warnings; archived the parent task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b29f252` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 66
-- **Last Active**: 2026-07-09
+- **Total Sessions**: 67
+- **Last Active**: 2026-07-10
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~636 | Active |
+| `journal-2.md` | ~669 | Active |
 | `journal-1.md` | ~1986 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 67 | 2026-07-10 | Demo2 quality parity final integration review | `b29f252` | `main` |
 | 66 | 2026-07-09 | Cover visual upgrade | `d312339`, `4a8efd2` | `main` |
 | 65 | 2026-07-09 | BGM arrangement enhancement | `f3d080e`, `f257f83` | `main` |
 | 64 | 2026-07-08 | Zoom close-up upgrade | `bdfce0d` | `main` |
