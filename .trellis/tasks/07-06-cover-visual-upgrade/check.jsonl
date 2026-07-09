@@ -1,1 +1,4 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Verify persisted publishing package schema compatibility and explicit UTF-8 file IO."}
+{"file":".trellis/spec/backend/export-configuration.md","reason":"Verify cover candidate naming, publish package layout, and edit-plan interaction against documented contracts."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Verify focused unit tests, typed models, and fallback behavior for optional media tooling."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Verify degraded cover scoring/rendering logs stay compact and non-sensitive."}

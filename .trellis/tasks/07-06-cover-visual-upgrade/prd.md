@@ -13,6 +13,24 @@ stacked yellow headline text outlined in black. Our current cover grabs one
 frame near an evidence cue, darkens it, and draws a smaller two-tone layout —
 serviceable but visibly weaker, and there is only one take.
 
+## Confirmed Repository Facts
+
+- Cover rendering currently lives in `src/arl/copywriter/cover.py` and is
+  called by `CopywriterService` during the final publishing stage.
+- `PublishingPackage` already stores `cover_path` and
+  `published_cover_path`; multi-candidate support can be additive while keeping
+  those fields pointing at the top-ranked/default candidate.
+- Final copywriter publishing runs after `edit-planner` and `exporter`, so it
+  can optionally read `edit-plans.jsonl` for teaser/output timeline context
+  without changing postprocess stage order.
+- Existing vision helpers already provide scene classification and frame
+  sampling. The zoom task also established best-effort bottom-left chat-region
+  frame differences as acceptable for chat-burst detection; no chat OCR is
+  required for this task.
+- LLM cover lines are produced before final publishing when
+  `ARL_LLM_ENABLED=1`; the cover module must consume `package.cover_lines`
+  rather than deriving new text from subtitles.
+
 ## Requirements
 
 - Smart frame selection: score candidate frames sampled around key events
@@ -64,3 +82,9 @@ serviceable but visibly weaker, and there is only one take.
   heuristic — decide at planning review. `implement.md` recommended.
 - Best run after `07-06-llm-copywriting-engine` ships (better cover lines),
   but the rendering/typography work is independent.
+- Planning decision, 2026-07-09: treat this as medium complexity with
+  `design.md` and `implement.md` before implementation because it changes the
+  publishing package schema and published artifact layout.
+- No blocking product questions remain for implementation review. The proposed
+  v1 keeps scoring heuristic and best-effort, preserves current fallbacks, and
+  adds candidate metadata without removing legacy fields.
