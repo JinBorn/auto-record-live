@@ -104,6 +104,13 @@ class HighlightPlanAsset(BaseModel):
     source_boundary_end_seconds: float
     windows: list[HighlightClipWindow]
     kda_events: list[KdaEventCue] = Field(default_factory=list)
+    # Condensed planner duration accounting (additive; None on legacy assets
+    # and non-condensed plans). budget_seconds is the plan-duration cap derived
+    # from target_duration_seconds; budget_exception_reason records why a plan
+    # was allowed to stay above budget after shrinking bottomed out.
+    target_duration_seconds: float | None = None
+    budget_seconds: float | None = None
+    budget_exception_reason: str | None = None
     created_at: datetime
 
 

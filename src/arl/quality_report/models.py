@@ -79,6 +79,9 @@ class QualityReportRow(BaseModel):
     condensed_target: TargetDurationMetric = Field(default_factory=TargetDurationMetric)
     condensed_target_range_seconds: tuple[float, float]
     plan_duration_seconds: float | None = None
+    main_duration_seconds: float | None = None
+    duration_budget_seconds: float | None = None
+    budget_exception_reason: str | None = None
     boundary_duration_seconds: float | None = None
     max_source_gap_seconds: float = 0.0
     subtitle_active_ratio: float = 0.0

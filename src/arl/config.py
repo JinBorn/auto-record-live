@@ -274,6 +274,14 @@ class HighlightSettings(BaseModel):
     condensed_kda_death_silent_trim_lookback_seconds: float = 30.0
     condensed_kda_death_reaction_tail_seconds: float = 3.0
 
+    # Final-stage duration budget shrinking for condensed plans. When the
+    # post-restore/bridge fixpoint still exceeds the duration budget, trim the
+    # lowest-value window spans (KDA cue spans stay fully protected, cuts snap
+    # to speech-safe boundaries) until the plan fits or bottoms out.
+    condensed_budget_shrink_enabled: bool = True
+    condensed_budget_trim_step_seconds: float = 15.0
+    condensed_budget_max_speech_extension_seconds: float = 3.0
+
     # 用户自定义术语
     custom_tactical_keywords: list[str] = Field(default_factory=list)
 
@@ -307,6 +315,7 @@ class EditingSettings(BaseModel):
     transition_text: str = "Back to match start"
     transition_sfx_path: Path | None = None
     transition_sfx_gain_db: float = -12.0
+    teaser_impact_sfx_gain_db: float = -10.0
     zoom_enabled: bool = False
     zoom_target: str = "chat"
     zoom_scale: float = 1.2
@@ -513,6 +522,7 @@ class QualityReportSettings(BaseModel):
     zoom_min_segments: int = 1
     zoom_max_segments: int = 4
     top_no_subtitle_gaps: int = 5
+    duration_budget_enforced: bool = True
 
     @model_validator(mode="after")
     def _normalize_thresholds(self) -> "QualityReportSettings":
@@ -1294,6 +1304,24 @@ def load_settings() -> Settings:
                     3.0,
                 ),
             ),
+            condensed_budget_shrink_enabled=_env_bool(
+                "ARL_HIGHLIGHT_CONDENSED_BUDGET_SHRINK_ENABLED",
+                True,
+            ),
+            condensed_budget_trim_step_seconds=max(
+                3.0,
+                _env_float(
+                    "ARL_HIGHLIGHT_CONDENSED_BUDGET_TRIM_STEP_SECONDS",
+                    15.0,
+                ),
+            ),
+            condensed_budget_max_speech_extension_seconds=max(
+                0.0,
+                _env_float(
+                    "ARL_HIGHLIGHT_CONDENSED_BUDGET_MAX_SPEECH_EXTENSION_SECONDS",
+                    3.0,
+                ),
+            ),
         ),
         editing=EditingSettings(
             enabled=_env_bool("ARL_EDIT_PLANNER_ENABLED", False),
@@ -1347,6 +1375,10 @@ def load_settings() -> Settings:
             transition_sfx_gain_db=min(
                 6.0,
                 max(-60.0, _env_float("ARL_EDIT_TRANSITION_SFX_GAIN_DB", -12.0)),
+            ),
+            teaser_impact_sfx_gain_db=min(
+                6.0,
+                max(-60.0, _env_float("ARL_EDIT_TEASER_IMPACT_SFX_GAIN_DB", -10.0)),
             ),
             zoom_enabled=_env_bool("ARL_EDIT_ZOOM_ENABLED", False),
             zoom_target=os.getenv("ARL_EDIT_ZOOM_TARGET", "chat"),
@@ -1621,6 +1653,10 @@ def load_settings() -> Settings:
             top_no_subtitle_gaps=_env_int(
                 "ARL_QUALITY_REPORT_TOP_NO_SUBTITLE_GAPS",
                 5,
+            ),
+            duration_budget_enforced=_env_bool(
+                "ARL_QUALITY_REPORT_DURATION_BUDGET_ENFORCED",
+                True,
             ),
         ),
         llm=LlmSettings(

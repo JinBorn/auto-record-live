@@ -967,9 +967,31 @@ class EditingPlannerService:
                     )
                 )
             timeline_cursor += max(0.0, segment_duration)
+        teaser_impact_hit = self._teaser_impact_hit(timeline)
+        if teaser_impact_hit is not None:
+            sound_effects.append(teaser_impact_hit)
         sound_effects.extend(kill_sfx_hits)
         sound_effects.sort(key=lambda hit: hit.at_seconds)
         return audio_beds, sound_effects
+
+    def _teaser_impact_hit(
+        self,
+        timeline: list[TimelineSegment],
+    ) -> SoundEffectHit | None:
+        if not timeline or timeline[0].role != "teaser":
+            return None
+        track = self._first_sfx_library_track("teaser_impact")
+        if track is None:
+            return None
+        gain_db = self.settings.editing.teaser_impact_sfx_gain_db
+        if track.gain_db is not None:
+            gain_db = min(6.0, max(-60.0, track.gain_db))
+        return SoundEffectHit(
+            source_path=str(track.path),
+            at_seconds=0.0,
+            gain_db=gain_db,
+            reason="teaser_impact",
+        )
 
     def _source_music_detection(
         self,

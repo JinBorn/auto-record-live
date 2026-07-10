@@ -43,6 +43,20 @@ _CONDENSED_DURATION_BUDGET_MULTIPLIER = 1.25
 _CONDENSED_DURATION_BUDGET_EXTRA_SECONDS = 60.0
 
 
+def condensed_duration_budget(
+    target_duration_seconds: float,
+    match_duration_seconds: float,
+) -> float:
+    """Plan-duration cap for condensed plans; shared with quality-report."""
+    if target_duration_seconds <= 0.0:
+        return match_duration_seconds
+    budget = max(
+        target_duration_seconds * _CONDENSED_DURATION_BUDGET_MULTIPLIER,
+        target_duration_seconds + _CONDENSED_DURATION_BUDGET_EXTRA_SECONDS,
+    )
+    return min(match_duration_seconds, budget)
+
+
 _HIGHLIGHT_KEYWORDS = tuple(
     item.lower()
     for item in [
@@ -1079,6 +1093,7 @@ class HighlightPlannerService:
         *,
         speech_cues: list[_SrtCue],
         match_duration_seconds: float,
+        max_extension_seconds: float | None = None,
     ) -> list[HighlightClipWindow]:
         if not windows or not speech_cues or match_duration_seconds <= 0.0:
             return windows
@@ -1110,8 +1125,29 @@ class HighlightPlannerService:
                 speech_cues=ordered_cues,
                 match_duration_seconds=match_duration_seconds,
             )
-            if abs(start_seconds - window.started_at_seconds) > 0.001 or new_end - end_seconds > 0.001:
+            if max_extension_seconds is not None:
+                # Budget-shrink mode: speech protection may only extend a
+                # boundary by the cap. Never retreat a boundary here — a
+                # retreat could cut back into a protected KDA span and break
+                # coverage guarantees.
+                start_seconds = max(
+                    start_seconds,
+                    window.started_at_seconds - max_extension_seconds,
+                )
+                new_end = min(
+                    new_end,
+                    max(
+                        end_seconds,
+                        min(
+                            match_duration_seconds,
+                            end_seconds + max_extension_seconds,
+                        ),
+                    ),
+                )
+            if abs(start_seconds - window.started_at_seconds) > 0.001 or abs(new_end - end_seconds) > 0.001:
                 adjusted += 1
+            if new_end - start_seconds <= 0.001:
+                continue
             protected.append(
                 HighlightClipWindow(
                     started_at_seconds=start_seconds,
@@ -1128,6 +1164,51 @@ class HighlightPlannerService:
             )
 
         return protected
+
+    @staticmethod
+    def _speech_chains(ordered_cues: list[_SrtCue]) -> list[tuple[float, float]]:
+        """Merge cues whose gaps are below the chain threshold into spans."""
+        chains: list[tuple[float, float]] = []
+        for cue in ordered_cues:
+            if (
+                chains
+                and cue.started_at_seconds - chains[-1][1]
+                <= _SPEECH_CHAIN_GAP_SECONDS
+            ):
+                chains[-1] = (
+                    chains[-1][0],
+                    max(chains[-1][1], cue.ended_at_seconds),
+                )
+                continue
+            chains.append((cue.started_at_seconds, cue.ended_at_seconds))
+        return chains
+
+    @staticmethod
+    def _speech_chain_exit(
+        at_seconds: float,
+        speech_chains: list[tuple[float, float]],
+    ) -> float:
+        """Move a window start forward out of any speech chain it lands in."""
+        for chain_start, chain_end in speech_chains:
+            if chain_start - _SPEECH_BOUNDARY_TOLERANCE_SECONDS <= at_seconds < chain_end:
+                return chain_end
+            if chain_start > at_seconds:
+                break
+        return at_seconds
+
+    @staticmethod
+    def _speech_chain_entry(
+        at_seconds: float,
+        speech_chains: list[tuple[float, float]],
+    ) -> float:
+        """Move a window end backward out of any speech chain it lands in."""
+        result = at_seconds
+        for chain_start, chain_end in speech_chains:
+            if chain_start >= at_seconds:
+                break
+            if chain_start < at_seconds < chain_end + _SPEECH_BOUNDARY_TOLERANCE_SECONDS:
+                result = chain_start
+        return result
 
     def _is_short_start_context_window(self, window: HighlightClipWindow) -> bool:
         if self.settings.highlights.condensed_start_edge_seconds is None:
@@ -1540,6 +1621,389 @@ class HighlightPlannerService:
         )
         return self._clamp_highlight_windows(restored, match_duration_seconds)
 
+    def _shrink_windows_to_budget(
+        self,
+        windows: list[HighlightClipWindow],
+        *,
+        kda_event_cues: list[ClassifiedCue],
+        speech_cues: list[_SrtCue],
+        classified_cues: list[ClassifiedCue],
+        target_duration_seconds: float,
+        match_duration_seconds: float,
+    ) -> tuple[list[HighlightClipWindow], str | None]:
+        """Final-stage duration convergence for condensed plans.
+
+        Runs after the restore/bridge fixpoint, which may legitimately have
+        re-inflated the plan past the duration budget (KDA restore, speech
+        extension, bridging have no budget awareness). Trims the lowest-value
+        window spans first; full KDA cue spans are never trimmed and every cut
+        snaps to a speech-safe boundary. Returns the shrunk windows plus an
+        exception reason when protected content prevents reaching the budget.
+        """
+        from arl.highlights.window_optimizer import bridge_highlight_windows
+
+        settings = self.settings.highlights
+        if (
+            not settings.condensed_budget_shrink_enabled
+            or not windows
+            or target_duration_seconds <= 0.0
+            or match_duration_seconds <= 0.0
+        ):
+            return windows, None
+        budget_seconds = condensed_duration_budget(
+            target_duration_seconds,
+            match_duration_seconds,
+        )
+        total = self._clip_window_total_duration(windows)
+        if total <= budget_seconds + 1.0:
+            return windows, None
+
+        protected_spans = self._merge_time_ranges(
+            [
+                (
+                    max(0.0, min(match_duration_seconds, cue.started_at_seconds)),
+                    max(0.0, min(match_duration_seconds, cue.ended_at_seconds)),
+                )
+                for cue in kda_event_cues
+                if cue.text.startswith("kda_change ")
+                and cue.ended_at_seconds > cue.started_at_seconds
+            ]
+        )
+        ordered_cues = sorted(
+            speech_cues,
+            key=lambda cue: (cue.started_at_seconds, cue.ended_at_seconds),
+        )
+        speech_chains = self._speech_chains(ordered_cues)
+        trim_step = max(3.0, settings.condensed_budget_trim_step_seconds)
+        min_window = max(1.0, settings.condensed_min_window_duration_seconds)
+        max_extension = max(
+            0.0,
+            settings.condensed_budget_max_speech_extension_seconds,
+        )
+        untrimmable_reasons = {"condensed_match_context"}
+
+        working = sorted(
+            windows,
+            key=lambda item: (item.started_at_seconds, item.ended_at_seconds),
+        )
+        original_total = total
+        exception_reason: str | None = None
+
+        for _round in range(5):
+            working, converged = self._trim_windows_toward_budget(
+                working,
+                classified_cues=classified_cues,
+                protected_spans=protected_spans,
+                ordered_cues=ordered_cues,
+                speech_chains=speech_chains,
+                budget_seconds=budget_seconds,
+                match_duration_seconds=match_duration_seconds,
+                trim_step=trim_step,
+                min_window=min_window,
+                untrimmable_reasons=untrimmable_reasons,
+            )
+            working = self._clamp_highlight_windows(
+                working,
+                match_duration_seconds,
+            )
+            working = self._protect_speech_boundaries(
+                working,
+                speech_cues=ordered_cues,
+                match_duration_seconds=match_duration_seconds,
+                max_extension_seconds=max_extension,
+            )
+            working = self._clamp_highlight_windows(
+                working,
+                match_duration_seconds,
+            )
+            # Bridge after speech protection (same order as the restore path)
+            # so capped protection can never retreat or drop a bridge and
+            # reopen a >45s source gap.
+            working = bridge_highlight_windows(
+                working,
+                max_gap_seconds=settings.condensed_boring_gap_threshold_seconds,
+                bridge_window_seconds=settings.condensed_continuity_bridge_seconds,
+                match_duration=match_duration_seconds,
+            )
+            working = self._clamp_highlight_windows(
+                working,
+                match_duration_seconds,
+            )
+            total = self._clip_window_total_duration(working)
+            if total <= budget_seconds + 1.0:
+                break
+            if not converged:
+                # The trim pass bottomed out on protected content; further
+                # rounds cannot make progress.
+                break
+
+        total = self._clip_window_total_duration(working)
+        if total > budget_seconds + 1.0:
+            protected_total = sum(end - start for start, end in protected_spans)
+            exception_reason = (
+                "protected content floor reached: "
+                f"plan={total:.0f}s budget={budget_seconds:.0f}s "
+                f"kda_protected={protected_total:.0f}s "
+                f"kda_events={len(protected_spans)}"
+            )
+        log(
+            "highlights",
+            "budget shrink "
+            f"from={original_total:.1f}s to={total:.1f}s "
+            f"budget={budget_seconds:.1f}s target={target_duration_seconds:.1f}s "
+            f"exception={'yes' if exception_reason else 'no'}",
+        )
+        return working, exception_reason
+
+    def _trim_windows_toward_budget(
+        self,
+        windows: list[HighlightClipWindow],
+        *,
+        classified_cues: list[ClassifiedCue],
+        protected_spans: list[tuple[float, float]],
+        ordered_cues: list[_SrtCue],
+        speech_chains: list[tuple[float, float]],
+        budget_seconds: float,
+        match_duration_seconds: float,
+        trim_step: float,
+        min_window: float,
+        untrimmable_reasons: set[str],
+    ) -> tuple[list[HighlightClipWindow], bool]:
+        """One trim round: repeatedly cut the lowest-value trimmable window.
+
+        Returns (windows, converged) where converged=False means the round
+        bottomed out with the duration still above budget.
+        """
+        working = list(windows)
+        # Reserve headroom for the bridge/speech-protect pass that follows.
+        inner_budget = budget_seconds * 0.93
+        exhausted: set[int] = set()
+        density: dict[int, float] = {
+            index: self._window_value_density(window, classified_cues)
+            for index, window in enumerate(working)
+        }
+        for _ in range(600):
+            total = self._clip_window_total_duration(working)
+            if total <= inner_budget:
+                return working, True
+            candidates = [
+                (density[index], index)
+                for index, window in enumerate(working)
+                if index not in exhausted
+                and window.reason not in untrimmable_reasons
+                and not self._is_short_start_context_window(window)
+                and (window.ended_at_seconds - window.started_at_seconds)
+                > min_window + 0.001
+            ]
+            if not candidates:
+                return working, False
+            candidates.sort()
+            _, index = candidates[0]
+            window = working[index]
+            # The edit planner requires windows anchored to both boundary
+            # edges; never trim the anchored side of an edge window.
+            lock_head = window.started_at_seconds <= 0.5
+            lock_tail = window.ended_at_seconds >= match_duration_seconds - 0.5
+            trimmed = self._trim_single_window(
+                window,
+                classified_cues=classified_cues,
+                protected_spans=protected_spans,
+                ordered_cues=ordered_cues,
+                speech_chains=speech_chains,
+                match_duration_seconds=match_duration_seconds,
+                trim_step=trim_step,
+                min_window=min_window,
+                lock_head=lock_head,
+                lock_tail=lock_tail,
+            )
+            if trimmed is None:
+                exhausted.add(index)
+                continue
+            if not trimmed:
+                working.pop(index)
+                exhausted = {
+                    i if i < index else i - 1 for i in exhausted if i != index
+                }
+                density = {
+                    (i if i < index else i - 1): value
+                    for i, value in density.items()
+                    if i != index
+                }
+                continue
+            before = working[index]
+            working[index] = trimmed[0]
+            density[index] = self._window_value_density(
+                trimmed[0],
+                classified_cues,
+            )
+            if (
+                abs(before.started_at_seconds - trimmed[0].started_at_seconds)
+                <= 0.001
+                and abs(before.ended_at_seconds - trimmed[0].ended_at_seconds)
+                <= 0.001
+            ):
+                exhausted.add(index)
+        return working, False
+
+    def _trim_single_window(
+        self,
+        window: HighlightClipWindow,
+        *,
+        classified_cues: list[ClassifiedCue],
+        protected_spans: list[tuple[float, float]],
+        ordered_cues: list[_SrtCue],
+        speech_chains: list[tuple[float, float]],
+        match_duration_seconds: float,
+        trim_step: float,
+        min_window: float,
+        lock_head: bool = False,
+        lock_tail: bool = False,
+    ) -> list[HighlightClipWindow] | None:
+        """Trim one step off the lower-value end of a window.
+
+        Returns [new_window] on progress, [] to drop the window entirely, or
+        None when the window cannot be trimmed further (protected/speech
+        floors reached).
+        """
+        start = window.started_at_seconds
+        end = window.ended_at_seconds
+        duration = end - start
+        overlapping = [
+            span
+            for span in protected_spans
+            if span[0] < end - 0.001 and span[1] > start + 0.001
+        ]
+        # Hull of protected content inside this window; cuts stop at the hull.
+        hull_start = min((span[0] for span in overlapping), default=None)
+        hull_end = max((span[1] for span in overlapping), default=None)
+
+        # A window with no protected content and near-zero cue value is pure
+        # filler: drop it outright instead of nibbling at it. Continuity
+        # windows are exempt — they bridge source-time gaps and their head
+        # anchors death-screen entry protection, so they only ever shrink
+        # from the tail, down to bridge size.
+        is_continuity = window.reason == "condensed_continuity"
+        if (
+            not is_continuity
+            and not overlapping
+            and not lock_head
+            and not lock_tail
+            and duration <= trim_step * 2.0
+        ):
+            if self._window_value_density(window, classified_cues) <= 0.01:
+                return []
+
+        head_limit = end - min_window
+        if hull_start is not None:
+            head_limit = min(head_limit, hull_start)
+        tail_limit = start + min_window
+        if hull_end is not None:
+            tail_limit = max(tail_limit, hull_end)
+
+        head_value = self._span_cue_value(
+            start,
+            min(end, start + trim_step),
+            classified_cues,
+        )
+        tail_value = self._span_cue_value(
+            max(start, end - trim_step),
+            end,
+            classified_cues,
+        )
+
+        def try_head() -> HighlightClipWindow | None:
+            naive = min(start + trim_step, head_limit)
+            if naive <= start + 0.5:
+                return None
+            # Prefer skipping forward past the sentence the cut lands in;
+            # when that overshoots the protected/min-duration limit, retreat
+            # to the sentence start instead. Both are speech-safe cuts.
+            new_start = self._speech_chain_exit(naive, speech_chains)
+            if new_start > head_limit:
+                new_start = self._speech_chain_entry(naive, speech_chains)
+            new_start = min(new_start, head_limit)
+            if new_start <= start + 0.5:
+                return None
+            return HighlightClipWindow(
+                started_at_seconds=round(new_start, 3),
+                ended_at_seconds=end,
+                reason=window.reason,
+            )
+
+        def try_tail() -> HighlightClipWindow | None:
+            naive = max(end - trim_step, tail_limit)
+            if naive >= end - 0.5:
+                return None
+            # Prefer extending forward to the sentence end; when the chain
+            # runs all the way to the current end (dense speech), retreat to
+            # the sentence start instead so dense-subtitle plans can still
+            # converge. Both are speech-safe cuts.
+            new_end = self._speech_safe_window_end(
+                naive,
+                speech_cues=ordered_cues,
+                match_duration_seconds=match_duration_seconds,
+            )
+            if new_end >= end - 0.5:
+                new_end = self._speech_chain_entry(naive, speech_chains)
+            new_end = max(new_end, tail_limit)
+            if new_end >= end - 0.5:
+                return None
+            return HighlightClipWindow(
+                started_at_seconds=start,
+                ended_at_seconds=round(new_end, 3),
+                reason=window.reason,
+            )
+
+        attempts: tuple = ()
+        if is_continuity:
+            attempts = (try_tail,)
+        elif head_value <= tail_value:
+            attempts = (try_head, try_tail)
+        else:
+            attempts = (try_tail, try_head)
+        if lock_head:
+            attempts = tuple(a for a in attempts if a is not try_head)
+        if lock_tail:
+            attempts = tuple(a for a in attempts if a is not try_tail)
+        for attempt in attempts:
+            trimmed = attempt()
+            if trimmed is not None:
+                return [trimmed]
+        return None
+
+    @staticmethod
+    def _window_value_density(
+        window: HighlightClipWindow,
+        classified_cues: list[ClassifiedCue],
+    ) -> float:
+        duration = max(0.001, window.ended_at_seconds - window.started_at_seconds)
+        return (
+            HighlightPlannerService._span_cue_value(
+                window.started_at_seconds,
+                window.ended_at_seconds,
+                classified_cues,
+            )
+            / duration
+        )
+
+    @staticmethod
+    def _span_cue_value(
+        start: float,
+        end: float,
+        classified_cues: list[ClassifiedCue],
+    ) -> float:
+        if end <= start:
+            return 0.0
+        value = 0.0
+        for cue in classified_cues:
+            overlap = min(end, cue.ended_at_seconds) - max(
+                start,
+                cue.started_at_seconds,
+            )
+            if overlap > 0.0:
+                value += max(0.0, cue.priority) * overlap
+        return value
+
     def _enforce_condensed_duration_budget(
         self,
         windows: list[HighlightClipWindow],
@@ -1641,13 +2105,10 @@ class HighlightPlannerService:
         target_duration_seconds: float,
         match_duration_seconds: float,
     ) -> float:
-        if target_duration_seconds <= 0.0:
-            return match_duration_seconds
-        budget = max(
-            target_duration_seconds * _CONDENSED_DURATION_BUDGET_MULTIPLIER,
-            target_duration_seconds + _CONDENSED_DURATION_BUDGET_EXTRA_SECONDS,
+        return condensed_duration_budget(
+            target_duration_seconds,
+            match_duration_seconds,
         )
-        return min(match_duration_seconds, budget)
 
     def _condensed_start_edge_seconds(self) -> float:
         configured = self.settings.highlights.condensed_start_edge_seconds
@@ -2194,12 +2655,32 @@ class HighlightPlannerService:
         if not windows:
             return None
 
+        windows, budget_exception_reason = self._shrink_windows_to_budget(
+            windows,
+            kda_event_cues=kda_event_cues,
+            speech_cues=meaningful_cues,
+            classified_cues=classified_cues,
+            target_duration_seconds=density_result.target_duration_seconds,
+            match_duration_seconds=duration,
+        )
+        if not windows:
+            return None
+
         # 4. 构造HighlightPlanAsset
         return HighlightPlanAsset(
             session_id=boundary.session_id,
             match_index=boundary.match_index,
             source_boundary_start_seconds=boundary.started_at_seconds,
             source_boundary_end_seconds=boundary.ended_at_seconds,
+            target_duration_seconds=round(density_result.target_duration_seconds, 3),
+            budget_seconds=round(
+                self._condensed_duration_budget(
+                    density_result.target_duration_seconds,
+                    duration,
+                ),
+                3,
+            ),
+            budget_exception_reason=budget_exception_reason,
             windows=[
                 HighlightClipWindow(
                     started_at_seconds=round(w.started_at_seconds, 3),

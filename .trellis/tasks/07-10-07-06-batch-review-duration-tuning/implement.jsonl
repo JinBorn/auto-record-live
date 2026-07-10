@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/editing-quality.md", "reason": "publish 验收阈值、重生成工作流、07-06 批次跨层教训（本任务的验收基准与更新对象）"}
+{"file": ".trellis/spec/backend/export-configuration.md", "reason": "exporter / edit-plan / quality-report CLI 场景契约与 env 参考"}
+{"file": ".trellis/tasks/archive/2026-07/07-06-demo2-quality-parity/validation-report.md", "reason": "07-10 集成复核基线数字与时长遗留项（17.7–23.7 min vs ~10.3 min target）"}
+{"file": ".trellis/tasks/archive/2026-07/07-02-condensed-highlight-duration-tightening/prd.md", "reason": "原始时长收紧需求与防回归保证（KDA 覆盖、语音边界、45s gap、continuity 10%）"}

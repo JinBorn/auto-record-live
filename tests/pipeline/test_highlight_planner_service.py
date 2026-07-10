@@ -982,6 +982,230 @@ class HighlightPlannerServiceTest(unittest.TestCase):
             )
         )
 
+    def test_budget_shrink_converges_and_keeps_kda_coverage(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        kda_cues = [
+            ClassifiedCue(
+                180.0,
+                210.0,
+                "kda_change kills=0->1 deaths=0->0 previous_at=195.000 current_at=205.000",
+                "key_event",
+                1.0,
+            ),
+            ClassifiedCue(
+                700.0,
+                730.0,
+                "kda_change kills=1->2 deaths=0->0 previous_at=715.000 current_at=725.000",
+                "key_event",
+                1.0,
+            ),
+        ]
+        windows = [
+            HighlightClipWindow(
+                started_at_seconds=100.0,
+                ended_at_seconds=400.0,
+                reason="condensed_key_event",
+            ),
+            HighlightClipWindow(
+                started_at_seconds=600.0,
+                ended_at_seconds=900.0,
+                reason="condensed_key_event",
+            ),
+            HighlightClipWindow(
+                started_at_seconds=1200.0,
+                ended_at_seconds=1500.0,
+                reason="condensed_context",
+            ),
+        ]
+        speech_cues = [
+            _SrtCue(float(base), float(base + 2), f"line {base}")
+            for base in range(0, 1800, 60)
+        ]
+
+        shrunk, exception_reason = service._shrink_windows_to_budget(
+            windows,
+            kda_event_cues=kda_cues,
+            speech_cues=speech_cues,
+            classified_cues=list(kda_cues),
+            target_duration_seconds=300.0,
+            match_duration_seconds=1800.0,
+        )
+
+        total = sum(w.ended_at_seconds - w.started_at_seconds for w in shrunk)
+        self.assertLessEqual(total, 376.0)
+        self.assertIsNone(exception_reason)
+        for cue in kda_cues:
+            self.assertTrue(
+                any(
+                    w.started_at_seconds <= cue.started_at_seconds + 0.01
+                    and w.ended_at_seconds >= cue.ended_at_seconds - 0.01
+                    for w in shrunk
+                ),
+                f"KDA span {cue.started_at_seconds}-{cue.ended_at_seconds} uncovered",
+            )
+        ordered = sorted(shrunk, key=lambda w: w.started_at_seconds)
+        for previous, current in zip(ordered, ordered[1:]):
+            gap = current.started_at_seconds - previous.ended_at_seconds
+            self.assertLessEqual(gap, 45.1)
+
+    def test_budget_shrink_keeps_boundary_edge_anchors(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        windows = [
+            HighlightClipWindow(
+                started_at_seconds=0.0,
+                ended_at_seconds=20.0,
+                reason="condensed_context",
+            ),
+            HighlightClipWindow(
+                started_at_seconds=300.0,
+                ended_at_seconds=900.0,
+                reason="condensed_key_event",
+            ),
+        ]
+        speech_cues = [
+            _SrtCue(float(base), float(base + 2), f"line {base}")
+            for base in range(0, 900, 60)
+        ]
+
+        shrunk, _exception = service._shrink_windows_to_budget(
+            windows,
+            kda_event_cues=[],
+            speech_cues=speech_cues,
+            classified_cues=[],
+            target_duration_seconds=120.0,
+            match_duration_seconds=900.0,
+        )
+
+        # The edit planner requires windows anchored at both boundary edges.
+        self.assertLessEqual(min(w.started_at_seconds for w in shrunk), 0.5)
+        self.assertGreaterEqual(max(w.ended_at_seconds for w in shrunk), 899.5)
+
+    def test_budget_shrink_is_noop_within_budget(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        windows = [
+            HighlightClipWindow(
+                started_at_seconds=0.0,
+                ended_at_seconds=120.0,
+                reason="condensed_key_event",
+            ),
+            HighlightClipWindow(
+                started_at_seconds=150.0,
+                ended_at_seconds=240.0,
+                reason="condensed_context",
+            ),
+        ]
+
+        shrunk, exception_reason = service._shrink_windows_to_budget(
+            windows,
+            kda_event_cues=[],
+            speech_cues=[_SrtCue(10.0, 12.0, "line")],
+            classified_cues=[],
+            target_duration_seconds=300.0,
+            match_duration_seconds=600.0,
+        )
+
+        self.assertEqual(shrunk, windows)
+        self.assertIsNone(exception_reason)
+
+    def test_budget_shrink_disabled_by_setting_keeps_windows(self) -> None:
+        self.settings.highlights.condensed_budget_shrink_enabled = False
+        service = HighlightPlannerService(self.settings)
+        windows = [
+            HighlightClipWindow(
+                started_at_seconds=0.0,
+                ended_at_seconds=500.0,
+                reason="condensed_key_event",
+            ),
+            HighlightClipWindow(
+                started_at_seconds=540.0,
+                ended_at_seconds=900.0,
+                reason="condensed_key_event",
+            ),
+        ]
+
+        shrunk, exception_reason = service._shrink_windows_to_budget(
+            windows,
+            kda_event_cues=[],
+            speech_cues=[_SrtCue(10.0, 12.0, "line")],
+            classified_cues=[],
+            target_duration_seconds=120.0,
+            match_duration_seconds=900.0,
+        )
+
+        self.assertEqual(shrunk, windows)
+        self.assertIsNone(exception_reason)
+
+    def test_budget_shrink_records_exception_when_protected_floor_reached(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        kda_cues = [
+            ClassifiedCue(
+                float(start),
+                float(start + 60),
+                (
+                    "kda_change kills=0->1 deaths=0->0 "
+                    f"previous_at={start + 20}.000 current_at={start + 40}.000"
+                ),
+                "key_event",
+                1.0,
+            )
+            for start in range(100, 500, 80)
+        ]
+        windows = [
+            HighlightClipWindow(
+                started_at_seconds=90.0,
+                ended_at_seconds=560.0,
+                reason="condensed_key_event",
+            ),
+        ]
+
+        shrunk, exception_reason = service._shrink_windows_to_budget(
+            windows,
+            kda_event_cues=kda_cues,
+            speech_cues=[_SrtCue(10.0, 12.0, "line")],
+            classified_cues=list(kda_cues),
+            target_duration_seconds=60.0,
+            match_duration_seconds=600.0,
+        )
+
+        self.assertIsNotNone(exception_reason)
+        self.assertIn("protected content floor", exception_reason)
+        for cue in kda_cues:
+            self.assertTrue(
+                any(
+                    w.started_at_seconds <= cue.started_at_seconds + 0.01
+                    and w.ended_at_seconds >= cue.ended_at_seconds - 0.01
+                    for w in shrunk
+                )
+            )
+
+    def test_protect_speech_boundaries_caps_extension_in_shrink_mode(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        windows = [
+            HighlightClipWindow(
+                started_at_seconds=10.5,
+                ended_at_seconds=30.0,
+                reason="condensed_key_event",
+            )
+        ]
+        speech_cues = [
+            _SrtCue(10.0, 12.0, "speech already started"),
+            _SrtCue(29.5, 32.0, "unfinished sentence"),
+            _SrtCue(32.4, 34.0, "same thought continues"),
+        ]
+
+        protected = service._protect_speech_boundaries(
+            windows,
+            speech_cues=speech_cues,
+            match_duration_seconds=40.0,
+            max_extension_seconds=3.0,
+        )
+
+        self.assertEqual(len(protected), 1)
+        self.assertEqual(protected[0].started_at_seconds, 10.0)
+        # Uncapped protection would extend to 34.0; shrink mode caps the
+        # extension at max_extension_seconds past the original end.
+        self.assertEqual(protected[0].ended_at_seconds, 33.0)
+
     def test_restore_missing_kda_event_windows_requires_full_key_event_coverage(self) -> None:
         service = HighlightPlannerService(self.settings)
         windows = [

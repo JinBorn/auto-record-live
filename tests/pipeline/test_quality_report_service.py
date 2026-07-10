@@ -16,6 +16,8 @@ from arl.shared.contracts import (
     CopyAsset,
     EditPlanAsset,
     ExportAsset,
+    HighlightClipWindow,
+    HighlightPlanAsset,
     MatchBoundary,
     SoundEffectHit,
     SubtitleAsset,
@@ -150,6 +152,95 @@ class QualityReportServiceTest(unittest.TestCase):
         self.assertIn("teaser_segment_count_out_of_range", codes)
         self.assertIn("sfx_hit_count_above_limit", codes)
         self.assertIn("zoom_segment_count_out_of_range", codes)
+
+    def test_plan_duration_above_budget_warns(self) -> None:
+        session_id = "session-quality-report-budget"
+        self._seed_publish_assets(session_id)
+        self._append_highlight_plan(session_id, budget_seconds=30.0)
+
+        result = self._run_probe_service(session_id)
+
+        row = result.rows[0]
+        self.assertEqual(row.duration_budget_seconds, 30.0)
+        codes = {warning.code for warning in row.warnings}
+        self.assertIn("plan_duration_above_budget", codes)
+
+    def test_budget_exception_reason_suppresses_duration_warning(self) -> None:
+        session_id = "session-quality-report-budget-exception"
+        self._seed_publish_assets(session_id)
+        self._append_highlight_plan(
+            session_id,
+            budget_seconds=30.0,
+            budget_exception_reason="protected KDA/speech density floor reached",
+        )
+
+        result = self._run_probe_service(session_id)
+
+        row = result.rows[0]
+        self.assertEqual(
+            row.budget_exception_reason,
+            "protected KDA/speech density floor reached",
+        )
+        codes = {warning.code for warning in row.warnings}
+        self.assertNotIn("plan_duration_above_budget", codes)
+        match_markdown = (
+            self.processed_root
+            / session_id
+            / "reports"
+            / "match-02-quality-report.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Duration budget exception", match_markdown)
+
+    def test_duration_budget_warning_disabled_by_setting(self) -> None:
+        session_id = "session-quality-report-budget-off"
+        self._seed_publish_assets(session_id)
+        self._append_highlight_plan(session_id, budget_seconds=30.0)
+        self.settings.quality_report.duration_budget_enforced = False
+
+        result = self._run_probe_service(session_id)
+
+        codes = {warning.code for warning in result.rows[0].warnings}
+        self.assertNotIn("plan_duration_above_budget", codes)
+
+    def _append_highlight_plan(
+        self,
+        session_id: str,
+        *,
+        budget_seconds: float,
+        budget_exception_reason: str | None = None,
+    ) -> None:
+        append_model(
+            self.temp_root / "highlight-plans.jsonl",
+            HighlightPlanAsset(
+                session_id=session_id,
+                match_index=2,
+                source_boundary_start_seconds=0.0,
+                source_boundary_end_seconds=120.0,
+                windows=[
+                    HighlightClipWindow(
+                        started_at_seconds=0.0,
+                        ended_at_seconds=90.0,
+                        reason="condensed_key_event",
+                    )
+                ],
+                target_duration_seconds=24.0,
+                budget_seconds=budget_seconds,
+                budget_exception_reason=budget_exception_reason,
+                created_at=datetime(2026, 7, 6, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
+
+    def _run_probe_service(self, session_id: str):
+        return QualityReportService(
+            self.settings,
+            media_probe=lambda path: MediaProbeResult(
+                duration_seconds=40.0,
+                bitrate_kbps=8150.0,
+                width=1920,
+                height=1080,
+            ),
+            kda_event_provider=lambda boundary: [],
+        ).run(session_ids={session_id}, match_indices={2})
 
     def _seed_publish_assets(self, session_id: str) -> tuple[Path, Path]:
         now = datetime(2026, 7, 6, 12, 0, tzinfo=timezone.utc)
@@ -296,6 +387,54 @@ class QualityReportServiceTest(unittest.TestCase):
 
 
 class QualityReportMetricUnitTest(unittest.TestCase):
+    def test_teaser_count_merges_zoom_split_adjacent_segments(self) -> None:
+        # A zoom close-up splits one teaser source span into three timeline
+        # segments; the metric must count distinct source spans.
+        plan = EditPlanAsset(
+            session_id="s",
+            match_index=1,
+            source_boundary_start_seconds=0.0,
+            source_boundary_end_seconds=600.0,
+            timeline=[
+                TimelineSegment(
+                    role="teaser",
+                    source_start_seconds=153.4,
+                    source_end_seconds=177.0,
+                    reason="llm_teaser",
+                ),
+                TimelineSegment(
+                    role="teaser",
+                    source_start_seconds=177.0,
+                    source_end_seconds=183.0,
+                    reason="llm_teaser",
+                ),
+                TimelineSegment(
+                    role="teaser",
+                    source_start_seconds=183.0,
+                    source_end_seconds=188.0,
+                    reason="llm_teaser",
+                ),
+                TimelineSegment(
+                    role="teaser",
+                    source_start_seconds=271.7,
+                    source_end_seconds=280.7,
+                    reason="llm_teaser",
+                ),
+                TimelineSegment(
+                    role="main",
+                    source_start_seconds=0.0,
+                    source_end_seconds=20.0,
+                    reason="condensed_context",
+                ),
+            ],
+            created_at=datetime(2026, 7, 10, tzinfo=timezone.utc),
+        )
+
+        count, total = QualityReportService._teaser_metrics(plan)
+
+        self.assertEqual(count, 2)
+        self.assertAlmostEqual(total, 43.6, places=1)
+
     def test_kda_coverage_merges_zoom_split_adjacent_spans(self) -> None:
         # Close-up zoom splits one key-event span at the kill timestamp into
         # adjacent pieces; the merged span must still count as covering the

@@ -919,6 +919,131 @@ class EditingPlannerServiceTest(unittest.TestCase):
         self.assertNotEqual(plan.sound_effects[0].source_path, str(kill_path))
         self.assertEqual(plan.sound_effects[0].gain_db, -7.0)
 
+    def test_audio_mixing_falls_back_to_kill_coin_when_multikill_track_missing(self) -> None:
+        session_id = "session-edit-multikill-fallback-sfx"
+        library_dir = self.temp_root / "sfx-library-no-multi"
+        library_dir.mkdir(parents=True, exist_ok=True)
+        kill_path = library_dir / "coin.wav"
+        kill_path.write_text("fake kill", encoding="utf-8")
+        library_path = library_dir / "library.json"
+        library_path.write_text(
+            json.dumps(
+                {"tracks": [{"category": "kill_coin", "path": kill_path.name}]}
+            ),
+            encoding="utf-8",
+        )
+        self.settings.editing.audio_mixing_enabled = True
+        self.settings.editing.sfx_library_path = library_path
+        self.settings.editing.teaser_max_segments = 0
+        self._append_subtitle(
+            session_id,
+            "1\n00:02:04,000 --> 00:02:06,000\n"
+            "kda_change kills=2->4 deaths=0->0 previous_at=110.000 current_at=125.000\n",
+        )
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=100.0,
+                    ended_at_seconds=150.0,
+                    reason="condensed_key_event",
+                )
+            ],
+            duration=600.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        self.assertEqual(len(plan.sound_effects), 1)
+        self.assertEqual(plan.sound_effects[0].source_path, str(kill_path))
+
+    def test_audio_mixing_emits_teaser_impact_from_library(self) -> None:
+        session_id = "session-edit-teaser-impact-sfx"
+        library_dir = self.temp_root / "sfx-library-teaser-impact"
+        library_dir.mkdir(parents=True, exist_ok=True)
+        impact_path = library_dir / "impact.wav"
+        impact_path.write_text("fake impact", encoding="utf-8")
+        library_path = library_dir / "library.json"
+        library_path.write_text(
+            json.dumps(
+                {
+                    "tracks": [
+                        {
+                            "category": "teaser_impact",
+                            "path": impact_path.name,
+                            "gain_db": -2.0,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.settings.editing.audio_mixing_enabled = True
+        self.settings.editing.sfx_library_path = library_path
+        self._append_subtitle(
+            session_id,
+            "1\n00:02:04,000 --> 00:02:06,000\n"
+            "很好玩真的超神了\n",
+        )
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=100.0,
+                    ended_at_seconds=150.0,
+                    reason="highlight_keyword",
+                )
+            ],
+            duration=600.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        self.assertEqual(plan.timeline[0].role, "teaser")
+        impact_hits = [
+            hit for hit in plan.sound_effects if hit.reason == "teaser_impact"
+        ]
+        self.assertEqual(len(impact_hits), 1)
+        self.assertEqual(impact_hits[0].source_path, str(impact_path))
+        self.assertEqual(impact_hits[0].at_seconds, 0.0)
+        self.assertEqual(impact_hits[0].gain_db, -2.0)
+
+    def test_audio_mixing_skips_teaser_impact_without_library_track(self) -> None:
+        session_id = "session-edit-teaser-no-impact-sfx"
+        library_path, _kill_path, _multi_path = self._write_sfx_library()
+        self.settings.editing.audio_mixing_enabled = True
+        self.settings.editing.sfx_library_path = library_path
+        self._append_subtitle(
+            session_id,
+            "1\n00:02:04,000 --> 00:02:06,000\n"
+            "很好玩真的超神了\n",
+        )
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=100.0,
+                    ended_at_seconds=150.0,
+                    reason="highlight_keyword",
+                )
+            ],
+            duration=600.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        self.assertEqual(plan.timeline[0].role, "teaser")
+        self.assertEqual(
+            [hit for hit in plan.sound_effects if hit.reason == "teaser_impact"],
+            [],
+        )
+
     def test_audio_mixing_maps_repeated_kda_event_to_first_rendered_occurrence(self) -> None:
         session_id = "session-edit-teaser-main-kda-sfx"
         sfx_path = self.temp_root / "audio" / "coin.wav"

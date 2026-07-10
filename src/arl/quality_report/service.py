@@ -17,6 +17,7 @@ from arl.highlights.service import (
     _HIGHLIGHT_KEYWORDS,
     _TACTICAL_KEYWORDS,
     HighlightPlannerService,
+    condensed_duration_budget,
 )
 from arl.media.recording_resolver import recording_primary_video_path
 from arl.shared.contracts import (
@@ -179,6 +180,7 @@ class QualityReportService:
             warnings=warnings,
         )
         plan_duration_seconds = self._plan_duration(edit_plan, highlight_plan, boundary)
+        main_duration_seconds = self._main_duration(edit_plan, highlight_plan)
         boundary_duration_seconds = (
             max(0.0, boundary.ended_at_seconds - boundary.started_at_seconds)
             if boundary is not None
@@ -218,6 +220,28 @@ class QualityReportService:
         coverage_windows = self._key_event_coverage_windows(edit_plan, highlight_plan)
         kda_uncovered = self._kda_uncovered_count(kda_events, coverage_windows)
         target = self._target_duration(boundary, source_cues, kda_events)
+        # Prefer the target the planner actually used (persisted on the plan
+        # asset) over the report-time recompute, so budget checks cannot drift
+        # when config changed between the plan run and the report run.
+        if (
+            highlight_plan is not None
+            and highlight_plan.target_duration_seconds is not None
+        ):
+            target = target.model_copy(
+                update={
+                    "target_duration_seconds": highlight_plan.target_duration_seconds
+                }
+            )
+        duration_budget = self._duration_budget(
+            highlight_plan,
+            target,
+            boundary_duration_seconds,
+        )
+        budget_exception_reason = (
+            highlight_plan.budget_exception_reason
+            if highlight_plan is not None
+            else None
+        )
         teaser_count, teaser_seconds = self._teaser_metrics(edit_plan)
         bgm_beds = self._bgm_metrics(edit_plan)
         sfx_hits = self._sfx_metrics(edit_plan, kda_events)
@@ -243,6 +267,9 @@ class QualityReportService:
                 float(self.settings.highlights.condensed_target_duration_range[1]) * 60.0,
             ),
             plan_duration_seconds=plan_duration_seconds,
+            main_duration_seconds=main_duration_seconds,
+            duration_budget_seconds=duration_budget,
+            budget_exception_reason=budget_exception_reason,
             boundary_duration_seconds=boundary_duration_seconds,
             max_source_gap_seconds=max_source_gap,
             subtitle_active_ratio=subtitle_active_ratio,
@@ -522,6 +549,28 @@ class QualityReportService:
             visual_activity=density.visual_activity,
         )
 
+    @staticmethod
+    def _duration_budget(
+        highlight_plan: HighlightPlanAsset | None,
+        target: TargetDurationMetric,
+        boundary_duration_seconds: float | None,
+    ) -> float | None:
+        if highlight_plan is not None and highlight_plan.budget_seconds is not None:
+            return highlight_plan.budget_seconds
+        if (
+            target.target_duration_seconds is None
+            or boundary_duration_seconds is None
+            or boundary_duration_seconds <= 0.0
+        ):
+            return None
+        return round(
+            condensed_duration_budget(
+                target.target_duration_seconds,
+                boundary_duration_seconds,
+            ),
+            3,
+        )
+
     def _target_video_path(self, boundary: MatchBoundary) -> Path | None:
         try:
             recording = self._get_highlight_service()._find_recording_asset(boundary)
@@ -633,14 +682,50 @@ class QualityReportService:
         return max(0.0, boundary.ended_at_seconds - boundary.started_at_seconds)
 
     @staticmethod
+    def _main_duration(
+        edit_plan: EditPlanAsset | None,
+        highlight_plan: HighlightPlanAsset | None,
+    ) -> float | None:
+        """Condensed main-content duration, excluding teaser/transition roles.
+
+        The duration budget governs condensed retention; the teaser cold open
+        re-plays retained content and has its own dynamic budget, so it must
+        not count against the plan budget.
+        """
+        if edit_plan is not None:
+            return sum(
+                QualityReportService._timeline_segment_duration(segment)
+                for segment in edit_plan.timeline
+                if segment.role == "main"
+            )
+        if highlight_plan is not None:
+            return sum(
+                max(0.0, window.ended_at_seconds - window.started_at_seconds)
+                for window in highlight_plan.windows
+            )
+        return None
+
+    @staticmethod
     def _teaser_metrics(edit_plan: EditPlanAsset | None) -> tuple[int, float]:
         if edit_plan is None:
             return 0, 0.0
         teaser_segments = [
             segment for segment in edit_plan.timeline if segment.role == "teaser"
         ]
+        # Zoom close-ups split one teaser span into multiple timeline
+        # segments; count distinct source spans (adjacent segments merged),
+        # mirroring the KDA coverage merge.
+        distinct_spans = 0
+        previous_end: float | None = None
+        for segment in teaser_segments:
+            if (
+                previous_end is None
+                or abs(segment.source_start_seconds - previous_end) > 0.05
+            ):
+                distinct_spans += 1
+            previous_end = segment.source_end_seconds
         return (
-            len(teaser_segments),
+            distinct_spans,
             sum(
                 QualityReportService._timeline_segment_duration(segment)
                 for segment in teaser_segments
@@ -738,6 +823,24 @@ class QualityReportService:
     def _threshold_warnings(self, row: QualityReportRow) -> list[QualityWarning]:
         thresholds = self.settings.quality_report
         warnings: list[QualityWarning] = []
+        if (
+            thresholds.duration_budget_enforced
+            and row.main_duration_seconds is not None
+            and row.duration_budget_seconds is not None
+            and row.main_duration_seconds > row.duration_budget_seconds + 1.0
+            and row.budget_exception_reason is None
+        ):
+            warnings.append(
+                QualityWarning(
+                    code="plan_duration_above_budget",
+                    message=(
+                        "Condensed main duration exceeds the duration budget "
+                        "without a recorded exception."
+                    ),
+                    value=round(row.main_duration_seconds, 1),
+                    threshold=round(row.duration_budget_seconds, 1),
+                )
+            )
         if row.subtitle_active_ratio < thresholds.subtitle_active_ratio_min:
             warnings.append(
                 QualityWarning(
@@ -772,12 +875,13 @@ class QualityReportService:
                     ],
                 )
             )
-        # Transition whoosh hits are rate-limited independently of kill SFX;
-        # only kill-accent hits count against the configured maximum.
+        # Transition whoosh and teaser-impact hits are accents outside the
+        # kill rate limit; only kill-accent hits count against the maximum.
         kill_sfx_count = sum(
             1
             for hit in row.sfx_hits
             if not hit.reason.startswith("transition")
+            and hit.reason != "teaser_impact"
         )
         if kill_sfx_count > thresholds.sfx_max_hits:
             warnings.append(
@@ -840,11 +944,12 @@ class QualityReportService:
             "## Quality Report",
             "",
             (
-                "| Sample | Export min | Bitrate | Res | Target min | Plan min | "
+                "| Sample | Export min | Bitrate | Res | Target min | Budget min | "
+                "Plan min | "
                 "Max source gap | KDA uncovered | Subtitle active | No-sub gaps | "
                 "Teaser | BGM | SFX | Zoom | Warnings |"
             ),
-            "|---|---:|---:|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|",
+            "|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|",
         ]
         for row in rows:
             lines.append(self._markdown_row(row))
@@ -870,6 +975,7 @@ class QualityReportService:
             f"| {self._mbps(row.container_bitrate_kbps)} "
             f"| {resolution} "
             f"| {self._minutes(row.condensed_target.target_duration_seconds)} "
+            f"| {self._minutes(row.duration_budget_seconds)} "
             f"| {self._minutes(row.plan_duration_seconds)} "
             f"| {row.max_source_gap_seconds:.1f}s "
             f"| {row.kda_uncovered_count}/{row.kda_event_count} "
@@ -892,6 +998,10 @@ class QualityReportService:
         ]
         if row.warnings:
             lines.append("- Warnings: " + ", ".join(warning.code for warning in row.warnings))
+        if row.budget_exception_reason:
+            lines.append(
+                f"- Duration budget exception: {row.budget_exception_reason}"
+            )
         if row.longest_no_subtitle_gaps:
             lines.append(
                 "- Longest no-subtitle gaps: "
