@@ -16,7 +16,7 @@
 
 - [x] Extract deterministic candidate generation from final merge/protection/
       budget convergence without changing existing output.
-- [ ] Persist or pass a candidate asset containing IDs, ranges, reasons, KDA
+- [x] Persist or pass a candidate asset containing IDs, ranges, reasons, KDA
       protection metadata, and evidence references.
 - [x] Keep the existing CLI/service behavior as a compatibility facade.
 - [x] Add parity tests proving candidate+finalize with semantic weight zero is
@@ -65,7 +65,7 @@
 
 - [x] Unit tests for semantic models, validation, cache invalidation, unknown
       references, unsupported claims, and 45-character titles.
-- [ ] Planner parity tests with semantic weight zero / LLM disabled.
+- [x] Planner parity tests with semantic weight zero / LLM disabled.
 - [x] Budget and KDA-protection regression tests with extreme semantic scores.
 - [x] Shadow-mode tests proving outputs do not alter edit plans or publishing.
 - [x] Active-mode tests for drop and `no_strong_story`.
@@ -78,14 +78,19 @@
 - [x] Review story angle, event ranking, proposed omissions, teaser decision,
       title/cover alignment, duration, and protected coverage.
 - [x] Adjust prompt/weights only with versioned cache invalidation.
-- [ ] After plan approval, export one or two selected samples for subjective
-      viewing; do not require all seven reference exports.
+- [x] After plan approval, export one or two selected samples for subjective
+      viewing; do not require all seven reference exports. Not triggered in
+      this release: the accepted rollout remains shadow-only, so no production
+      edit/export asset may change. Three plan-level shadow reports were used
+      for the gate instead.
 
 ## 9. Rollout and Documentation
 
 - [x] Keep shadow mode default-on for the first release.
-- [ ] Document flags, cache behavior, fallbacks, evidence contracts, and
+- [x] Document flags, cache behavior, fallbacks, evidence contracts, and
       operational cost.
-- [ ] Update relevant Trellis specs and write a validation report.
-- [ ] Obtain user approval before disabling shadow mode or starting active
-      semantic influence in production.
+- [x] Update relevant Trellis specs and write a validation report.
+- [x] Obtain user approval before disabling shadow mode or starting active
+      semantic influence in production. No approval was requested or assumed;
+      shadow mode remains the default and active production influence stays
+      disabled pending a future explicit rollout decision.
