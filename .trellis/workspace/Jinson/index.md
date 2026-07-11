@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 68
+- **Total Sessions**: 69
 - **Last Active**: 2026-07-12
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~703 | Active |
+| `journal-2.md` | ~737 | Active |
 | `journal-1.md` | ~1986 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 69 | 2026-07-12 | Duration tuning and LLM semantic pipeline wrap-up | `f1dc333`, `b082fec` | `main` |
 | 68 | 2026-07-12 | Human review fixes and semantic pipeline refinement | `46c4c4e`, `b082fec` | `main` |
 | 67 | 2026-07-10 | Demo2 quality parity final integration review | `b29f252` | `main` |
 | 66 | 2026-07-09 | Cover visual upgrade | `d312339`, `4a8efd2` | `main` |

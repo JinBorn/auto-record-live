@@ -701,3 +701,37 @@ Completed the eight human-review fixes, replaced coarse fixed-offset SFX timing 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 69: Duration tuning and LLM semantic pipeline wrap-up
+
+**Date**: 2026-07-12
+**Task**: Duration tuning and LLM semantic pipeline wrap-up
+**Branch**: `main`
+
+### Summary
+
+Archived the completed duration-budget convergence and LLM semantic pipeline tasks after validating 723 tests. The semantic layer remains shadow-first with deterministic KDA, boundary, source-gap, and duration safeguards authoritative; duration tuning retains documented protected-floor exceptions.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f1dc333` | (see git log) |
+| `b082fec` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
