@@ -997,6 +997,48 @@ class EditingPlannerServiceTest(unittest.TestCase):
         plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
         self.assertEqual(plan.sound_effects, [])
 
+    def test_audio_mixing_does_not_emit_sfx_when_kill_and_death_both_increase(
+        self,
+    ) -> None:
+        session_id = "session-edit-mixed-kill-death-sfx"
+        sfx_path = self.temp_root / "audio" / "coin.wav"
+        sfx_path.parent.mkdir(parents=True, exist_ok=True)
+        sfx_path.write_text("fake sfx", encoding="utf-8")
+        self.settings.editing.audio_mixing_enabled = True
+        self.settings.editing.sfx_path = sfx_path
+        self.settings.editing.teaser_max_segments = 0
+        self._append_subtitle(
+            session_id,
+            "1\n00:09:50,000 --> 00:09:52,000\nordinary speech line\n",
+        )
+        self._append_boundary(session_id, duration=900.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=530.0,
+                    ended_at_seconds=599.0,
+                    reason="condensed_key_event",
+                )
+            ],
+            duration=900.0,
+            kda_events=[
+                KdaEventCue(
+                    started_at_seconds=530.0,
+                    ended_at_seconds=599.0,
+                    text=(
+                        "kda_change kills=2->3 deaths=0->1 "
+                        "previous_at=560.000 current_at=594.000"
+                    ),
+                )
+            ],
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        self.assertEqual(plan.sound_effects, [])
+
     def test_audio_mixing_does_not_map_sfx_for_kda_in_trimmed_gap(self) -> None:
         session_id = "session-edit-gap-kda-sfx"
         sfx_path = self.temp_root / "audio" / "coin.wav"

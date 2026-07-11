@@ -347,7 +347,8 @@ ARL_EDIT_SFX_KDA_ALIGNMENT_ENABLED=1
 Put sound files under `data/sfx/tracks/` and reference them from
 `data/sfx/library.json`. Supported categories are `kill_coin`, `multi_kill`,
 `transition_whoosh`, and `teaser_impact`. Kill SFX is aligned to `kda_change`
-timestamps when available; death-only KDA changes do not trigger coin hits.
+timestamps when available; KDA changes that increase deaths do not trigger coin
+hits, even when kills also increase in the same observation interval.
 If the manifest is missing, invalid, or lacks a usable kill category, the edit
 planner falls back to the generated `coin.wav`.
 

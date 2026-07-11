@@ -273,6 +273,35 @@ graph was fixed).
   and sampling latency vary per event, and fixed offsets preserve false hits.
 - If refinement cannot confirm a transition, omit the decorative SFX.
 
+## Common Mistake: Treating Mixed Kill/Death KDA Changes As Confirmed Kills
+
+**Symptom**: A coin accent plays immediately after the streamer dies. The KDA
+cue shows both counters changing, for example
+`kills=2->3 deaths=0->1 previous_at=560.000 current_at=594.000`.
+
+**Cause**: The edit planner checked only that `kills` increased. A coarse OCR
+observation interval can contain both a kill credited to the streamer and the
+streamer's death, but it does not prove that the detected timestamp is a clean
+streamer-kill moment suitable for a decorative coin accent.
+
+**Fix**: `_kda_kill_event_from_cue` may create an SFX event only when kills
+increase and deaths do not increase. If deaths increase, omit the SFX even when
+kills also increase in the same cue.
+
+```python
+# Wrong: mixed kill/death changes become coin hits.
+if current_kills > previous_kills:
+    emit_kill_sfx()
+
+# Correct: only an unambiguous kill-only KDA change becomes a coin hit.
+if current_kills > previous_kills and current_deaths <= previous_deaths:
+    emit_kill_sfx()
+```
+
+**Prevention**: Keep regressions for pure kill, pure death, and mixed
+kill/death cues. The mixed regression must use `HighlightPlanAsset.kda_events`,
+because that is the durable event path used by real exports.
+
 ## Lesson: Subtitle Timing Fidelity Beats Artificial Coverage
 
 - Do not extend Whisper word-timestamp cues to satisfy a subtitle-active-ratio

@@ -66,6 +66,7 @@ _SEGMENT_TOLERANCE_SECONDS = 0.001
 _BGM_SWITCH_MIN_DURATION_SECONDS = 120.0
 _BGM_MIN_FRAGMENT_SECONDS = 3.0
 _KDA_KILLS_RE = re.compile(r"\bkills=(\d+)->(\d+)")
+_KDA_DEATHS_RE = re.compile(r"\bdeaths=(\d+)->(\d+)")
 _KDA_CURRENT_AT_RE = re.compile(r"\bcurrent_at=([0-9]+(?:\.[0-9]+)?)")
 _MULTIKILL_KEYWORDS = (
     "double kill",
@@ -1577,6 +1578,12 @@ class EditingPlannerService:
         kill_delta = current_kills - previous_kills
         if kill_delta <= 0:
             return None
+        deaths_match = _KDA_DEATHS_RE.search(cue.text)
+        if deaths_match is not None:
+            previous_deaths = int(deaths_match.group(1))
+            current_deaths = int(deaths_match.group(2))
+            if current_deaths > previous_deaths:
+                return None
         timestamp = self._kda_event_timestamp(cue)
         return _KdaKillEvent(
             source_timestamp_seconds=timestamp,
