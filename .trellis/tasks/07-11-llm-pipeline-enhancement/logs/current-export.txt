@@ -1,0 +1,4 @@
+pid=15440
+stdout=.trellis/tasks/07-11-llm-pipeline-enhancement/logs/active-export-20260711-150743.stdout.log
+stderr=.trellis/tasks/07-11-llm-pipeline-enhancement/logs/active-export-20260711-150743.stderr.log
+stamp=20260711-150743

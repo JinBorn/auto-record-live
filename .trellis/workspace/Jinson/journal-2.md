@@ -667,3 +667,37 @@ Ran the parent-task integration review: regenerated 4 validation samples end-to-
 ### Next Steps
 
 - None - task complete
+
+
+## Session 68: Human review fixes and semantic pipeline refinement
+
+**Date**: 2026-07-12
+**Task**: Human review fixes and semantic pipeline refinement
+**Branch**: `main`
+
+### Summary
+
+Completed the eight human-review fixes, replaced coarse fixed-offset SFX timing with frame-refined KDA events, validated representative exports and 723 tests, documented the quality contracts, and committed the overlapping semantic pipeline enhancements.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `46c4c4e` | (see git log) |
+| `b082fec` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
