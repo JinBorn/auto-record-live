@@ -348,10 +348,20 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(settings.editing.bgm_switch_min_gap_seconds, 60.0)
         self.assertEqual(settings.editing.bgm_crossfade_seconds, 2.0)
         self.assertEqual(settings.editing.bgm_source_music_padding_seconds, 2.0)
-        self.assertEqual(settings.editing.bgm_source_music_majority_threshold, 0.60)
+        self.assertEqual(settings.editing.bgm_source_music_majority_threshold, 0.35)
+        self.assertFalse(settings.editing.zoom_fallback_enabled)
+        self.assertEqual(settings.copywriter.cover_max_candidates, 1)
+        self.assertEqual(settings.subtitles.vad_speech_pad_ms, 80)
+        self.assertEqual(settings.subtitles.display_min_duration_seconds, 0.0)
+        self.assertEqual(settings.subtitles.display_trailing_hold_seconds, 0.15)
+        self.assertEqual(settings.subtitles.display_max_gap_fill_seconds, 0.0)
         self.assertFalse(settings.llm.enabled)
         self.assertEqual(settings.llm.base_url, "https://api.deepseek.com/v1")
         self.assertEqual(settings.llm.model, "deepseek-chat")
+        self.assertFalse(settings.llm.story_analysis_enabled)
+        self.assertTrue(settings.llm.story_shadow_mode)
+        self.assertEqual(settings.llm.semantic_weight, 0.25)
+        self.assertEqual(settings.llm.semantic_schema_version, 2)
 
     def test_llm_envs_load_and_clamp(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
@@ -363,6 +373,10 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             os.environ["ARL_LLM_MAX_RETRIES"] = "-1"
             os.environ["ARL_LLM_MAX_INPUT_CUES"] = "4"
             os.environ["ARL_LLM_TEMPERATURE"] = "3"
+            os.environ["ARL_LLM_STORY_ANALYSIS_ENABLED"] = "1"
+            os.environ["ARL_LLM_STORY_SHADOW_MODE"] = "0"
+            os.environ["ARL_HIGHLIGHT_SEMANTIC_WEIGHT"] = "3"
+            os.environ["ARL_LLM_SEMANTIC_SCHEMA_VERSION"] = "0"
             settings = load_settings()
 
         self.assertTrue(settings.llm.enabled)
@@ -371,6 +385,10 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(settings.llm.model, "custom-model")
         self.assertEqual(settings.llm.timeout_seconds, 1.0)
         self.assertEqual(settings.llm.max_retries, 0)
+        self.assertTrue(settings.llm.story_analysis_enabled)
+        self.assertFalse(settings.llm.story_shadow_mode)
+        self.assertEqual(settings.llm.semantic_weight, 1.0)
+        self.assertEqual(settings.llm.semantic_schema_version, 1)
         self.assertEqual(settings.llm.max_input_cues, 20)
         self.assertEqual(settings.llm.temperature, 1.5)
 
@@ -418,6 +436,27 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             settings = load_settings()
 
         self.assertEqual(settings.editing.transition_mode, "none")
+
+    def test_publish_preset_leads_kill_sfx_and_raises_gain(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_POSTPROCESS_PRESET"] = "publish"
+            settings = load_settings()
+
+        self.assertEqual(settings.editing.sfx_timing_offset_seconds, 0.0)
+        self.assertTrue(
+            settings.highlights.condensed_kda_frame_refinement_enabled
+        )
+        self.assertEqual(settings.editing.sfx_gain_db, -7.0)
+
+    def test_publish_preset_preserves_explicit_sfx_envs(self) -> None:
+        with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
+            os.environ["ARL_POSTPROCESS_PRESET"] = "publish"
+            os.environ["ARL_EDIT_SFX_TIMING_OFFSET_SECONDS"] = "-0.5"
+            os.environ["ARL_EDIT_SFX_GAIN_DB"] = "-15"
+            settings = load_settings()
+
+        self.assertEqual(settings.editing.sfx_timing_offset_seconds, -0.5)
+        self.assertEqual(settings.editing.sfx_gain_db, -15.0)
 
     def test_apply_publish_preset_does_not_mutate_source_settings(self) -> None:
         settings = Settings()

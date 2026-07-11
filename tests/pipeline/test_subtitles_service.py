@@ -299,6 +299,20 @@ def _read_jsonl(path: Path) -> list[dict]:
     return rows
 
 
+def _parse_srt_cues(text: str) -> list[tuple[float, float]]:
+    def _seconds(stamp: str) -> float:
+        clock, millis = stamp.split(",")
+        hours, minutes, secs = clock.split(":")
+        return int(hours) * 3600 + int(minutes) * 60 + int(secs) + int(millis) / 1000
+
+    cues: list[tuple[float, float]] = []
+    for line in text.splitlines():
+        if " --> " in line:
+            start, end = line.split(" --> ")
+            cues.append((_seconds(start.strip()), _seconds(end.strip())))
+    return cues
+
+
 class SubtitleServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -446,6 +460,59 @@ class SubtitleServiceTest(unittest.TestCase):
         self.assertIn("00:00:04,000 --> 00:00:07,500", subtitle_text)
         self.assertIn("00:00:20,000 --> 00:00:23,500", subtitle_text)
 
+    def test_display_smoothing_never_stacks_more_than_two_lines(self) -> None:
+        self._seed_single_media_boundary(session_id="session-subtitle-two-lines")
+        settings = self.settings.model_copy(deep=True)
+        settings.subtitles.display_smoothing_enabled = True
+        settings.subtitles.display_min_duration_seconds = 6.0
+        settings.subtitles.display_trailing_hold_seconds = 1.25
+        settings.subtitles.display_max_gap_fill_seconds = 1.5
+        service = _FakeSubtitleService(
+            settings,
+            entries=[
+                (0.0, 0.8, "line one"),
+                (1.0, 1.6, "line two"),
+                (2.0, 2.6, "line three"),
+                (3.0, 3.6, "line four"),
+            ],
+        )
+
+        service.run()
+
+        subtitle_assets = _read_jsonl(self.subtitle_assets_path)
+        subtitle_text = Path(subtitle_assets[0]["path"]).read_text(encoding="utf-8")
+        cues = _parse_srt_cues(subtitle_text)
+        self.assertEqual(len(cues), 4)
+        for index in range(len(cues) - 2):
+            self.assertLessEqual(
+                cues[index][1],
+                cues[index + 2][0] + 0.001,
+                f"cue {index} overlaps cue {index + 2}",
+            )
+
+    def test_display_smoothing_caps_gap_fill(self) -> None:
+        self._seed_single_media_boundary(session_id="session-subtitle-gap-cap")
+        settings = self.settings.model_copy(deep=True)
+        settings.subtitles.display_smoothing_enabled = True
+        settings.subtitles.display_min_duration_seconds = 2.5
+        settings.subtitles.display_trailing_hold_seconds = 1.25
+        settings.subtitles.display_max_gap_fill_seconds = 1.5
+        service = _FakeSubtitleService(
+            settings,
+            entries=[
+                (0.0, 3.0, "speech ends here"),
+                (10.0, 12.0, "much later cue"),
+            ],
+        )
+
+        service.run()
+
+        subtitle_assets = _read_jsonl(self.subtitle_assets_path)
+        subtitle_text = Path(subtitle_assets[0]["path"]).read_text(encoding="utf-8")
+        cues = _parse_srt_cues(subtitle_text)
+        # Trailing hold only: 3.0 + 1.25; the 7s gap must NOT be filled.
+        self.assertAlmostEqual(cues[0][1], 4.25, places=2)
+
     def _seed_single_media_boundary(
         self,
         *,
@@ -517,7 +584,7 @@ class SubtitleServiceTest(unittest.TestCase):
         self.assertTrue(model.transcribe_kwargs[0]["vad_filter"])
         self.assertEqual(
             model.transcribe_kwargs[0]["vad_parameters"],
-            {"min_silence_duration_ms": 300, "speech_pad_ms": 250},
+            {"min_silence_duration_ms": 300, "speech_pad_ms": 80},
         )
 
     def test_transcribe_passes_initial_prompt_and_vad_settings(self) -> None:

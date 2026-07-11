@@ -29,6 +29,8 @@ from arl.copywriter.models import (
     CopywriterStateFile,
     LlmCopywritingResult,
     PublishingPackage,
+    SemanticShadowCandidate,
+    SemanticShadowReport,
 )
 from arl.orchestrator.models import OrchestratorStateFile
 from arl.shared.contracts import (
@@ -42,6 +44,7 @@ from arl.shared.contracts import (
 )
 from arl.shared.jsonl_store import append_model, load_models
 from arl.shared.logging import log
+from arl.shared.semantic_ids import semantic_reference_id
 
 
 _HIGHLIGHT_REASON_PRIORITY = {
@@ -69,6 +72,7 @@ _COVER_HIGHLIGHT_PRIORITIES = {
 }
 _KDA_KILLS_RE = re.compile(r"\bkills=(\d+)->(\d+)")
 _KDA_CURRENT_AT_RE = re.compile(r"\bcurrent_at=([0-9]+(?:\.[0-9]+)?)")
+_KNOWN_ENTITY_CONFUSIONS = {"南枪": "男枪"}
 
 
 @dataclass(frozen=True)
@@ -96,6 +100,9 @@ class CopywriterService:
         self.edit_plans_path = settings.storage.temp_dir / "edit-plans.jsonl"
         self.semantic_assets_path = (
             settings.storage.temp_dir / "copywriter-semantic-assets.jsonl"
+        )
+        self.semantic_shadow_reports_path = (
+            settings.storage.temp_dir / "copywriter-semantic-shadow-reports.jsonl"
         )
         self.copy_assets_path = settings.storage.temp_dir / "copy-assets.jsonl"
         self.publishing_packages_path = settings.storage.temp_dir / "publishing-packages.jsonl"
@@ -216,6 +223,11 @@ class CopywriterService:
                 created_at=datetime.now(timezone.utc),
             )
             append_model(self.semantic_assets_path, asset)
+            if (
+                self.settings.llm.story_analysis_enabled
+                and self.settings.llm.story_shadow_mode
+            ):
+                self._write_semantic_shadow_report(asset, prompt_input)
             semantic_assets[(asset.session_id, asset.match_index)] = asset
             generated += 1
             usage = ",".join(f"{key}={value}" for key, value in token_usage.items()) or "-"
@@ -467,28 +479,74 @@ class CopywriterService:
             else max((cue.ended_at_seconds for cue in cues), default=0.0)
         )
         selected_cues = self._select_llm_input_cues(cues, highlight_plan)
-        return {
+        subtitle_cues = [
+            {
+                "evidence_id": semantic_reference_id(
+                    "subtitle",
+                    subtitle.session_id,
+                    subtitle.match_index,
+                    cue.started_at_seconds,
+                    cue.ended_at_seconds,
+                    cue.text,
+                ),
+                "start": round(cue.started_at_seconds, 3),
+                "end": round(cue.ended_at_seconds, 3),
+                "text": cue.text,
+            }
+            for cue in selected_cues
+        ]
+        highlight_windows = [
+            {
+                "candidate_id": semantic_reference_id(
+                    "candidate",
+                    subtitle.session_id,
+                    subtitle.match_index,
+                    window.started_at_seconds,
+                    window.ended_at_seconds,
+                    window.reason,
+                ),
+                "start": round(window.started_at_seconds, 3),
+                "end": round(window.ended_at_seconds, 3),
+                "reason": window.reason,
+                "semantic_required": window.reason
+                not in {"condensed_continuity", "condensed_match_context"},
+            }
+            for window in (highlight_plan.windows if highlight_plan is not None else [])
+        ]
+        kda_events = [
+            {
+                "evidence_id": semantic_reference_id(
+                    "kda",
+                    subtitle.session_id,
+                    subtitle.match_index,
+                    event.started_at_seconds,
+                    event.ended_at_seconds,
+                    event.text,
+                ),
+                "start": round(event.started_at_seconds, 3),
+                "end": round(event.ended_at_seconds, 3),
+                "text": event.text,
+            }
+            for event in (highlight_plan.kda_events if highlight_plan is not None else [])
+        ]
+        payload: dict[str, object] = {
             "session_id": subtitle.session_id,
             "match_index": subtitle.match_index,
             "streamer_name": streamer_name or "",
             "match_duration_seconds": round(duration, 3),
-            "subtitle_cues": [
-                {
-                    "start": round(cue.started_at_seconds, 3),
-                    "end": round(cue.ended_at_seconds, 3),
-                    "text": cue.text,
-                }
-                for cue in selected_cues
-            ],
-            "highlight_windows": [
-                {
-                    "start": round(window.started_at_seconds, 3),
-                    "end": round(window.ended_at_seconds, 3),
-                    "reason": window.reason,
-                }
-                for window in (highlight_plan.windows if highlight_plan is not None else [])
-            ],
+            "subtitle_cues": subtitle_cues,
+            "highlight_windows": highlight_windows,
+            "kda_events": kda_events,
         }
+        if self.settings.llm.story_analysis_enabled:
+            payload["semantic_schema_version"] = self.settings.llm.semantic_schema_version
+            payload["editorial_policy"] = {
+                "objective": "highlight_first_chronological",
+                "allow_arbitrary_timestamps": False,
+                "allow_no_strong_story": True,
+                "require_claim_evidence": True,
+            }
+        return payload
 
     def _select_llm_input_cues(
         self,
@@ -547,6 +605,11 @@ class CopywriterService:
                     user_prompt=user_prompt,
                 )
                 result = parse_llm_copywriting_result(response.content)
+                self._canonicalize_known_entities(result)
+                self._filter_weak_teaser_candidates(result)
+                self._validate_story_result(result, prompt_input)
+                self._validate_known_entity_terms(result, prompt_input)
+                self._validate_multikill_claims(result, prompt_input)
                 if self._llm_title_is_raw_excerpt(result, cues):
                     raise LlmProviderError("raw_excerpt_title")
                 return result, response.token_usage
@@ -561,17 +624,247 @@ class CopywriterService:
                     )
         raise last_error or LlmProviderError("unknown_llm_error")
 
-    @staticmethod
-    def _llm_system_prompt() -> str:
-        return (
+    def _llm_system_prompt(self) -> str:
+        base = (
             "You write concise Simplified Chinese Bilibili upload copy for League "
             "of Legends livestream edits. Return JSON only with keys: "
-            "title_candidates (exactly 3 strings, each <=30 compact chars), "
+            "title_candidates (exactly 3 strings, each <=45 compact chars; fuller "
+            "titles that tell the story are welcome), "
             "recommended_title, cover_lines (2-4 strings, each <=10 compact chars), "
             "summary (<=96 compact chars), description (1-3 sentences), tags "
             "(5-8 strings), hook_line, teaser_recommendations (up to 3 objects with "
             "source_start_seconds, source_end_seconds, hook_reason). Do not copy a "
             "raw leading subtitle line as the title; synthesize the gameplay/topic hook."
+        )
+        if not self.settings.llm.story_analysis_enabled:
+            return base
+        return (
+            f"{base} Also return schema_version, story_status "
+            "(strong_story or no_strong_story), primary_angle, story_reason, "
+            "story_event_ids, narrative_summary, candidate_decisions, "
+            "teaser_candidate_ids, and claim_evidence. Candidate decisions must use "
+            "only candidate_id values supplied by the user and include 0-1 scores, "
+            "recommendation keep/shorten/drop, reason, and supplied evidence IDs. "
+            "Never invent timestamps or IDs. Keep all publishing copy aligned to one "
+            "primary story. Copy champion and game entity names exactly from supplied "
+            "evidence; never replace them with homophones. Return at least one compact "
+            "candidate decision for every candidate whose semantic_required is true, "
+            "including for no_strong_story. Do not spend output on technical continuity "
+            "or boundary candidates whose semantic_required is false. A teaser candidate "
+            "must have KDA evidence or both strong "
+            "emotion and a clear outcome. If evidence is weak, return no_strong_story "
+            "with no teaser."
+        )
+
+    @staticmethod
+    def _filter_weak_teaser_candidates(result: LlmCopywritingResult) -> None:
+        decisions = {item.candidate_id: item for item in result.candidate_decisions}
+        qualified: list[str] = []
+        for candidate_id in result.teaser_candidate_ids:
+            decision = decisions.get(candidate_id)
+            if decision is None or decision.recommendation == "drop":
+                continue
+            has_kda_evidence = any(ref.startswith("kda-") for ref in decision.evidence_refs)
+            has_strong_payoff = (
+                decision.emotion_score >= 0.5
+                and decision.outcome_clarity_score >= 0.7
+            )
+            if has_kda_evidence or has_strong_payoff:
+                qualified.append(candidate_id)
+        result.teaser_candidate_ids = qualified[:3]
+
+    def _validate_story_result(
+        self,
+        result: LlmCopywritingResult,
+        prompt_input: dict[str, object],
+    ) -> None:
+        if not self.settings.llm.story_analysis_enabled:
+            return
+        if result.story_status == "legacy":
+            raise LlmProviderError("missing_story_semantics")
+        candidate_ids = {
+            str(item.get("candidate_id"))
+            for item in prompt_input.get("highlight_windows", [])
+            if isinstance(item, dict) and item.get("candidate_id")
+        }
+        required_candidate_ids = {
+            str(item.get("candidate_id"))
+            for item in prompt_input.get("highlight_windows", [])
+            if isinstance(item, dict)
+            and item.get("candidate_id")
+            and bool(item.get("semantic_required", True))
+        }
+        evidence_ids = {
+            str(item.get("evidence_id"))
+            for key in ("subtitle_cues", "kda_events")
+            for item in prompt_input.get(key, [])
+            if isinstance(item, dict) and item.get("evidence_id")
+        }
+        decision_ids = [item.candidate_id for item in result.candidate_decisions]
+        if len(decision_ids) != len(set(decision_ids)):
+            raise LlmProviderError("duplicate_candidate_decision")
+        if not set(decision_ids).issubset(candidate_ids):
+            raise LlmProviderError("unknown_candidate_reference")
+        if not required_candidate_ids.issubset(set(decision_ids)):
+            raise LlmProviderError("missing_required_candidate_decisions")
+        if not set(result.teaser_candidate_ids).issubset(candidate_ids):
+            raise LlmProviderError("unknown_teaser_candidate_reference")
+        valid_story_refs = candidate_ids | evidence_ids
+        if not set(result.story_event_ids).issubset(valid_story_refs):
+            raise LlmProviderError("unknown_story_reference")
+        referenced_evidence = {
+            ref
+            for item in result.candidate_decisions
+            for ref in item.evidence_refs
+        }
+        referenced_evidence.update(
+            ref for refs in result.claim_evidence.values() for ref in refs
+        )
+        if not referenced_evidence.issubset(valid_story_refs):
+            raise LlmProviderError("unknown_evidence_reference")
+
+    @staticmethod
+    def _validate_known_entity_terms(
+        result: LlmCopywritingResult,
+        prompt_input: dict[str, object],
+    ) -> None:
+        source_text = " ".join(
+            str(item.get("text", ""))
+            for key in ("subtitle_cues", "kda_events")
+            for item in prompt_input.get(key, [])
+            if isinstance(item, dict)
+        )
+        output_text = " ".join(
+            [
+                result.recommended_title,
+                *result.title_candidates,
+                *result.cover_lines,
+                result.summary,
+                result.description,
+                result.primary_angle or "",
+            ]
+        )
+        for incorrect, canonical in _KNOWN_ENTITY_CONFUSIONS.items():
+            if canonical in source_text and incorrect in output_text:
+                raise LlmProviderError(f"entity_mismatch:{incorrect}->{canonical}")
+
+    @staticmethod
+    def _canonicalize_known_entities(result: LlmCopywritingResult) -> None:
+        def _fix(value: str | None) -> str | None:
+            if value is None:
+                return None
+            for incorrect, canonical in _KNOWN_ENTITY_CONFUSIONS.items():
+                value = value.replace(incorrect, canonical)
+            return value
+
+        result.title_candidates = [_fix(value) or "" for value in result.title_candidates]
+        result.recommended_title = _fix(result.recommended_title) or ""
+        result.cover_lines = [_fix(value) or "" for value in result.cover_lines]
+        result.summary = _fix(result.summary) or ""
+        result.description = _fix(result.description) or ""
+        result.primary_angle = _fix(result.primary_angle)
+        result.narrative_summary = _fix(result.narrative_summary)
+
+    @staticmethod
+    def _validate_multikill_claims(
+        result: LlmCopywritingResult,
+        prompt_input: dict[str, object],
+    ) -> None:
+        output_text = " ".join(
+            [
+                result.recommended_title,
+                *result.title_candidates,
+                *result.cover_lines,
+                result.summary,
+                result.description,
+                result.primary_angle or "",
+            ]
+        )
+        max_kill_delta = 0
+        for item in prompt_input.get("kda_events", []):
+            if not isinstance(item, dict):
+                continue
+            match = _KDA_KILLS_RE.search(str(item.get("text", "")))
+            if match is not None:
+                max_kill_delta = max(max_kill_delta, int(match.group(2)) - int(match.group(1)))
+        for claim, minimum in (("五杀", 5), ("四杀", 4), ("三杀", 3), ("双杀", 2)):
+            if claim in output_text and max_kill_delta < minimum:
+                raise LlmProviderError(
+                    f"unsupported_multikill_claim:{claim}:max_delta={max_kill_delta}"
+                )
+
+    def _write_semantic_shadow_report(
+        self,
+        asset: CopywriterSemanticAsset,
+        prompt_input: dict[str, object],
+    ) -> None:
+        decisions = {
+            item.candidate_id: item for item in asset.result.candidate_decisions
+        }
+        candidates: list[SemanticShadowCandidate] = []
+        current_total_seconds = 0.0
+        proposed_keep_seconds = 0.0
+        proposed_drop_seconds = 0.0
+        for raw in prompt_input.get("highlight_windows", []):
+            if not isinstance(raw, dict):
+                continue
+            candidate_id = str(raw.get("candidate_id", "")).strip()
+            start = float(raw.get("start", 0.0))
+            end = float(raw.get("end", 0.0))
+            duration = max(0.0, end - start)
+            current_total_seconds += duration
+            decision = decisions.get(candidate_id)
+            recommendation = decision.recommendation if decision is not None else "unscored"
+            semantic_score = (
+                (
+                    decision.importance_score
+                    + decision.story_relevance_score
+                    + decision.emotion_score
+                    + decision.instructional_score
+                    + decision.outcome_clarity_score
+                )
+                / 5.0
+                if decision is not None
+                else 0.0
+            )
+            if recommendation == "drop":
+                proposed_drop_seconds += duration
+            else:
+                proposed_keep_seconds += duration
+            candidates.append(
+                SemanticShadowCandidate(
+                    candidate_id=candidate_id,
+                    started_at_seconds=start,
+                    ended_at_seconds=end,
+                    reason=str(raw.get("reason", "")),
+                    recommendation=recommendation,
+                    semantic_score=round(semantic_score, 4),
+                    decision_reason=decision.reason if decision is not None else "",
+                )
+            )
+        report = SemanticShadowReport(
+            session_id=asset.session_id,
+            match_index=asset.match_index,
+            input_fingerprint=asset.input_fingerprint,
+            story_status=asset.result.story_status,
+            primary_angle=asset.result.primary_angle,
+            current_total_seconds=round(current_total_seconds, 3),
+            proposed_keep_seconds=round(proposed_keep_seconds, 3),
+            proposed_drop_seconds=round(proposed_drop_seconds, 3),
+            candidates=candidates,
+            recommended_title=asset.result.recommended_title,
+            cover_lines=asset.result.cover_lines,
+            teaser_candidate_ids=asset.result.teaser_candidate_ids,
+            created_at=datetime.now(timezone.utc),
+        )
+        append_model(self.semantic_shadow_reports_path, report)
+        log(
+            "copywriter",
+            "llm semantic shadow report written "
+            f"session_id={report.session_id} match_index={report.match_index} "
+            f"story_status={report.story_status} "
+            f"current_seconds={report.current_total_seconds:.1f} "
+            f"proposed_drop_seconds={report.proposed_drop_seconds:.1f}",
         )
 
     def _llm_title_is_raw_excerpt(
@@ -590,9 +883,13 @@ class CopywriterService:
     def _normalize_copy_text(value: str) -> str:
         return re.sub(r"\s+", " ", value.strip()).strip(" .!?;:").lower()
 
-    @staticmethod
-    def _prompt_fingerprint() -> str:
-        return hashlib.sha256(CopywriterService._llm_system_prompt().encode("utf-8")).hexdigest()
+    def _prompt_fingerprint(self) -> str:
+        payload = {
+            "system_prompt": self._llm_system_prompt(),
+            "semantic_schema_version": self.settings.llm.semantic_schema_version,
+            "story_analysis_enabled": self.settings.llm.story_analysis_enabled,
+        }
+        return self._stable_fingerprint(payload)
 
     @staticmethod
     def _stable_fingerprint(payload: dict[str, object]) -> str:
@@ -622,7 +919,7 @@ class CopywriterService:
             highlight_plan,
         )
         excerpt = [cue.text for cue in headline_cues[:3]]
-        llm_result = semantic_asset.result if semantic_asset is not None else None
+        llm_result = self._semantic_result_for_publishing(semantic_asset)
         if llm_result is not None:
             title_candidates = llm_result.title_candidates
             recommended_title = llm_result.recommended_title
@@ -681,6 +978,20 @@ class CopywriterService:
             created_at=created_at,
         )
         return draft, package
+
+    def _semantic_result_for_publishing(
+        self,
+        semantic_asset: CopywriterSemanticAsset | None,
+    ) -> LlmCopywritingResult | None:
+        if semantic_asset is None:
+            return None
+        if (
+            self.settings.llm.story_analysis_enabled
+            and self.settings.llm.story_shadow_mode
+            and semantic_asset.result.story_status != "legacy"
+        ):
+            return None
+        return semantic_asset.result
 
     def _publish_export_files(self, package: PublishingPackage) -> PublishingPackage:
         if not package.source_export_path:
@@ -1233,7 +1544,7 @@ class CopywriterService:
                 break
 
         expanded = " ".join(parts).strip()
-        return self._truncate(expanded, 42) if expanded else primary
+        return self._truncate(expanded, 45) if expanded else primary
 
     def _title_needs_context(self, title: str) -> bool:
         if not title.strip():
@@ -1328,7 +1639,7 @@ class CopywriterService:
             phrases.append("小龙团战节奏")
 
         headline = " ".join(self._dedupe(phrases)[:4])
-        return self._truncate(headline, 42) if headline else ""
+        return self._truncate(headline, 45) if headline else ""
 
     def _description(self, *, excerpt: list[str], match_index: int) -> str:
         if not excerpt:
@@ -1618,6 +1929,7 @@ class CopywriterService:
                 edit_plan=edit_plan,
             ),
             sampler=self.cover_frame_sampler,
+            max_candidates=self.settings.copywriter.cover_max_candidates,
         )
         if ranked:
             return [

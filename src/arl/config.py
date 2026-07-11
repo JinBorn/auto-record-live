@@ -166,11 +166,11 @@ class SubtitleSettings(BaseModel):
     beam_size: int = 5
     vad_filter: bool = True
     vad_min_silence_duration_ms: int = 300
-    vad_speech_pad_ms: int = 250
+    vad_speech_pad_ms: int = 80
     display_smoothing_enabled: bool = True
-    display_min_duration_seconds: float = 3.5
-    display_trailing_hold_seconds: float = 1.25
-    display_max_gap_fill_seconds: float = 8.0
+    display_min_duration_seconds: float = 0.0
+    display_trailing_hold_seconds: float = 0.15
+    display_max_gap_fill_seconds: float = 0.0
 
 
 class SegmenterSettings(BaseModel):
@@ -260,6 +260,7 @@ class HighlightSettings(BaseModel):
 
     # KDA-based event preservation for condensed exports.
     condensed_kda_event_detection_enabled: bool = True
+    condensed_kda_frame_refinement_enabled: bool = False
     condensed_kda_crop_region: tuple[int, int, int, int] = (1665, 0, 85, 32)
     condensed_kda_sample_interval_seconds: float = 10.0
     condensed_kda_min_confidence: float = 0.4
@@ -332,6 +333,7 @@ class EditingSettings(BaseModel):
     zoom_chat_burst_threshold: float = 0.08
     audio_mixing_enabled: bool = False
     skip_bgm_when_source_has_music: bool = True
+    zoom_fallback_enabled: bool = False
     bgm_library_path: Path | None = None
     bgm_path: Path | None = None
     bgm_gain_db: float = -28.0
@@ -339,7 +341,7 @@ class EditingSettings(BaseModel):
     bgm_switch_min_gap_seconds: float = 60.0
     bgm_crossfade_seconds: float = 2.0
     bgm_source_music_padding_seconds: float = 2.0
-    bgm_source_music_majority_threshold: float = 0.60
+    bgm_source_music_majority_threshold: float = 0.35
     sfx_path: Path | None = None
     sfx_gain_db: float = -12.0
     sfx_library_path: Path | None = DEFAULT_SFX_LIBRARY_PATH
@@ -513,7 +515,7 @@ class MaintenanceSettings(BaseModel):
 
 
 class QualityReportSettings(BaseModel):
-    subtitle_active_ratio_min: float = 0.55
+    subtitle_active_ratio_min: float = 0.40
     long_no_subtitle_gap_min_seconds: float = 8.0
     max_source_gap_seconds: float = 45.0
     teaser_min_segments: int = 1
@@ -550,6 +552,15 @@ class QualityReportSettings(BaseModel):
         return self
 
 
+class CopywriterSettings(BaseModel):
+    cover_max_candidates: int = 1
+
+    @model_validator(mode="after")
+    def _normalize(self) -> "CopywriterSettings":
+        self.cover_max_candidates = max(1, self.cover_max_candidates)
+        return self
+
+
 class LlmSettings(BaseModel):
     enabled: bool = False
     base_url: str = "https://api.deepseek.com/v1"
@@ -559,6 +570,10 @@ class LlmSettings(BaseModel):
     max_retries: int = 2
     max_input_cues: int = 160
     temperature: float = 0.4
+    story_analysis_enabled: bool = False
+    story_shadow_mode: bool = True
+    semantic_weight: float = 0.25
+    semantic_schema_version: int = 2
 
     @model_validator(mode="after")
     def _normalize(self) -> "LlmSettings":
@@ -569,6 +584,8 @@ class LlmSettings(BaseModel):
         self.max_retries = max(0, self.max_retries)
         self.max_input_cues = max(20, self.max_input_cues)
         self.temperature = min(1.5, max(0.0, self.temperature))
+        self.semantic_weight = min(1.0, max(0.0, self.semantic_weight))
+        self.semantic_schema_version = max(1, self.semantic_schema_version)
         return self
 
 
@@ -587,6 +604,7 @@ class Settings(BaseModel):
     export: ExportSettings = Field(default_factory=ExportSettings)
     maintenance: MaintenanceSettings = Field(default_factory=MaintenanceSettings)
     quality_report: QualityReportSettings = Field(default_factory=QualityReportSettings)
+    copywriter: CopywriterSettings = Field(default_factory=CopywriterSettings)
     llm: LlmSettings = Field(default_factory=LlmSettings)
 
     @model_validator(mode="after")
@@ -623,6 +641,14 @@ def apply_publish_preset(settings: Settings) -> Settings:
     zoom_max_segments = settings.editing.zoom_max_segments
     if os.getenv("ARL_EDIT_ZOOM_MAX_SEGMENTS", "").strip() == "":
         zoom_max_segments = max(zoom_max_segments, 3)
+    # Publish refines KDA changes to their first stable video frame, so no
+    # guessed timing offset is needed. Explicit operator overrides still win.
+    sfx_timing_offset_seconds = settings.editing.sfx_timing_offset_seconds
+    if os.getenv("ARL_EDIT_SFX_TIMING_OFFSET_SECONDS", "").strip() == "":
+        sfx_timing_offset_seconds = 0.0
+    sfx_gain_db = settings.editing.sfx_gain_db
+    if os.getenv("ARL_EDIT_SFX_GAIN_DB", "").strip() == "":
+        sfx_gain_db = -7.0
 
     return settings.model_copy(
         deep=True,
@@ -644,6 +670,7 @@ def apply_publish_preset(settings: Settings) -> Settings:
                         ),
                         1.0,
                     ),
+                    "condensed_kda_frame_refinement_enabled": True,
                 }
             ),
             "editing": settings.editing.model_copy(
@@ -654,6 +681,8 @@ def apply_publish_preset(settings: Settings) -> Settings:
                     "audio_mixing_enabled": True,
                     "bgm_library_path": bgm_library_path,
                     "transition_mode": transition_mode,
+                    "sfx_timing_offset_seconds": sfx_timing_offset_seconds,
+                    "sfx_gain_db": sfx_gain_db,
                 }
             ),
             "export": settings.export.model_copy(
@@ -1068,7 +1097,7 @@ def load_settings() -> Settings:
             ),
             vad_speech_pad_ms=max(
                 0,
-                _env_int("ARL_WHISPER_VAD_SPEECH_PAD_MS", 250),
+                _env_int("ARL_WHISPER_VAD_SPEECH_PAD_MS", 80),
             ),
             display_smoothing_enabled=_env_bool(
                 "ARL_ASR_DISPLAY_SMOOTHING_ENABLED",
@@ -1076,15 +1105,15 @@ def load_settings() -> Settings:
             ),
             display_min_duration_seconds=max(
                 0.0,
-                _env_float("ARL_ASR_DISPLAY_MIN_DURATION_SECONDS", 3.5),
+                _env_float("ARL_ASR_DISPLAY_MIN_DURATION_SECONDS", 0.0),
             ),
             display_trailing_hold_seconds=max(
                 0.0,
-                _env_float("ARL_ASR_DISPLAY_TRAILING_HOLD_SECONDS", 1.25),
+                _env_float("ARL_ASR_DISPLAY_TRAILING_HOLD_SECONDS", 0.15),
             ),
             display_max_gap_fill_seconds=max(
                 0.0,
-                _env_float("ARL_ASR_DISPLAY_MAX_GAP_FILL_SECONDS", 8.0),
+                _env_float("ARL_ASR_DISPLAY_MAX_GAP_FILL_SECONDS", 0.0),
             ),
         ),
         segmenter=SegmenterSettings(
@@ -1424,6 +1453,10 @@ def load_settings() -> Settings:
                 1.0,
                 max(0.0, _env_float("ARL_EDIT_ZOOM_CHAT_BURST_THRESHOLD", 0.08)),
             ),
+            zoom_fallback_enabled=_env_bool(
+                "ARL_EDIT_ZOOM_FALLBACK_ENABLED",
+                False,
+            ),
             audio_mixing_enabled=_env_bool(
                 "ARL_EDIT_AUDIO_MIXING_ENABLED",
                 False,
@@ -1458,7 +1491,7 @@ def load_settings() -> Settings:
                 1.0,
                 max(
                     0.0,
-                    _env_float("ARL_EDIT_BGM_SOURCE_MUSIC_MAJORITY_THRESHOLD", 0.60),
+                    _env_float("ARL_EDIT_BGM_SOURCE_MUSIC_MAJORITY_THRESHOLD", 0.35),
                 ),
             ),
             sfx_path=_env_optional_path("ARL_EDIT_SFX_PATH"),
@@ -1623,7 +1656,7 @@ def load_settings() -> Settings:
         quality_report=QualityReportSettings(
             subtitle_active_ratio_min=_env_float(
                 "ARL_QUALITY_REPORT_SUBTITLE_ACTIVE_RATIO_MIN",
-                0.55,
+                0.40,
             ),
             long_no_subtitle_gap_min_seconds=_env_float(
                 "ARL_QUALITY_REPORT_LONG_NO_SUBTITLE_GAP_MIN_SECONDS",
@@ -1659,6 +1692,12 @@ def load_settings() -> Settings:
                 True,
             ),
         ),
+        copywriter=CopywriterSettings(
+            cover_max_candidates=max(
+                1,
+                _env_int("ARL_COPY_COVER_MAX_CANDIDATES", 1),
+            ),
+        ),
         llm=LlmSettings(
             enabled=_env_bool("ARL_LLM_ENABLED", False),
             base_url=os.getenv("ARL_LLM_BASE_URL", "https://api.deepseek.com/v1"),
@@ -1668,6 +1707,13 @@ def load_settings() -> Settings:
             max_retries=_env_int("ARL_LLM_MAX_RETRIES", 2),
             max_input_cues=_env_int("ARL_LLM_MAX_INPUT_CUES", 160),
             temperature=_env_float("ARL_LLM_TEMPERATURE", 0.4),
+            story_analysis_enabled=_env_bool(
+                "ARL_LLM_STORY_ANALYSIS_ENABLED",
+                False,
+            ),
+            story_shadow_mode=_env_bool("ARL_LLM_STORY_SHADOW_MODE", True),
+            semantic_weight=_env_float("ARL_HIGHLIGHT_SEMANTIC_WEIGHT", 0.25),
+            semantic_schema_version=_env_int("ARL_LLM_SEMANTIC_SCHEMA_VERSION", 2),
         ),
     )
     if _postprocess_publish_preset_enabled():

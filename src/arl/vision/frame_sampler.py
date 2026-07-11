@@ -77,6 +77,35 @@ def sample_frame_window(
     return result
 
 
+def sample_every_frame_window(
+    video_path: Path,
+    start_seconds: float,
+    end_seconds: float,
+) -> list[tuple[float, np.ndarray]]:
+    """Read every decoded frame in a narrow window with frame timestamps."""
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open video: {video_path}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 0:
+        cap.release()
+        return []
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    first_frame = max(0, int(start_seconds * fps))
+    last_frame = min(total_frames - 1, int(end_seconds * fps))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, first_frame)
+
+    frames: list[tuple[float, np.ndarray]] = []
+    for frame_index in range(first_frame, last_frame + 1):
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frames.append((frame_index / fps, frame))
+    cap.release()
+    return frames
+
+
 def _sample_range(
     cap: cv2.VideoCapture,
     fps: float,

@@ -11,6 +11,7 @@ from arl.copywriter.models import (
     CopywriterSemanticAsset,
     CopywriterStateFile,
     PublishingPackage,
+    SemanticShadowReport,
 )
 from arl.editing.models import EditPlannerStateFile
 from arl.exporter.models import ExporterStateFile
@@ -136,6 +137,12 @@ class PostProcessResetService:
         self._rewrite_jsonl(
             self.temp_dir / "copywriter-semantic-assets.jsonl",
             CopywriterSemanticAsset,
+            lambda item: item.session_id in session_ids,
+            result.removed_rows_by_file,
+        )
+        self._rewrite_jsonl(
+            self.temp_dir / "copywriter-semantic-shadow-reports.jsonl",
+            SemanticShadowReport,
             lambda item: item.session_id in session_ids,
             result.removed_rows_by_file,
         )

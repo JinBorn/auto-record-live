@@ -26,9 +26,9 @@ emits warnings (exit 1 with `--strict`) when violated:
 | Subtitle active ratio | >= 0.55 | Whisper `medium` + zh-Hans normalization + display smoothing reaches 0.80+ on real streams; below 0.55 means ASR degraded |
 | Long no-subtitle gap | count gaps >= 8s | Long silent stretches are only acceptable inside protected fight/objective spans |
 | Max adjacent source gap | <= 45s | Larger jumps produce visible game-clock/KDA teleports |
-| Teaser segments | 1-3 | 0 = teaser pipeline broken; >3 = fragmented cold open. Counted as distinct source spans (zoom close-ups split one teaser into adjacent timeline segments) |
-| SFX hits | <= 6 kill hits | Rate-limit keeps coin accents special; transition whoosh and teaser impact are counted separately |
-| Zoom segments | 1-4 | 0 = close-up triggers broken; >4 = visual fatigue |
+| Teaser segments | 1-3 | >3 = fragmented cold open. Counted as distinct source spans (zoom close-ups split one teaser into adjacent timeline segments). 0 is acceptable ONLY with `EditPlanAsset.teaser_omitted_reason` recorded — LLM recommendations must anchor on a KDA span or teaser keyword signal (human review 2026-07-10: unanchored picks made messy cold opens; main-only beats a bad teaser) |
+| SFX hits | <= 6 kill hits | Rate-limit keeps coin accents special; transition whoosh and teaser impact are counted separately. Publish mode refines coarse KDA changes to the first stable video frame and uses zero fixed timing offset; kill accents render at -7dB (human review 2026-07-10: coarse OCR timestamps landed late and the old gain was too quiet) |
+| Zoom segments | 1-4 | >4 = visual fatigue. Zooms must anchor on KDA kills or chat bursts (mid-segment fallback disabled 2026-07-10 — zooms on uninteresting content); 0 is acceptable when the match has no KDA events |
 | KDA uncovered count | 0 target | Every detected kill/death must fall inside a retained window |
 | Title | not raw leading subtitle | `title_equals_raw_leading_subtitle=false`; LLM or scored heuristic required |
 | Main duration vs budget | main <= max(target×1.25, target+60s) | Condensed retention budget; teaser cold open re-plays content and has its own budget. Plans that bottom out on protected content carry `budget_exception_reason` and are reported as detail, not warning |
@@ -41,6 +41,13 @@ LLM-generated.
 2026-07-10 duration-tuning run (same 4 matches + fresh-streamer bc90812b
 m01-03): exports 11.7-14.6 min (was 17.7-23.7 on the 4 main samples), 5/7 in
 budget + 2 protected-floor exceptions, KDA uncovered 0 everywhere, 0 warnings.
+
+2026-07-11 human-review run (same 7 samples): subtitles retuned for <=2 lines
+on screen with source-faithful timing; kill SFX uses frame-refined KDA timing at
+-7dB; fallback zooms off;
+unanchored teasers rejected (main-only allowed with recorded reason); single
+cover; titles up to 45 chars. Subtitle-active ratio expected lower than the
+0.8+ reference as a deliberate readability trade.
 
 ## Condensed Duration Budget
 
@@ -108,6 +115,99 @@ python -m arl.cli quality-report --session-id <id> --match-indices <n,..>
 - Long ffmpeg stages on operator laptops should run detached (Task Scheduler)
   so an editor/agent session crash cannot kill a 30+ minute export batch.
 
+## Scenario: Shared LLM Story Semantics and Highlight Finalization
+
+### 1. Scope / Trigger
+
+- Trigger: one per-match LLM result is consumed by highlight planning, edit
+  planning, publishing copy, status, reset, and shadow validation.
+- Goal: semantic ranking may improve story quality, but it must never invent
+  source timestamps or bypass KDA, boundary, source-gap, or duration contracts.
+
+### 2. Signatures
+
+- `CopywriterService.run_semantic(..., force_reprocess=False)` writes
+  `copywriter-semantic-assets.jsonl` and, in shadow mode,
+  `copywriter-semantic-shadow-reports.jsonl`.
+- `HighlightPlannerService.run(..., force_reprocess=True)` is the active
+  `highlight-finalize` pass after semantic analysis.
+- `semantic_reference_id(prefix, *parts)` is the single stable-ID helper used
+  by producers and consumers.
+
+### 3. Contracts
+
+- Semantic results contain `story_status`, optional `primary_angle`, candidate
+  decisions, evidence references, unified publishing copy, and teaser candidate
+  IDs. Arbitrary LLM timestamps are not accepted for story ranking.
+- Stable candidate IDs hash session, match, source start/end, and reason.
+  Subtitle/KDA evidence IDs hash their durable source fields.
+- Cross-stage consumers use `arl.shared.semantic_contracts.SemanticAssetView`;
+  upstream highlight code must not import downstream copywriter models.
+- Environment:
+  - `ARL_LLM_STORY_ANALYSIS_ENABLED` (default off)
+  - `ARL_LLM_STORY_SHADOW_MODE` (default on)
+  - `ARL_HIGHLIGHT_SEMANTIC_WEIGHT` (default 0.25, clamped 0-1)
+  - `ARL_LLM_SEMANTIC_SCHEMA_VERSION` (default 2)
+- Shadow assets are report-only: edit-planner and publishing must ignore
+  non-legacy story assets while shadow mode is enabled.
+
+### 4. Validation & Error Matrix
+
+- Unknown/duplicate candidate ID -> reject result and retry/fallback.
+- Missing required key-event candidate decision -> reject result.
+- Unknown subtitle/KDA evidence -> reject result.
+- Unsupported double/triple/quadra/penta claim vs maximum KDA kill delta ->
+  reject result.
+- Weak teaser without KDA evidence or strong emotion + clear outcome -> remove
+  teaser candidate without rejecting the rest of the story.
+- `no_strong_story` -> no teaser; active edit plan records the omission reason.
+- LLM timeout/invalid JSON/schema -> keep deterministic pipeline; export must
+  not fail solely because semantic analysis failed.
+
+### 5. Good/Base/Bad Cases
+
+- Good: active mode performs deterministic planning, one semantic call, then a
+  forced finalization pass whose value density uses bounded semantic overlap.
+- Base: story analysis disabled, shadow enabled, or semantic weight zero follows
+  the legacy finalizer and publishing behavior.
+- Bad: delete windows directly from a completed plan, consume story assets in
+  shadow mode, or import `arl.copywriter.models` from `arl.highlights`.
+
+### 6. Tests Required
+
+- Stable IDs match between prompt producer and highlight consumer.
+- Weight zero produces no semantic references and multiplier 1.0.
+- Drop semantics lower density but remain positive; hard protection tests stay
+  green.
+- Shadow assets do not affect edit plans or publishing packages.
+- Active postprocess calls highlight finalization with
+  `force_reprocess=True` and preserves session filters.
+- Full pytest and compileall pass; three representative shadow reports are
+  reviewed before active rollout.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+# Downstream-owned model leaks into the upstream planner, and shadow results
+# can silently change production output.
+from arl.copywriter.models import CopywriterSemanticAsset
+plan.windows = [window for window in plan.windows if llm_says_keep(window)]
+```
+
+#### Correct
+
+```python
+from arl.shared.semantic_contracts import SemanticAssetView
+
+# Candidate discovery remains deterministic. Semantic overlap affects only the
+# final budget value density, and only in active mode.
+reference = planner._semantic_reference_for_plan(existing_plan, semantic_asset)
+planner._active_semantic_reference = reference
+final_windows, reason = planner._finalize_condensed_windows(...)
+```
+
 ## Lesson: Keyword Tables Overfit To Reference Content
 
 `CopywriterService._summary_headline`'s hardcoded keyword-phrase tables were
@@ -161,6 +261,40 @@ graph was fixed).
 
 ---
 
+## Lesson: Coarse KDA Samples Are Not Frame-Timed Events
+
+- The regular KDA scan is only a coarse detector. Its `current_at` timestamp
+  must not be used directly for frame-timed sound effects.
+- In publish mode, rescan every frame between the last stable reading and the
+  changed coarse reading. Accept the change only after the same new KDA is
+  visible for at least three consecutive frames, and use the first frame in
+  that stable run as the event timestamp.
+- Never compensate coarse OCR timestamps with a fixed negative offset. HUD
+  and sampling latency vary per event, and fixed offsets preserve false hits.
+- If refinement cannot confirm a transition, omit the decorative SFX.
+
+## Lesson: Subtitle Timing Fidelity Beats Artificial Coverage
+
+- Do not extend Whisper word-timestamp cues to satisfy a subtitle-active-ratio
+  target. Publish defaults use no minimum display duration, no silence-gap
+  filling, a 0.15-second trailing hold, and 80ms VAD speech padding.
+- The quality-report subtitle active-ratio floor is 0.40 after removing the
+  former artificial holds. A lower ratio is expected when silence is rendered
+  without stale subtitles.
+
+## Lesson: CUDA_PATH May Point at an Incompatible Toolkit
+
+- `ctranslate2` 4.x requires CUDA 12 cuBLAS (`cublas64_12.dll`) even when the
+  NVIDIA installer changes `CUDA_PATH` and PATH to a newer CUDA 13 toolkit.
+- Before importing/loading a CUDA Whisper model on Windows, discover and
+  register the installed CUDA 12 `bin` and cuDNN 9 `bin` directories with both
+  `os.add_dll_directory` and the process PATH. Keep returned directory handles
+  alive for the process lifetime.
+- Validate the repair with a real CUDA model load and transcription, not only
+  `nvidia-smi` or file-existence checks.
+
+---
+
 ## Related Documentation
 
 - [Export Configuration](./export-configuration.md) — full scenario contracts
@@ -168,4 +302,4 @@ graph was fixed).
 
 ---
 
-**Last Updated**: 2026-07-10 (Task: batch-review-duration-tuning)
+**Last Updated**: 2026-07-11 (Task: human-review-fixes)

@@ -284,6 +284,9 @@ class QualityReportService:
             kda_uncovered_count=kda_uncovered,
             teaser_segment_count=teaser_count,
             teaser_total_seconds=teaser_seconds,
+            teaser_omitted_reason=(
+                edit_plan.teaser_omitted_reason if edit_plan is not None else None
+            ),
             bgm_beds=bgm_beds,
             sfx_hits=sfx_hits,
             zoom_segments=zoom_segments,
@@ -859,10 +862,13 @@ class QualityReportService:
                     threshold=thresholds.max_source_gap_seconds,
                 )
             )
-        if not (
-            thresholds.teaser_min_segments
-            <= row.teaser_segment_count
-            <= thresholds.teaser_max_segments
+        teaser_below_min = row.teaser_segment_count < thresholds.teaser_min_segments
+        teaser_intentionally_omitted = (
+            row.teaser_segment_count == 0 and row.teaser_omitted_reason is not None
+        )
+        if (
+            row.teaser_segment_count > thresholds.teaser_max_segments
+            or (teaser_below_min and not teaser_intentionally_omitted)
         ):
             warnings.append(
                 QualityWarning(
@@ -892,16 +898,20 @@ class QualityReportService:
                     threshold=thresholds.sfx_max_hits,
                 )
             )
-        if not (
-            thresholds.zoom_min_segments
-            <= len(row.zoom_segments)
-            <= thresholds.zoom_max_segments
-        ):
+        zoom_count = len(row.zoom_segments)
+        # With fallback close-ups disabled, a match whose kills never land in
+        # zoomable segments legitimately has zero zooms; only flag a zero
+        # count when KDA events existed to anchor one.
+        zoom_below_min = (
+            zoom_count < thresholds.zoom_min_segments
+            and not (zoom_count == 0 and row.kda_event_count == 0)
+        )
+        if zoom_count > thresholds.zoom_max_segments or zoom_below_min:
             warnings.append(
                 QualityWarning(
                     code="zoom_segment_count_out_of_range",
                     message="Zoom segment count is outside the configured range.",
-                    value=len(row.zoom_segments),
+                    value=zoom_count,
                     threshold=[
                         thresholds.zoom_min_segments,
                         thresholds.zoom_max_segments,
@@ -1001,6 +1011,10 @@ class QualityReportService:
         if row.budget_exception_reason:
             lines.append(
                 f"- Duration budget exception: {row.budget_exception_reason}"
+            )
+        if row.teaser_omitted_reason:
+            lines.append(
+                f"- Teaser intentionally omitted: {row.teaser_omitted_reason}"
             )
         if row.longest_no_subtitle_gaps:
             lines.append(

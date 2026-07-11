@@ -22,6 +22,44 @@ from arl.subtitles.models import SubtitleAuditEvent, SubtitleStateFile
 from arl.subtitles.normalization import SubtitleTextNormalizer
 
 
+_CUDA_DLL_DIRECTORY_HANDLES: list[Any] = []
+
+
+def _configure_windows_cuda_dll_directories() -> list[Path]:
+    """Register installed CUDA 12/cuDNN bins even when CUDA_PATH points at 13.x."""
+    if os.name != "nt":
+        return []
+    roots = [
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        / "NVIDIA GPU Computing Toolkit"
+        / "CUDA",
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        / "NVIDIA"
+        / "CUDNN",
+    ]
+    required = ("cublas64_12.dll", "cudnn64_9.dll")
+    directories: list[Path] = []
+    for required_dll, root in zip(required, roots, strict=True):
+        if not root.exists():
+            continue
+        matches = sorted(
+            (path.parent for path in root.rglob(required_dll)),
+            reverse=True,
+        )
+        if matches:
+            directories.append(matches[0])
+
+    current_path = os.environ.get("PATH", "")
+    for directory in directories:
+        directory_text = str(directory)
+        if directory_text.lower() not in current_path.lower().split(os.pathsep):
+            current_path = directory_text + os.pathsep + current_path
+        if hasattr(os, "add_dll_directory"):
+            _CUDA_DLL_DIRECTORY_HANDLES.append(os.add_dll_directory(directory_text))
+    os.environ["PATH"] = current_path
+    return directories
+
+
 @dataclass(frozen=True)
 class TranscribeOutcome:
     entries: list[tuple[float, float, str]]
@@ -1135,6 +1173,14 @@ class SubtitleService:
         os.environ.setdefault("HF_HOME", str(cache_dir))
 
         try:
+            if model_config.device == "cuda":
+                directories = _configure_windows_cuda_dll_directories()
+                if directories:
+                    log(
+                        "subtitles",
+                        "configured CUDA DLL directories "
+                        + ",".join(str(path) for path in directories),
+                    )
             from faster_whisper import WhisperModel  # type: ignore[import-not-found]
         except Exception as exc:
             log("subtitles", f"faster-whisper unavailable reason={exc}")
@@ -1222,7 +1268,17 @@ class SubtitleService:
                 target_end = min(target_end, duration_limit)
             if target_end > start:
                 smoothed.append((start, target_end, text))
-        return smoothed
+
+        # Never allow more than two lines on screen at once: entry i must be
+        # gone before entry i+2 appears (whisper occasionally emits natively
+        # overlapping cues, and the min-duration extension can stack more).
+        capped: list[tuple[float, float, str]] = []
+        for index, (start, end, text) in enumerate(smoothed):
+            if index + 2 < len(smoothed):
+                end = min(end, smoothed[index + 2][0])
+            if end > start:
+                capped.append((start, end, text))
+        return capped
 
     def _placeholder_srt(self) -> str:
         return (

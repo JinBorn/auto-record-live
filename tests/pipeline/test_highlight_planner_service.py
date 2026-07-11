@@ -23,6 +23,8 @@ from arl.shared.contracts import (
     SubtitleAsset,
 )
 from arl.shared.jsonl_store import append_model, load_models
+from arl.shared.semantic_contracts import SemanticAssetView
+from arl.shared.semantic_contracts import SemanticAssetView
 from arl.vision.models import KdaReading
 
 
@@ -1429,6 +1431,74 @@ class HighlightPlannerServiceTest(unittest.TestCase):
                 confidence=0.8,
             ),
         )
+
+    def test_semantic_weight_zero_preserves_legacy_density(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        self.settings.llm.story_analysis_enabled = True
+        self.settings.llm.story_shadow_mode = False
+        self.settings.llm.semantic_weight = 0.0
+        window, plan, asset = self._semantic_density_fixture("drop")
+
+        service._active_semantic_reference = service._semantic_reference_for_plan(plan, asset)
+
+        self.assertEqual(service._active_semantic_reference, [])
+        self.assertEqual(service._semantic_value_multiplier(window), 1.0)
+
+    def test_semantic_drop_lowers_only_finalizer_value_density(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        self.settings.llm.story_analysis_enabled = True
+        self.settings.llm.story_shadow_mode = False
+        self.settings.llm.semantic_weight = 0.5
+        window, plan, asset = self._semantic_density_fixture("drop")
+        service._active_semantic_reference = service._semantic_reference_for_plan(plan, asset)
+
+        multiplier = service._semantic_value_multiplier(window)
+
+        self.assertGreater(multiplier, 0.0)
+        self.assertLess(multiplier, 1.0)
+
+    @staticmethod
+    def _semantic_density_fixture(
+        recommendation: str,
+    ) -> tuple[HighlightClipWindow, HighlightPlanAsset, SemanticAssetView]:
+        from arl.shared.semantic_ids import semantic_reference_id
+
+        window = HighlightClipWindow(
+            started_at_seconds=10.0,
+            ended_at_seconds=20.0,
+            reason="condensed_key_event",
+        )
+        plan = HighlightPlanAsset(
+            session_id="session-semantic-density",
+            match_index=1,
+            source_boundary_start_seconds=0.0,
+            source_boundary_end_seconds=100.0,
+            windows=[window],
+            created_at=datetime.now(timezone.utc),
+        )
+        candidate_id = semantic_reference_id(
+            "candidate",
+            plan.session_id,
+            plan.match_index,
+            window.started_at_seconds,
+            window.ended_at_seconds,
+            window.reason,
+        )
+        asset = SemanticAssetView.model_validate(
+            {
+                "session_id": plan.session_id,
+                "match_index": plan.match_index,
+                "result": {
+                    "candidate_decisions": [
+                        {
+                            "candidate_id": candidate_id,
+                            "recommendation": recommendation,
+                        }
+                    ]
+                },
+            }
+        )
+        return window, plan, asset
 
     def _append_subtitle(self, session_id: str, subtitle_path: Path) -> None:
         append_model(

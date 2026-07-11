@@ -66,6 +66,10 @@ class PostProcessService:
                 lambda: self._run_copywriter_semantic(session_ids=session_ids),
             ),
             (
+                "highlight-finalize",
+                lambda: self._run_highlight_semantic_finalize(session_ids=session_ids),
+            ),
+            (
                 "edit-planner",
                 lambda: self._run_stage(
                     EditingPlannerService(self.settings),
@@ -102,6 +106,24 @@ class PostProcessService:
             service.run_publishing()
             return
         service.run_publishing(session_ids=session_ids)
+
+    def _run_highlight_semantic_finalize(
+        self,
+        *,
+        session_ids: set[str] | None,
+    ) -> None:
+        if (
+            not self.settings.llm.story_analysis_enabled
+            or self.settings.llm.story_shadow_mode
+            or self.settings.llm.semantic_weight <= 0.0
+        ):
+            log("postprocess", "highlight-finalize skipped reason=semantic_inactive")
+            return
+        service = HighlightPlannerService(self.settings)
+        if session_ids is None:
+            service.run(force_reprocess=True)
+            return
+        service.run(session_ids=session_ids, force_reprocess=True)
 
     def _log_unregistered_recordings(self) -> None:
         unregistered = RecordingAssetRepairService(self.settings).find_unregistered()

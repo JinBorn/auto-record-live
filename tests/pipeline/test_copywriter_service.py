@@ -16,11 +16,14 @@ from arl.copywriter.cover import (
     render_cover,
     score_cover_frame,
 )
-from arl.copywriter.llm import LlmProviderResponse
+from arl.copywriter.llm import LlmProviderError, LlmProviderResponse
 from arl.copywriter.models import (
+    CandidateSemanticDecision,
     CopywriterSemanticAsset,
     CopywriterStateFile,
+    LlmCopywritingResult,
     PublishingPackage,
+    SemanticShadowReport,
 )
 from arl.copywriter.service import CopywriterService
 from arl.orchestrator.models import (
@@ -456,6 +459,297 @@ class CopywriterServiceTest(unittest.TestCase):
         self.assertEqual(len(copy_assets), 1)
         self.assertNotEqual(copy_assets[0].title, "broken")
 
+    def test_story_semantics_reject_unknown_candidate_reference(self) -> None:
+        self.settings.llm.story_analysis_enabled = True
+        service = CopywriterService(self.settings)
+        result = LlmCopywritingResult(
+            title_candidates=["标题一", "标题二", "标题三"],
+            recommended_title="标题一",
+            cover_lines=["关键团战", "完成逆转"],
+            summary="关键团战完成逆转。",
+            description="围绕关键团战展开。",
+            tags=["英雄联盟", "直播切片", "团战", "逆转", "高光"],
+            story_status="strong_story",
+            primary_angle="关键团战完成逆转",
+            story_event_ids=["candidate-known"],
+            candidate_decisions=[
+                CandidateSemanticDecision(
+                    candidate_id="candidate-unknown",
+                    recommendation="keep",
+                    evidence_refs=["subtitle-known"],
+                )
+            ],
+        )
+
+        with self.assertRaisesRegex(LlmProviderError, "unknown_candidate_reference"):
+            service._validate_story_result(
+                result,
+                {
+                    "highlight_windows": [{"candidate_id": "candidate-known"}],
+                    "subtitle_cues": [{"evidence_id": "subtitle-known"}],
+                    "kda_events": [],
+                },
+            )
+
+    def test_story_semantics_require_decisions_only_for_semantic_candidates(self) -> None:
+        self.settings.llm.story_analysis_enabled = True
+        service = CopywriterService(self.settings)
+        result = LlmCopywritingResult(
+            title_candidates=["标题一", "标题二", "标题三"],
+            recommended_title="标题一",
+            cover_lines=["打法分析", "实战复盘"],
+            summary="围绕本场打法进行分析。",
+            description="结合对局内容复盘打法。",
+            tags=["英雄联盟", "直播切片", "教学", "复盘", "实战"],
+            story_status="no_strong_story",
+            candidate_decisions=[
+                CandidateSemanticDecision(
+                    candidate_id="candidate-key",
+                    recommendation="keep",
+                )
+            ],
+        )
+
+        service._validate_story_result(
+            result,
+            {
+                "highlight_windows": [
+                    {"candidate_id": "candidate-key", "semantic_required": True},
+                    {"candidate_id": "candidate-bridge", "semantic_required": False},
+                ],
+                "subtitle_cues": [],
+                "kda_events": [],
+            },
+        )
+
+    def test_no_strong_story_clears_teaser_and_story_references(self) -> None:
+        result = LlmCopywritingResult(
+            title_candidates=["标题一", "标题二", "标题三"],
+            recommended_title="标题一",
+            cover_lines=["正常对局", "稳步推进"],
+            summary="本场以稳定推进为主。",
+            description="没有明显高潮，按事实概括本场内容。",
+            tags=["英雄联盟", "直播切片", "对局", "日常", "实况"],
+            story_status="no_strong_story",
+            primary_angle="不应保留",
+            story_event_ids=["candidate-one"],
+            teaser_candidate_ids=["candidate-one"],
+        )
+
+        self.assertIsNone(result.primary_angle)
+        self.assertEqual(result.story_event_ids, [])
+        self.assertEqual(result.teaser_candidate_ids, [])
+
+    def test_story_schema_accepts_common_llm_alias_shapes(self) -> None:
+        result = LlmCopywritingResult.model_validate(
+            {
+                "title_candidates": ["标题一", "标题二", "标题三"],
+                "recommended_title": "标题一",
+                "cover_lines": ["打法分析", "实战复盘"],
+                "summary": "围绕本场打法进行分析。",
+                "description": "结合对局内容复盘打法。",
+                "tags": ["英雄联盟", "直播切片", "教学", "复盘", "实战"],
+                "story_status": "no_strong_story",
+                "candidate_decisions": [
+                    {
+                        "candidate_id": "candidate-one",
+                        "score": 0.6,
+                        "recommendation": "keep",
+                        "evidence_ids": ["subtitle-one"],
+                    }
+                ],
+                "claim_evidence": [
+                    {
+                        "claim": "本场包含打法分析",
+                        "evidence": [{"source": "subtitle-one", "text": "示例"}],
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(result.candidate_decisions[0].importance_score, 0.6)
+        self.assertEqual(result.candidate_decisions[0].story_relevance_score, 0.6)
+        self.assertEqual(result.candidate_decisions[0].evidence_refs, ["subtitle-one"])
+        self.assertEqual(result.claim_evidence, {"本场包含打法分析": ["subtitle-one"]})
+
+    def test_weak_teaser_candidate_is_removed(self) -> None:
+        result = LlmCopywritingResult(
+            title_candidates=["标题一", "标题二", "标题三"],
+            recommended_title="标题一",
+            cover_lines=["打法分析", "实战复盘"],
+            summary="围绕本场打法进行分析。",
+            description="结合对局内容复盘打法。",
+            tags=["英雄联盟", "直播切片", "教学", "复盘", "实战"],
+            story_status="strong_story",
+            primary_angle="打法分析",
+            candidate_decisions=[
+                CandidateSemanticDecision(
+                    candidate_id="candidate-one",
+                    importance_score=0.8,
+                    recommendation="keep",
+                    evidence_refs=["subtitle-one"],
+                )
+            ],
+            teaser_candidate_ids=["candidate-one"],
+        )
+
+        CopywriterService._filter_weak_teaser_candidates(result)
+
+        self.assertEqual(result.teaser_candidate_ids, [])
+
+    def test_entity_homophone_is_rejected(self) -> None:
+        result = LlmCopywritingResult(
+            title_candidates=["南枪打法分析", "标题二", "标题三"],
+            recommended_title="南枪打法分析",
+            cover_lines=["打法分析", "实战复盘"],
+            summary="围绕本场打法进行分析。",
+            description="结合对局内容复盘打法。",
+            tags=["英雄联盟", "直播切片", "教学", "复盘", "实战"],
+        )
+
+        with self.assertRaisesRegex(LlmProviderError, "entity_mismatch"):
+            CopywriterService._validate_known_entity_terms(
+                result,
+                {
+                    "subtitle_cues": [{"text": "男枪带迅捷步伐"}],
+                    "kda_events": [],
+                },
+            )
+
+    def test_known_entity_confusion_is_canonicalized(self) -> None:
+        result = LlmCopywritingResult(
+            title_candidates=["南枪打法分析", "标题二", "标题三"],
+            recommended_title="南枪打法分析",
+            cover_lines=["南枪实战", "打法复盘"],
+            summary="南枪打法总结。",
+            description="南枪对局复盘。",
+            tags=["英雄联盟", "直播切片", "教学", "复盘", "实战"],
+        )
+
+        CopywriterService._canonicalize_known_entities(result)
+
+        self.assertEqual(result.recommended_title, "男枪打法分析")
+        self.assertIn("男枪", result.cover_lines[0])
+
+    def test_unsupported_multikill_claim_is_rejected(self) -> None:
+        result = LlmCopywritingResult(
+            title_candidates=["教科书级四杀", "标题二", "标题三"],
+            recommended_title="教科书级四杀",
+            cover_lines=["四杀时刻", "完成翻盘"],
+            summary="一波四杀改变局势。",
+            description="关键团战完成四杀。",
+            tags=["英雄联盟", "直播切片", "团战", "逆转", "高光"],
+        )
+
+        with self.assertRaisesRegex(LlmProviderError, "unsupported_multikill_claim"):
+            CopywriterService._validate_multikill_claims(
+                result,
+                {
+                    "kda_events": [
+                        {"text": "kda_change kills=3->4 deaths=2->2"},
+                    ]
+                },
+            )
+
+    def test_story_shadow_report_records_proposed_changes_without_mutating_plan(self) -> None:
+        self.settings.llm.story_analysis_enabled = True
+        self.settings.llm.story_shadow_mode = True
+        service = CopywriterService(self.settings)
+        result = LlmCopywritingResult(
+            title_candidates=["关键团战逆转", "中期团战翻盘", "一波打开局面"],
+            recommended_title="关键团战逆转",
+            cover_lines=["关键团战", "完成逆转"],
+            summary="关键团战完成逆转。",
+            description="围绕关键团战展开。",
+            tags=["英雄联盟", "直播切片", "团战", "逆转", "高光"],
+            story_status="strong_story",
+            primary_angle="关键团战完成逆转",
+            story_event_ids=["candidate-one"],
+            candidate_decisions=[
+                CandidateSemanticDecision(
+                    candidate_id="candidate-one",
+                    importance_score=0.9,
+                    story_relevance_score=1.0,
+                    recommendation="keep",
+                    reason="主故事高潮",
+                ),
+                CandidateSemanticDecision(
+                    candidate_id="candidate-two",
+                    recommendation="drop",
+                    reason="普通发育",
+                ),
+            ],
+        )
+        asset = CopywriterSemanticAsset(
+            session_id="session-shadow",
+            match_index=1,
+            source_subtitle_path="match-01.srt",
+            provider="test",
+            model="test-model",
+            prompt_fingerprint="prompt",
+            input_fingerprint="input",
+            result=result,
+            status="generated",
+            created_at=datetime.now(timezone.utc),
+        )
+
+        service._write_semantic_shadow_report(
+            asset,
+            {
+                "highlight_windows": [
+                    {
+                        "candidate_id": "candidate-one",
+                        "start": 10.0,
+                        "end": 20.0,
+                        "reason": "condensed_key_event",
+                    },
+                    {
+                        "candidate_id": "candidate-two",
+                        "start": 30.0,
+                        "end": 50.0,
+                        "reason": "condensed_context",
+                    },
+                ]
+            },
+        )
+
+        reports = load_models(
+            self.temp_root / "copywriter-semantic-shadow-reports.jsonl",
+            SemanticShadowReport,
+        )
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0].current_total_seconds, 30.0)
+        self.assertEqual(reports[0].proposed_keep_seconds, 10.0)
+        self.assertEqual(reports[0].proposed_drop_seconds, 20.0)
+        self.assertFalse((self.temp_root / "highlight-plans.jsonl").exists())
+
+    def test_story_shadow_asset_is_not_used_for_publishing(self) -> None:
+        self.settings.llm.story_analysis_enabled = True
+        self.settings.llm.story_shadow_mode = True
+        service = CopywriterService(self.settings)
+        asset = CopywriterSemanticAsset(
+            session_id="session-shadow-publishing",
+            match_index=1,
+            source_subtitle_path="match-01.srt",
+            provider="test",
+            model="test",
+            prompt_fingerprint="prompt",
+            input_fingerprint="input",
+            result=LlmCopywritingResult(
+                title_candidates=["影子标题一", "影子标题二", "影子标题三"],
+                recommended_title="影子标题一",
+                cover_lines=["影子文案", "仅供比较"],
+                summary="影子摘要。",
+                description="影子描述。",
+                tags=["英雄联盟", "直播切片", "影子", "比较", "测试"],
+                story_status="no_strong_story",
+            ),
+            status="generated",
+            created_at=datetime.now(timezone.utc),
+        )
+
+        self.assertIsNone(service._semantic_result_for_publishing(asset))
+
     def test_filters_by_session_ids(self) -> None:
         for session_id in ["session-copywriter-filter-a", "session-copywriter-filter-b"]:
             subtitle_path = self._write_subtitle(
@@ -800,6 +1094,7 @@ class CopywriterServiceTest(unittest.TestCase):
 
     def test_cover_renderer_writes_ranked_candidates_and_metadata(self) -> None:
         session_id = "session-copywriter-cover-candidates"
+        self.settings.copywriter.cover_max_candidates = 3
         subtitle_path = self._write_subtitle(
             session_id,
             "1\n00:00:20,000 --> 00:00:21,000\n"

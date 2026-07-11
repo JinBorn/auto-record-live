@@ -6,7 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from arl.config import Settings
-from arl.copywriter.models import CopywriterSemanticAsset, CopywriterStateFile
+from arl.copywriter.models import (
+    CopywriterSemanticAsset,
+    CopywriterStateFile,
+    SemanticShadowReport,
+)
 from arl.editing.models import EditPlannerStateFile
 from arl.exporter.models import ExporterAuditEvent, ExporterStateFile
 from arl.highlights.models import HighlightPlannerStateFile
@@ -61,6 +65,10 @@ class StatusService:
         semantic_assets = load_models(
             self.temp_dir / "copywriter-semantic-assets.jsonl",
             CopywriterSemanticAsset,
+        )
+        semantic_shadow_reports = load_models(
+            self.temp_dir / "copywriter-semantic-shadow-reports.jsonl",
+            SemanticShadowReport,
         )
         recorder_events = load_models(
             self.settings.orchestrator.recorder_event_log_path,
@@ -174,6 +182,7 @@ class StatusService:
                 "subtitle_assets": len(subtitle_assets),
                 "highlight_plans": len(highlight_plans),
                 "copywriter_semantic_assets": len(semantic_assets),
+                "copywriter_semantic_shadow_reports": len(semantic_shadow_reports),
                 "edit_plans": len(edit_plans),
                 "export_assets": len(export_assets),
                 "copy_assets": len(copy_assets),
@@ -207,6 +216,7 @@ class StatusService:
             "copywriter": {
                 "processed_matches": len(copywriter_state.processed_match_keys),
                 "semantic_assets": len(semantic_assets),
+                "semantic_shadow_reports": len(semantic_shadow_reports),
             },
             "recovery": {
                 "pending_actions": recovery_summary.get("actions_pending", 0),

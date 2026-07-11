@@ -340,6 +340,7 @@ class EditingPlannerService:
         semantic_asset: CopywriterSemanticAsset | None,
         streamer_name: str | None,
     ) -> EditPlanAsset | None:
+        semantic_asset = self._semantic_asset_for_editing(semantic_asset)
         duration = boundary.ended_at_seconds - boundary.started_at_seconds
         if duration <= 0.0:
             return None
@@ -362,12 +363,19 @@ class EditingPlannerService:
             subtitle=subtitle,
             semantic_asset=semantic_asset,
         )
+        teaser_omitted_reason = None
+        if not teaser_windows:
+            teaser_omitted_reason = (
+                "no_strong_story"
+                if self._semantic_no_story_active(semantic_asset)
+                else "no_high_confidence_teaser"
+            )
         if not teaser_windows:
             log(
                 "editing",
                 "edit plan omits teaser "
                 f"session_id={boundary.session_id} match_index={boundary.match_index} "
-                "reason=no_high_confidence_teaser",
+                f"reason={teaser_omitted_reason}",
             )
 
         timeline = [
@@ -408,6 +416,7 @@ class EditingPlannerService:
             timeline=timeline,
             audio_beds=audio_beds,
             sound_effects=sound_effects,
+            teaser_omitted_reason=teaser_omitted_reason,
             created_at=datetime.now(timezone.utc),
         )
 
@@ -570,6 +579,8 @@ class EditingPlannerService:
             for candidate in candidates
             if candidate.priority < 2
         ]
+        if not self.settings.editing.zoom_fallback_enabled:
+            return candidates
         fallback_x, fallback_y, fallback_target = self._zoom_focus()
         for segment in timeline:
             if not self._segment_can_receive_closeup(segment):
@@ -2272,18 +2283,21 @@ class EditingPlannerService:
         subtitle: SubtitleAsset | None = None,
         semantic_asset: CopywriterSemanticAsset | None = None,
     ) -> list[HighlightClipWindow]:
+        if self._semantic_no_story_active(semantic_asset):
+            return []
         max_total_seconds = self._teaser_budget_seconds(
             planned_export_duration if planned_export_duration is not None else duration
         )
+        subtitle_cues = self._subtitle_cues(subtitle)
         semantic_windows = self._semantic_teaser_windows(
             windows,
             duration,
             max_total_seconds=max_total_seconds,
             semantic_asset=semantic_asset,
+            subtitle_cues=subtitle_cues,
         )
         if semantic_windows:
             return semantic_windows
-        subtitle_cues = self._subtitle_cues(subtitle)
         candidates = self._teaser_candidates(
             windows,
             duration,
@@ -2352,6 +2366,17 @@ class EditingPlannerService:
             total_seconds += end - start
         return selected
 
+    def _semantic_no_story_active(
+        self,
+        semantic_asset: CopywriterSemanticAsset | None,
+    ) -> bool:
+        return bool(
+            self.settings.llm.story_analysis_enabled
+            and not self.settings.llm.story_shadow_mode
+            and semantic_asset is not None
+            and semantic_asset.result.story_status == "no_strong_story"
+        )
+
     def _teaser_budget_seconds(self, planned_export_duration: float) -> float:
         configured_cap = self.settings.editing.teaser_max_total_seconds
         if not self.settings.editing.teaser_dynamic_budget_enabled:
@@ -2374,10 +2399,13 @@ class EditingPlannerService:
         *,
         max_total_seconds: float,
         semantic_asset: CopywriterSemanticAsset | None,
+        subtitle_cues: list[SrtCue] | None = None,
     ) -> list[HighlightClipWindow]:
         if semantic_asset is None:
             return []
+        kda_cues = self._highlight_plan_kda_cues()
         candidates: list[HighlightClipWindow] = []
+        rejected = 0
         for recommendation in semantic_asset.result.teaser_recommendations:
             snapped = self._snap_semantic_teaser_window(
                 windows,
@@ -2387,7 +2415,24 @@ class EditingPlannerService:
             )
             if snapped is None:
                 continue
+            # Quality gate: an LLM teaser recommendation must point at real
+            # highlight material — overlap a KDA kill/death span or carry a
+            # teaser keyword signal. Unanchored picks produce messy cold
+            # opens (human review 2026-07-10); main-only beats a bad teaser.
+            if not self._semantic_teaser_qualifies(
+                snapped,
+                kda_cues=kda_cues,
+                subtitle_cues=subtitle_cues or [],
+            ):
+                rejected += 1
+                continue
             candidates.append(snapped)
+        if rejected:
+            log(
+                "editing",
+                f"rejected semantic teaser recommendations count={rejected} "
+                "reason=no_highlight_anchor",
+            )
         selected: list[HighlightClipWindow] = []
         total_seconds = 0.0
         for window in candidates:
@@ -2408,6 +2453,23 @@ class EditingPlannerService:
             )
             total_seconds += end - window.started_at_seconds
         return selected
+
+    def _semantic_teaser_qualifies(
+        self,
+        window: HighlightClipWindow,
+        *,
+        kda_cues: list[SrtCue],
+        subtitle_cues: list[SrtCue],
+    ) -> bool:
+        if window.reason == "highlight_keyword":
+            return True
+        for cue in kda_cues:
+            if (
+                cue.started_at_seconds < window.ended_at_seconds
+                and cue.ended_at_seconds > window.started_at_seconds
+            ):
+                return True
+        return self._teaser_signal_score(window, subtitle_cues) > 0
 
     def _snap_semantic_teaser_window(
         self,
@@ -2439,7 +2501,7 @@ class EditingPlannerService:
             candidate = HighlightClipWindow(
                 started_at_seconds=start,
                 ended_at_seconds=end,
-                reason="llm_teaser",
+                reason=window.reason,
             )
             if not self._valid_teaser_window(candidate, duration):
                 continue
@@ -2646,6 +2708,7 @@ class EditingPlannerService:
         semantic_asset: CopywriterSemanticAsset | None,
         streamer_name: str | None,
     ) -> bool:
+        semantic_asset = self._semantic_asset_for_editing(semantic_asset)
         if plan is None:
             return False
         self._active_highlight_plan = highlight_plan
@@ -2677,6 +2740,20 @@ class EditingPlannerService:
             subtitle,
             streamer_name,
         )
+
+    def _semantic_asset_for_editing(
+        self,
+        semantic_asset: CopywriterSemanticAsset | None,
+    ) -> CopywriterSemanticAsset | None:
+        if semantic_asset is None:
+            return None
+        if (
+            self.settings.llm.story_analysis_enabled
+            and self.settings.llm.story_shadow_mode
+            and semantic_asset.result.story_status != "legacy"
+        ):
+            return None
+        return semantic_asset
 
     def _edit_plan_has_current_audio_shape(
         self,

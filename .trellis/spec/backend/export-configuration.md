@@ -543,7 +543,7 @@ windows = bridge_highlight_windows(windows, bridge_window_seconds=3.0)
   ARL_EDIT_BGM_SWITCH_MIN_GAP_SECONDS=60
   ARL_EDIT_BGM_CROSSFADE_SECONDS=2
   ARL_EDIT_BGM_SOURCE_MUSIC_PADDING_SECONDS=2
-  ARL_EDIT_BGM_SOURCE_MUSIC_MAJORITY_THRESHOLD=0.60
+  ARL_EDIT_BGM_SOURCE_MUSIC_MAJORITY_THRESHOLD=0.35
   ARL_EDIT_SFX_PATH=
   ARL_EDIT_SFX_GAIN_DB=-12
   ARL_EDIT_SFX_LIBRARY_PATH=data/sfx/library.json
@@ -1962,6 +1962,8 @@ def _video_quality_args(self) -> list[str]:
 | `ARL_HIGHLIGHT_CONDENSED_BUDGET_TRIM_STEP_SECONDS` | float | 15.0 | Per-iteration trim step of the budget shrinker, min 3.0 |
 | `ARL_HIGHLIGHT_CONDENSED_BUDGET_MAX_SPEECH_EXTENSION_SECONDS` | float | 3.0 | Cap on post-shrink speech-boundary extension per window |
 | `ARL_EDIT_TEASER_IMPACT_SFX_GAIN_DB` | float | -10.0 | Teaser opening impact SFX gain in dB (library category `teaser_impact`), clamped to `[-60.0, 6.0]` |
+| `ARL_EDIT_ZOOM_FALLBACK_ENABLED` | bool | False | Mid-segment fallback close-ups with no KDA/chat-burst anchor (disabled after 2026-07-10 human review: zooms landed on uninteresting content) |
+| `ARL_COPY_COVER_MAX_CANDIDATES` | int | `1` | Cover image candidates rendered per match (human review 2026-07-10: one cover is enough) |
 | `ARL_EDIT_PLANNER_ENABLED` | bool | False | Run edit-plan generation stage |
 | `ARL_EDIT_TEASER_MAX_SEGMENTS` | int | 2 | Maximum teaser segments prepended before the main match |
 | `ARL_EDIT_TEASER_MAX_TOTAL_SECONDS` | float | 45.0 | Maximum total teaser duration |
@@ -2001,7 +2003,7 @@ def _video_quality_args(self) -> list[str]:
 | `ARL_EDIT_BGM_SWITCH_MIN_GAP_SECONDS` | float | `60.0` | Minimum gap from BGM edges and adjacent BGM phase switches, clamped to at least 0 |
 | `ARL_EDIT_BGM_CROSSFADE_SECONDS` | float | `2.0` | Total overlap between adjacent BGM phase beds, clamped to `[1.0, 2.0]` |
 | `ARL_EDIT_BGM_SOURCE_MUSIC_PADDING_SECONDS` | float | `2.0` | Padding added around mapped source-music avoidance spans before subtracting BGM beds |
-| `ARL_EDIT_BGM_SOURCE_MUSIC_MAJORITY_THRESHOLD` | float | `0.60` | Rendered BGM-active source-music coverage above which the planner skips BGM for the match, clamped to `[0.0, 1.0]` |
+| `ARL_EDIT_BGM_SOURCE_MUSIC_MAJORITY_THRESHOLD` | float | `0.35` | Rendered BGM-active source-music coverage above which the planner skips BGM for the match, clamped to `[0.0, 1.0]` |
 | `ARL_EDIT_SFX_PATH` | path | None | Explicit local sound-effect file path; when unset, audio mixing can use generated `coin.wav` for eligible SFX hits |
 | `ARL_EDIT_SFX_GAIN_DB` | float | -12.0 | SFX gain in dB, clamped to `[-60.0, 6.0]` |
 | `ARL_EDIT_SFX_LIBRARY_PATH` | path | `data/sfx/library.json` | Optional JSON manifest for local SFX categories (`kill_coin`, `multi_kill`, `transition_whoosh`, `teaser_impact`) |

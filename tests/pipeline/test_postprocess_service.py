@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from arl.config import Settings, StorageSettings
 from arl.postprocess.service import PostProcessService
@@ -191,6 +191,36 @@ class PostProcessServiceTest(unittest.TestCase):
         self.assertIn("reason=incomplete_no_end", diagnostic)
         self.assertIn("confidence=0.40", diagnostic)
         self.assertIn("no export is written", diagnostic)
+
+    def test_highlight_semantic_finalize_skips_in_shadow_mode(self) -> None:
+        settings = Settings()
+        settings.llm.story_analysis_enabled = True
+        settings.llm.story_shadow_mode = True
+        planner = MagicMock()
+
+        with patch("arl.postprocess.service.HighlightPlannerService", return_value=planner):
+            PostProcessService(settings)._run_highlight_semantic_finalize(
+                session_ids={"session-a"}
+            )
+
+        planner.run.assert_not_called()
+
+    def test_highlight_semantic_finalize_force_replans_active_sessions(self) -> None:
+        settings = Settings()
+        settings.llm.story_analysis_enabled = True
+        settings.llm.story_shadow_mode = False
+        settings.llm.semantic_weight = 0.5
+        planner = MagicMock()
+
+        with patch("arl.postprocess.service.HighlightPlannerService", return_value=planner):
+            PostProcessService(settings)._run_highlight_semantic_finalize(
+                session_ids={"session-a"}
+            )
+
+        planner.run.assert_called_once_with(
+            session_ids={"session-a"},
+            force_reprocess=True,
+        )
 
     def _patch_filtered_stages(self, calls: list[tuple[str, set[str] | None]]):
         return patch.multiple(

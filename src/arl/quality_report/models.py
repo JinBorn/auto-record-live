@@ -94,6 +94,7 @@ class QualityReportRow(BaseModel):
     kda_uncovered_count: int = 0
     teaser_segment_count: int = 0
     teaser_total_seconds: float = 0.0
+    teaser_omitted_reason: str | None = None
     bgm_beds: list[BgmBedMetric] = Field(default_factory=list)
     sfx_hits: list[SfxHitMetric] = Field(default_factory=list)
     zoom_segments: list[ZoomSegmentMetric] = Field(default_factory=list)

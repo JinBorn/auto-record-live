@@ -179,6 +179,16 @@ class EditingPlannerServiceTest(unittest.TestCase):
                 ),
             ],
             duration=600.0,
+            kda_events=[
+                KdaEventCue(
+                    started_at_seconds=304.0,
+                    ended_at_seconds=312.0,
+                    text=(
+                        "kda_change kills=1->2 deaths=0->0 "
+                        "previous_at=305.000 current_at=310.000"
+                    ),
+                )
+            ],
         )
         self._append_semantic_asset(
             session_id,
@@ -195,6 +205,125 @@ class EditingPlannerServiceTest(unittest.TestCase):
         self.assertEqual(teaser[0].source_end_seconds, 313.0)
         self.assertEqual(teaser[0].reason, "llm_teaser")
         self.assertIsNotNone(teaser[0].transform)
+
+    def test_unanchored_semantic_teaser_is_rejected_and_omission_recorded(self) -> None:
+        session_id = "session-edit-llm-unanchored-teaser"
+        self.settings.editing.teaser_fallback_enabled = False
+        self.settings.editing.teaser_candidate_reasons = ("highlight_keyword",)
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=300.0,
+                    ended_at_seconds=330.0,
+                    reason="condensed_key_event",
+                ),
+            ],
+            duration=600.0,
+        )
+        self._append_semantic_asset(
+            session_id,
+            teaser_start=305.0,
+            teaser_end=313.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        teaser = [segment for segment in plan.timeline if segment.role == "teaser"]
+        self.assertEqual(teaser, [])
+        self.assertEqual(plan.teaser_omitted_reason, "no_high_confidence_teaser")
+
+    def test_semantic_teaser_on_highlight_keyword_window_is_accepted(self) -> None:
+        session_id = "session-edit-llm-highlight-keyword-teaser"
+        self.settings.editing.teaser_fallback_enabled = False
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=300.0,
+                    ended_at_seconds=330.0,
+                    reason="highlight_keyword",
+                ),
+            ],
+            duration=600.0,
+        )
+        self._append_semantic_asset(
+            session_id,
+            teaser_start=305.0,
+            teaser_end=313.0,
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        teaser = [segment for segment in plan.timeline if segment.role == "teaser"]
+        self.assertEqual(len(teaser), 1)
+        self.assertEqual(teaser[0].source_start_seconds, 305.0)
+        self.assertEqual(teaser[0].source_end_seconds, 313.0)
+        self.assertEqual(teaser[0].reason, "llm_teaser")
+        self.assertIsNone(plan.teaser_omitted_reason)
+
+    def test_active_no_strong_story_omits_teaser_with_reason(self) -> None:
+        session_id = "session-edit-no-strong-story"
+        self.settings.llm.story_analysis_enabled = True
+        self.settings.llm.story_shadow_mode = False
+        self._append_boundary(session_id, duration=600.0)
+        self._append_highlight_plan(
+            session_id,
+            windows=[
+                HighlightClipWindow(
+                    started_at_seconds=300.0,
+                    ended_at_seconds=330.0,
+                    reason="highlight_keyword",
+                ),
+            ],
+            duration=600.0,
+        )
+        self._append_semantic_asset(
+            session_id,
+            teaser_start=305.0,
+            teaser_end=313.0,
+            story_status="no_strong_story",
+        )
+
+        EditingPlannerService(self.settings).run()
+
+        plan = load_models(self.edit_plans_path, EditPlanAsset)[0]
+        self.assertEqual(
+            [segment for segment in plan.timeline if segment.role == "teaser"],
+            [],
+        )
+        self.assertEqual(plan.teaser_omitted_reason, "no_strong_story")
+
+    def test_story_shadow_asset_is_not_used_by_edit_planner(self) -> None:
+        self.settings.llm.story_analysis_enabled = True
+        self.settings.llm.story_shadow_mode = True
+        service = EditingPlannerService(self.settings)
+        asset = CopywriterSemanticAsset(
+            session_id="session-edit-shadow",
+            match_index=1,
+            source_subtitle_path="match-01.srt",
+            provider="test",
+            model="test",
+            prompt_fingerprint="prompt",
+            input_fingerprint="input",
+            result=LlmCopywritingResult(
+                title_candidates=["标题一", "标题二", "标题三"],
+                recommended_title="标题一",
+                cover_lines=["影子故事", "仅供比较"],
+                summary="影子摘要。",
+                description="影子描述。",
+                tags=["英雄联盟", "直播切片", "影子", "比较", "测试"],
+                story_status="no_strong_story",
+            ),
+            status="generated",
+            created_at=datetime.now(timezone.utc),
+        )
+
+        self.assertIsNone(service._semantic_asset_for_editing(asset))
 
     def test_invalid_semantic_teaser_recommendation_falls_back(self) -> None:
         session_id = "session-edit-llm-invalid-teaser"
@@ -448,6 +577,7 @@ class EditingPlannerServiceTest(unittest.TestCase):
 
     def test_zoom_splits_long_main_segment_into_short_closeup(self) -> None:
         session_id = "session-edit-long-main-zoom"
+        self.settings.editing.zoom_fallback_enabled = True
         self.settings.editing.zoom_enabled = True
         self.settings.editing.teaser_max_segments = 0
         self._append_boundary(session_id, duration=700.0)
@@ -513,6 +643,7 @@ class EditingPlannerServiceTest(unittest.TestCase):
 
     def test_zoom_default_targets_bottom_left_chat_area(self) -> None:
         session_id = "session-edit-chat-zoom"
+        self.settings.editing.zoom_fallback_enabled = True
         self.settings.editing.zoom_enabled = True
         self._append_boundary(session_id, duration=600.0)
         self._append_highlight_plan(
@@ -2136,6 +2267,7 @@ class EditingPlannerServiceTest(unittest.TestCase):
 
     def test_legacy_main_without_zoom_is_replanned_when_zoom_enabled(self) -> None:
         session_id = "session-edit-legacy-main-zoom"
+        self.settings.editing.zoom_fallback_enabled = True
         self.settings.editing.zoom_enabled = True
         self.settings.editing.teaser_fallback_enabled = False
         self.settings.editing.teaser_candidate_reasons = ("highlight_keyword",)
@@ -2232,6 +2364,7 @@ class EditingPlannerServiceTest(unittest.TestCase):
 
     def test_legacy_long_zoom_plan_is_replanned_without_long_zoom(self) -> None:
         session_id = "session-edit-legacy-long-zoom"
+        self.settings.editing.zoom_fallback_enabled = True
         self.settings.editing.zoom_enabled = True
         self.settings.editing.zoom_max_duration_seconds = 30.0
         self.settings.editing.teaser_fallback_enabled = False
@@ -2538,6 +2671,7 @@ class EditingPlannerServiceTest(unittest.TestCase):
         teaser_start: float,
         teaser_end: float,
         hook_line: str = "神钩开团，团战逆转",
+        story_status: str = "legacy",
     ) -> None:
         append_model(
             self.temp_root / "copywriter-semantic-assets.jsonl",
@@ -2559,6 +2693,7 @@ class EditingPlannerServiceTest(unittest.TestCase):
                     description="关键团战打出优势，适合作为发布切片。",
                     tags=["英雄联盟", "直播切片", "神钩", "团战", "上分"],
                     hook_line=hook_line,
+                    story_status=story_status,
                     teaser_recommendations=[
                         {
                             "source_start_seconds": teaser_start,

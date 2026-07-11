@@ -21,6 +21,8 @@ from arl.shared.contracts import (
 )
 from arl.shared.jsonl_store import append_model, load_models
 from arl.shared.logging import log
+from arl.shared.semantic_contracts import SemanticAssetView
+from arl.shared.semantic_ids import semantic_reference_id
 
 
 @dataclass(frozen=True)
@@ -243,7 +245,13 @@ class HighlightPlannerService:
         self.boundaries_path = settings.storage.temp_dir / "match-boundaries.jsonl"
         self.subtitles_path = settings.storage.temp_dir / "subtitle-assets.jsonl"
         self.plans_path = settings.storage.temp_dir / "highlight-plans.jsonl"
+        self.semantic_assets_path = (
+            settings.storage.temp_dir / "copywriter-semantic-assets.jsonl"
+        )
         self.state_path = settings.storage.temp_dir / "highlight-planner-state.json"
+        self._active_semantic_reference: list[
+            tuple[HighlightClipWindow, float, str]
+        ] = []
 
     def run(
         self,
@@ -284,6 +292,10 @@ class HighlightPlannerService:
             (plan.session_id, plan.match_index): plan
             for plan in load_models(self.plans_path, HighlightPlanAsset)
         }
+        semantic_asset_map = {
+            (asset.session_id, asset.match_index): asset
+            for asset in load_models(self.semantic_assets_path, SemanticAssetView)
+        }
         existing_plan_keys = {
             self._key(session_id, match_index)
             for session_id, match_index in existing_plan_map
@@ -299,6 +311,10 @@ class HighlightPlannerService:
             key = self._key(boundary.session_id, boundary.match_index)
             existing_plan = existing_plan_map.get(
                 (boundary.session_id, boundary.match_index)
+            )
+            self._active_semantic_reference = self._semantic_reference_for_plan(
+                existing_plan,
+                semantic_asset_map.get((boundary.session_id, boundary.match_index)),
             )
             existing_plan_matches = self._plan_matches_boundary(existing_plan, boundary)
             if key in processed_keys and existing_plan_matches and not force_reprocess:
@@ -731,7 +747,7 @@ class HighlightPlannerService:
         ):
             return []
 
-        from arl.vision.frame_sampler import sample_frame_window
+        from arl.vision.frame_sampler import sample_every_frame_window, sample_frame_window
         from arl.vision.kda_ocr import read_kda
 
         try:
@@ -804,6 +820,22 @@ class HighlightPlannerService:
                 continue
 
             if kill_delta > 0 or death_delta > 0:
+                refined = current_ts
+                if self.settings.highlights.condensed_kda_frame_refinement_enabled:
+                    refined = self._refine_kda_change_timestamp(
+                        recording,
+                        previous=previous,
+                        current=current,
+                        sample_every_frame_window=sample_every_frame_window,
+                        read_kda=read_kda,
+                    )
+                if refined is None:
+                    # A single coarse OCR change is not sufficient evidence for
+                    # a frame-timed edit. False positives are worse than an
+                    # omitted coin hit.
+                    previous = current
+                    continue
+                current_ts = refined
                 current_relative_seconds = current_ts - boundary.started_at_seconds
                 previous_relative_seconds = previous_ts - boundary.started_at_seconds
                 suppression_seconds = (
@@ -858,6 +890,66 @@ class HighlightPlannerService:
             previous = current
 
         return events
+
+    def _refine_kda_change_timestamp(
+        self,
+        recording: RecordingAsset,
+        *,
+        previous: tuple[float, int, int, int],
+        current: tuple[float, int, int, int],
+        sample_every_frame_window,
+        read_kda,
+    ) -> float | None:
+        """Return the first frame of a stable KDA change inside a coarse span."""
+        previous_ts, previous_kills, previous_deaths, previous_assists = previous
+        current_ts, current_kills, current_deaths, current_assists = current
+        target = (current_kills, current_deaths, current_assists)
+        baseline = (previous_kills, previous_deaths, previous_assists)
+        spans = resolve_recording_window(
+            recording,
+            start_seconds=previous_ts,
+            end_seconds=current_ts,
+        )
+        consecutive_required = 3
+        first_target_at: float | None = None
+        consecutive = 0
+        saw_baseline = False
+        for span in spans:
+            path = Path(span.path)
+            if not path.exists():
+                continue
+            for local_ts, frame in sample_every_frame_window(
+                path, span.local_start_seconds, span.local_end_seconds
+            ):
+                source_ts = span.source_start_seconds + (
+                    local_ts - span.local_start_seconds
+                )
+                reading = read_kda(
+                    frame,
+                    source_ts,
+                    crop_region=self.settings.highlights.condensed_kda_crop_region,
+                )
+                value = (reading.kills, reading.deaths, reading.assists)
+                if (
+                    None in value
+                    or reading.confidence
+                    < self.settings.highlights.condensed_kda_min_confidence
+                ):
+                    continue
+                if value == baseline:
+                    saw_baseline = True
+                    first_target_at = None
+                    consecutive = 0
+                elif value == target and saw_baseline:
+                    if consecutive == 0:
+                        first_target_at = source_ts
+                    consecutive += 1
+                    if consecutive >= consecutive_required:
+                        return first_target_at
+                else:
+                    first_target_at = None
+                    consecutive = 0
+        return None
 
     def _sample_kda_frames(
         self,
@@ -1971,20 +2063,88 @@ class HighlightPlannerService:
                 return [trimmed]
         return None
 
-    @staticmethod
     def _window_value_density(
+        self,
         window: HighlightClipWindow,
         classified_cues: list[ClassifiedCue],
     ) -> float:
         duration = max(0.001, window.ended_at_seconds - window.started_at_seconds)
-        return (
-            HighlightPlannerService._span_cue_value(
+        base_density = (
+            self._span_cue_value(
                 window.started_at_seconds,
                 window.ended_at_seconds,
                 classified_cues,
             )
             / duration
         )
+        return base_density * self._semantic_value_multiplier(window)
+
+    def _semantic_reference_for_plan(
+        self,
+        plan: HighlightPlanAsset | None,
+        semantic_asset: SemanticAssetView | None,
+    ) -> list[tuple[HighlightClipWindow, float, str]]:
+        if (
+            plan is None
+            or semantic_asset is None
+            or not self.settings.llm.story_analysis_enabled
+            or self.settings.llm.story_shadow_mode
+            or self.settings.llm.semantic_weight <= 0.0
+        ):
+            return []
+        decisions = {
+            item.candidate_id: item
+            for item in semantic_asset.result.candidate_decisions
+        }
+        reference: list[tuple[HighlightClipWindow, float, str]] = []
+        for window in plan.windows:
+            candidate_id = semantic_reference_id(
+                "candidate",
+                plan.session_id,
+                plan.match_index,
+                window.started_at_seconds,
+                window.ended_at_seconds,
+                window.reason,
+            )
+            decision = decisions.get(candidate_id)
+            if decision is None:
+                continue
+            score = (
+                decision.importance_score
+                + decision.story_relevance_score
+                + decision.emotion_score
+                + decision.instructional_score
+                + decision.outcome_clarity_score
+            ) / 5.0
+            reference.append((window, score, decision.recommendation))
+        return reference
+
+    def _semantic_value_multiplier(self, window: HighlightClipWindow) -> float:
+        if not self._active_semantic_reference:
+            return 1.0
+        weighted_score = 0.0
+        overlap_total = 0.0
+        drop_overlap = 0.0
+        shorten_overlap = 0.0
+        for reference, score, recommendation in self._active_semantic_reference:
+            overlap = min(window.ended_at_seconds, reference.ended_at_seconds) - max(
+                window.started_at_seconds,
+                reference.started_at_seconds,
+            )
+            if overlap <= 0.0:
+                continue
+            weighted_score += score * overlap
+            overlap_total += overlap
+            if recommendation == "drop":
+                drop_overlap += overlap
+            elif recommendation == "shorten":
+                shorten_overlap += overlap
+        if overlap_total <= 0.0:
+            return 1.0
+        weight = self.settings.llm.semantic_weight
+        average_score = weighted_score / overlap_total
+        recommendation_penalty = (drop_overlap + shorten_overlap * 0.5) / overlap_total
+        return max(0.05, 1.0 + weight * average_score - weight * recommendation_penalty)
 
     @staticmethod
     def _span_cue_value(
@@ -2655,7 +2815,7 @@ class HighlightPlannerService:
         if not windows:
             return None
 
-        windows, budget_exception_reason = self._shrink_windows_to_budget(
+        windows, budget_exception_reason = self._finalize_condensed_windows(
             windows,
             kda_event_cues=kda_event_cues,
             speech_cues=meaningful_cues,
@@ -2698,4 +2858,32 @@ class HighlightPlannerService:
                 for cue in kda_event_cues
             ],
             created_at=datetime.now(timezone.utc),
+        )
+
+    def _finalize_condensed_windows(
+        self,
+        windows: list[HighlightClipWindow],
+        *,
+        kda_event_cues: list[ClassifiedCue],
+        speech_cues: list[_SrtCue],
+        classified_cues: list[ClassifiedCue],
+        target_duration_seconds: float,
+        match_duration_seconds: float,
+    ) -> tuple[list[HighlightClipWindow], str | None]:
+        """Finalize stable condensed candidates under deterministic hard constraints.
+
+        Everything before this boundary discovers, repairs, and bridges candidate
+        windows. Everything inside/after it is allowed to reduce value-ranked
+        content, but must preserve KDA spans, speech boundaries, edge anchors,
+        source-gap limits, and the persisted duration-budget exception contract.
+        Semantic weighting is intentionally injected at this boundary in a later
+        step so candidate discovery remains deterministic.
+        """
+        return self._shrink_windows_to_budget(
+            windows,
+            kda_event_cues=kda_event_cues,
+            speech_cues=speech_cues,
+            classified_cues=classified_cues,
+            target_duration_seconds=target_duration_seconds,
+            match_duration_seconds=match_duration_seconds,
         )

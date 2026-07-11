@@ -202,6 +202,36 @@ class QualityReportServiceTest(unittest.TestCase):
         codes = {warning.code for warning in result.rows[0].warnings}
         self.assertNotIn("plan_duration_above_budget", codes)
 
+    def test_teaser_omitted_reason_suppresses_min_teaser_warning(self) -> None:
+        session_id = "session-quality-report-no-teaser"
+        self._seed_publish_assets(
+            session_id,
+            include_teaser=False,
+            teaser_omitted_reason="no_high_confidence_teaser",
+        )
+
+        result = self._run_probe_service(session_id)
+
+        row = result.rows[0]
+        self.assertEqual(row.teaser_segment_count, 0)
+        codes = {warning.code for warning in row.warnings}
+        self.assertNotIn("teaser_segment_count_out_of_range", codes)
+
+    def test_zero_zoom_without_kda_events_does_not_warn(self) -> None:
+        session_id = "session-quality-report-no-zoom"
+        self._seed_publish_assets(
+            session_id,
+            include_zoom=False,
+        )
+
+        result = self._run_probe_service(session_id)
+
+        row = result.rows[0]
+        self.assertEqual(len(row.zoom_segments), 0)
+        self.assertEqual(row.kda_event_count, 0)
+        codes = {warning.code for warning in row.warnings}
+        self.assertNotIn("zoom_segment_count_out_of_range", codes)
+
     def _append_highlight_plan(
         self,
         session_id: str,
@@ -242,7 +272,14 @@ class QualityReportServiceTest(unittest.TestCase):
             kda_event_provider=lambda boundary: [],
         ).run(session_ids={session_id}, match_indices={2})
 
-    def _seed_publish_assets(self, session_id: str) -> tuple[Path, Path]:
+    def _seed_publish_assets(
+        self,
+        session_id: str,
+        *,
+        include_teaser: bool = True,
+        include_zoom: bool = True,
+        teaser_omitted_reason: str | None = None,
+    ) -> tuple[Path, Path]:
         now = datetime(2026, 7, 6, 12, 0, tzinfo=timezone.utc)
         subtitle_path = self.processed_root / session_id / "match-02.srt"
         subtitle_path.parent.mkdir(parents=True, exist_ok=True)
@@ -302,18 +339,28 @@ class QualityReportServiceTest(unittest.TestCase):
                 source_boundary_start_seconds=0.0,
                 source_boundary_end_seconds=120.0,
                 timeline=[
-                    TimelineSegment(
-                        role="teaser",
-                        source_start_seconds=100.0,
-                        source_end_seconds=110.0,
-                        transform=TimelineVideoTransform(
-                            kind="punch_in",
-                            scale=1.2,
-                            x_anchor=0.0,
-                            y_anchor=1.0,
-                            target="chat",
-                        ),
-                        reason="highlight_keyword",
+                    *(
+                        [
+                            TimelineSegment(
+                                role="teaser",
+                                source_start_seconds=100.0,
+                                source_end_seconds=110.0,
+                                transform=(
+                                    TimelineVideoTransform(
+                                        kind="punch_in",
+                                        scale=1.2,
+                                        x_anchor=0.0,
+                                        y_anchor=1.0,
+                                        target="chat",
+                                    )
+                                    if include_zoom
+                                    else None
+                                ),
+                                reason="highlight_keyword",
+                            )
+                        ]
+                        if include_teaser
+                        else []
                     ),
                     TimelineSegment(
                         role="main",
@@ -328,6 +375,7 @@ class QualityReportServiceTest(unittest.TestCase):
                         reason="condensed_key_event",
                     ),
                 ],
+                teaser_omitted_reason=teaser_omitted_reason,
                 audio_beds=[
                     AudioBed(
                         source_path="data/bgm/track.mp3",

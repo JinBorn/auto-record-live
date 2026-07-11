@@ -175,6 +175,10 @@ class EditPlanAsset(BaseModel):
     timeline: list[TimelineSegment]
     audio_beds: list[AudioBed] = Field(default_factory=list)
     sound_effects: list[SoundEffectHit] = Field(default_factory=list)
+    # Set when the plan intentionally ships without a teaser (no candidate
+    # passed the quality gate); additive, None on legacy assets. The quality
+    # report treats a recorded omission as detail, not a warning.
+    teaser_omitted_reason: str | None = None
     created_at: datetime
 
 
