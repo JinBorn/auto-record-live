@@ -1,0 +1,29 @@
+[highlights] starting
+[highlights] filters total_boundaries=27 matched_boundaries=1 session_ids=session-20260617073649-4b5ec478 match_indices=2
+[highlights] force replanning highlight plan session_id=session-20260617073649-4b5ec478 match_index=2
+[highlights] detected KDA key events session_id=session-20260617073649-4b5ec478 match_index=2 count=9
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.074 minimap=0.044 edge_var=0.081 ¡ú visual_activity=0.066
+[highlights] content_analyzer: match_duration=1360.0s highlight_event_density=0.115 narration_density=0.592 visual_activity=0.066 ¡ú content_density_score=0.315 ¡ú target_duration=571.4s (9.5min)
+[highlights] window_optimizer: starting with 348 cues, target_duration=571.4s (9.5min)
+[highlights] window_optimizer: Phase 1 generated 305 initial windows
+[highlights] window_optimizer: Phase 3.1 merged to 5 windows
+[highlights] window_optimizer: Phase 3.2 removed short windows, 5 remain
+[highlights] window_optimizer: Phase 3.3 added context padding
+[highlights] window_optimizer: Phase 3.4 removed boring gaps, 3 windows
+[highlights] window_optimizer: restored 8 missing key-event windows
+[highlights] window_optimizer: preserving near-full-span key-event windows for bridge pass largest_gap=156.2s
+[highlights] window_optimizer: inserted continuity bridge windows count=16 max_gap=45.0s
+[highlights] window_optimizer: Phase 4 adjusted to 746.7s (12.4min), 18 windows
+[highlights] window_optimizer: Phase 5 quality check passed
+[highlights] extended action resolution windows count=5 tail=40.0s gap=8.0s
+[highlights] protected speech boundaries count=7 tolerance=0.15s
+[highlights] capped condensed duration budget from=902.0s to=708.2s budget=714.2s target=571.4s
+[highlights] window_optimizer: inserted continuity bridge windows count=15 max_gap=45.0s
+[highlights] restored missing KDA event windows count=1
+[highlights] protected speech boundaries count=8 tolerance=0.15s
+[highlights] trimmed low-value internal gaps count=11 removed=71.7s threshold=8.0s keep=3.0s
+[highlights] protected speech boundaries count=1 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=2 max_gap=45.0s
+[highlights] budget shrink from=739.0s to=669.3s budget=714.2s target=571.4s exception=no
+[highlights] highlight plan written session_id=session-20260617073649-4b5ec478 match_index=2 windows=29
+[highlights] processed_matches=1 emitted_plans=1 skipped_missing_subtitle=0 skipped_no_plan=0

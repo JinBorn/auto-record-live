@@ -1,0 +1,381 @@
+[highlights] starting
+[highlights] filters total_boundaries=27 matched_boundaries=1 session_ids=session-20260617073649-4b5ec478 match_indices=2
+[highlights] force replanning highlight plan session_id=session-20260617073649-4b5ec478 match_index=2
+[highlights] detected KDA key events session_id=session-20260617073649-4b5ec478 match_index=2 count=9
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.074 minimap=0.044 edge_var=0.081 → visual_activity=0.066
+[highlights] content_analyzer: match_duration=1360.0s highlight_event_density=0.124 narration_density=0.889 visual_activity=0.066 → content_density_score=0.394 → target_duration=609.2s (10.2min)
+[highlights] window_optimizer: starting with 336 cues, target_duration=609.2s (10.2min)
+[highlights] window_optimizer: Phase 1 generated 293 initial windows
+[highlights] window_optimizer: Phase 3.1 merged to 3 windows
+[highlights] window_optimizer: Phase 3.2 removed short windows, 3 remain
+[highlights] window_optimizer: Phase 3.3 added context padding
+[highlights] window_optimizer: Phase 3.4 removed boring gaps, 3 windows
+[highlights] window_optimizer: restored 8 missing key-event windows
+[highlights] window_optimizer: preserving near-full-span key-event windows for bridge pass largest_gap=155.1s
+[highlights] window_optimizer: inserted continuity bridge windows count=14 max_gap=45.0s
+[highlights] window_optimizer: Phase 4 adjusted to 798.6s (13.3min), 17 windows
+[highlights] window_optimizer: Phase 5 quality check passed
+[highlights] trimmed silent KDA death gaps count=1 threshold=10.0s
+[highlights] extended action resolution windows count=6 tail=40.0s gap=8.0s
+[highlights] protected speech boundaries count=9 tolerance=0.15s
+[highlights] capped condensed duration budget from=971.6s to=755.4s budget=761.4s target=609.2s
+[highlights] protected speech boundaries count=2 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=14 max_gap=45.0s
+[highlights] restored missing KDA event windows count=1
+[highlights] protected speech boundaries count=9 tolerance=0.15s
+[highlights] trimmed low-value internal gaps count=4 removed=34.6s threshold=8.0s keep=3.0s
+[highlights] protected speech boundaries count=1 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=5 max_gap=45.0s
+[highlights] budget shrink from=834.4s to=708.5s budget=761.4s target=609.2s exception=no
+[highlights] highlight plan written session_id=session-20260617073649-4b5ec478 match_index=2 windows=22
+[highlights] processed_matches=1 emitted_plans=1 skipped_missing_subtitle=0 skipped_no_plan=0
+[highlights] starting
+[highlights] filters total_boundaries=27 matched_boundaries=3 session_ids=session-20260617073651-cf11bf9e match_indices=2,3,4
+[highlights] force replanning highlight plan session_id=session-20260617073651-cf11bf9e match_index=2
+[highlights] detected KDA key events session_id=session-20260617073651-cf11bf9e match_index=2 count=8
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.080 minimap=0.054 edge_var=0.094 → visual_activity=0.075
+[highlights] content_analyzer: match_duration=1280.0s highlight_event_density=0.113 narration_density=0.937 visual_activity=0.075 → content_density_score=0.402 → target_duration=612.8s (10.2min)
+[highlights] window_optimizer: starting with 314 cues, target_duration=612.8s (10.2min)
+[highlights] window_optimizer: Phase 1 generated 296 initial windows
+[highlights] window_optimizer: Phase 3.1 merged to 9 windows
+[highlights] window_optimizer: Phase 3.2 removed short windows, 9 remain
+[highlights] window_optimizer: Phase 3.3 added context padding
+[highlights] window_optimizer: Phase 3.4 removed boring gaps, 8 windows
+[highlights] window_optimizer: restored 6 missing key-event windows
+[highlights] window_optimizer: preserving dispersed key-event windows for bridge pass key_events=7 span=1020.0s target=612.8s
+[highlights] window_optimizer: inserted continuity bridge windows count=12 max_gap=45.0s
+[highlights] window_optimizer: Phase 4 adjusted to 819.4s (13.7min), 18 windows
+[highlights] window_optimizer: Phase 5 quality check passed
+[highlights] trimmed silent KDA death gaps count=1 threshold=10.0s
+[highlights] extended action resolution windows count=5 tail=40.0s gap=8.0s
+[highlights] protected speech boundaries count=10 tolerance=0.15s
+[highlights] capped condensed duration budget from=934.9s to=760.0s budget=766.0s target=612.8s
+[highlights] protected speech boundaries count=2 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=12 max_gap=45.0s
+[highlights] trimmed low-value internal gaps count=7 removed=69.3s threshold=8.0s keep=3.0s
+[highlights] protected speech boundaries count=10 tolerance=0.15s
+[highlights] protected speech boundaries count=8 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=3 max_gap=45.0s
+[highlights] budget shrink from=853.2s to=717.8s budget=766.0s target=612.8s exception=no
+[highlights] highlight plan written session_id=session-20260617073651-cf11bf9e match_index=2 windows=19
+[highlights] force replanning highlight plan session_id=session-20260617073651-cf11bf9e match_index=3
+[highlights] detected KDA key events session_id=session-20260617073651-cf11bf9e match_index=3 count=6
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.080 minimap=0.054 edge_var=0.094 → visual_activity=0.075
+[highlights] content_analyzer: match_duration=1650.0s highlight_event_density=0.095 narration_density=0.951 visual_activity=0.075 → content_density_score=0.396 → target_duration=610.2s (10.2min)
+[highlights] window_optimizer: starting with 487 cues, target_duration=610.2s (10.2min)
+[highlights] window_optimizer: Phase 1 generated 449 initial windows
+[highlights] window_optimizer: Phase 3.1 merged to 4 windows
+[highlights] window_optimizer: Phase 3.2 removed short windows, 4 remain
+[highlights] window_optimizer: Phase 3.3 added context padding
+[highlights] window_optimizer: Phase 3.4 removed boring gaps, 4 windows
+[highlights] window_optimizer: restored 4 missing key-event windows
+[highlights] window_optimizer: preserving dispersed key-event windows for bridge pass key_events=3 span=1565.0s target=610.2s
+[highlights] window_optimizer: inserted continuity bridge windows count=21 max_gap=45.0s
+[highlights] window_optimizer: Phase 4 adjusted to 724.0s (12.1min), 22 windows
+[highlights] window_optimizer: Phase 5 quality check passed
+[highlights] extended action resolution windows count=2 tail=40.0s gap=8.0s
+[highlights] protected speech boundaries count=16 tolerance=0.15s
+[highlights] capped condensed duration budget from=904.3s to=756.8s budget=762.8s target=610.2s
+[highlights] protected speech boundaries count=1 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=19 max_gap=45.0s
+[highlights] restored missing KDA event windows count=2
+[highlights] protected speech boundaries count=14 tolerance=0.15s
+[highlights] trimmed low-value internal gaps count=5 removed=35.3s threshold=8.0s keep=3.0s
+[highlights] protected speech boundaries count=5 tolerance=0.15s
+[highlights] protected speech boundaries count=13 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=8 max_gap=45.0s
+[highlights] budget shrink from=951.9s to=756.6s budget=762.8s target=610.2s exception=no
+[highlights] highlight plan written session_id=session-20260617073651-cf11bf9e match_index=3 windows=28
+[highlights] force replanning highlight plan session_id=session-20260617073651-cf11bf9e match_index=4
+[highlights] detected KDA key events session_id=session-20260617073651-cf11bf9e match_index=4 count=11
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.080 minimap=0.054 edge_var=0.094 → visual_activity=0.075
+[highlights] content_analyzer: match_duration=2235.0s highlight_event_density=0.091 narration_density=0.823 visual_activity=0.075 → content_density_score=0.363 → target_duration=594.0s (9.9min)
+[highlights] window_optimizer: starting with 529 cues, target_duration=594.0s (9.9min)
+[highlights] window_optimizer: Phase 1 generated 480 initial windows
+[highlights] window_optimizer: Phase 3.1 merged to 9 windows
+[highlights] window_optimizer: Phase 3.2 removed short windows, 9 remain
+[highlights] window_optimizer: Phase 3.3 added context padding
+[highlights] window_optimizer: Phase 3.4 removed boring gaps, 9 windows
+[highlights] window_optimizer: restored 13 missing key-event windows
+[highlights] window_optimizer: preserving dispersed key-event windows for bridge pass key_events=11 span=2100.0s target=594.0s
+[highlights] window_optimizer: inserted continuity bridge windows count=28 max_gap=45.0s
+[highlights] window_optimizer: Phase 4 adjusted to 936.0s (15.6min), 36 windows
+[highlights] window_optimizer: Phase 5 quality check passed
+[highlights] extended action resolution windows count=6 tail=40.0s gap=8.0s
+[highlights] protected speech boundaries count=26 tolerance=0.15s
+[highlights] capped condensed duration budget from=1199.0s to=736.6s budget=742.6s target=594.0s
+[highlights] protected speech boundaries count=2 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=32 max_gap=45.0s
+[highlights] restored missing KDA event windows count=4
+[highlights] protected speech boundaries count=20 tolerance=0.15s
+[highlights] trimmed low-value internal gaps count=10 removed=92.1s threshold=8.0s keep=3.0s
+[highlights] protected speech boundaries count=4 tolerance=0.15s
+[highlights] protected speech boundaries count=15 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=9 max_gap=45.0s
+[highlights] protected speech boundaries count=21 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=2 max_gap=45.0s
+[highlights] budget shrink from=970.4s to=743.2s budget=742.6s target=594.0s exception=no
+[highlights] highlight plan written session_id=session-20260617073651-cf11bf9e match_index=4 windows=47
+[highlights] processed_matches=3 emitted_plans=3 skipped_missing_subtitle=0 skipped_no_plan=0
+[highlights] starting
+[highlights] filters total_boundaries=27 matched_boundaries=3 session_ids=session-20260702092321-bc90812b match_indices=1,2,3
+[highlights] force replanning highlight plan session_id=session-20260702092321-bc90812b match_index=1
+[highlights] detected KDA key events session_id=session-20260702092321-bc90812b match_index=1 count=10
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.073 minimap=0.054 edge_var=0.083 → visual_activity=0.069
+[highlights] content_analyzer: match_duration=2095.0s highlight_event_density=0.074 narration_density=0.665 visual_activity=0.069 → content_density_score=0.314 → target_duration=570.7s (9.5min)
+[highlights] window_optimizer: starting with 251 cues, target_duration=570.7s (9.5min)
+[highlights] window_optimizer: Phase 1 generated 216 initial windows
+[highlights] window_optimizer: Phase 3.1 merged to 21 windows
+[highlights] window_optimizer: Phase 3.2 removed short windows, 21 remain
+[highlights] window_optimizer: Phase 3.3 added context padding
+[highlights] window_optimizer: Phase 3.4 removed boring gaps, 19 windows
+[highlights] window_optimizer: restored 6 missing key-event windows
+[highlights] window_optimizer: preserving dispersed key-event windows for bridge pass key_events=9 span=1827.5s target=570.7s
+[highlights] window_optimizer: inserted continuity bridge windows count=26 max_gap=45.0s
+[highlights] window_optimizer: Phase 4 adjusted to 1025.4s (17.1min), 31 windows
+[highlights] window_optimizer: Phase 5 quality check passed
+[highlights] trimmed silent KDA death gaps count=3 threshold=10.0s
+[highlights] extended action resolution windows count=6 tail=40.0s gap=8.0s
+[highlights] protected speech boundaries count=17 tolerance=0.15s
+[highlights] capped condensed duration budget from=1192.3s to=707.3s budget=713.3s target=570.7s
+[highlights] protected speech boundaries count=1 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=30 max_gap=45.0s
+[highlights] restored missing KDA event windows count=7
+[highlights] protected speech boundaries count=15 tolerance=0.15s
+[highlights] trimmed low-value internal gaps count=19 removed=125.6s threshold=8.0s keep=3.0s
+[highlights] protected speech boundaries count=1 tolerance=0.15s
+[highlights] protected speech boundaries count=13 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=10 max_gap=45.0s
+[highlights] budget shrink from=1210.0s to=801.9s budget=713.3s target=570.7s exception=yes
+[highlights] highlight plan written session_id=session-20260702092321-bc90812b match_index=1 windows=45
+[highlights] force replanning highlight plan session_id=session-20260702092321-bc90812b match_index=2
+[highlights] detected KDA key events session_id=session-20260702092321-bc90812b match_index=2 count=3
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.073 minimap=0.054 edge_var=0.083 → visual_activity=0.069
+[highlights] content_analyzer: match_duration=1220.0s highlight_event_density=0.079 narration_density=0.423 visual_activity=0.069 → content_density_score=0.256 → target_duration=542.7s (9.0min)
+[highlights] window_optimizer: starting with 177 cues, target_duration=542.7s (9.0min)
+[highlights] window_optimizer: Phase 1 generated 140 initial windows
+[highlights] window_optimizer: Phase 3.1 merged to 19 windows
+[highlights] window_optimizer: Phase 3.2 removed short windows, 19 remain
+[highlights] window_optimizer: Phase 3.3 added context padding
+[highlights] window_optimizer: Phase 3.4 removed boring gaps, 19 windows
+[highlights] window_optimizer: preserving dispersed key-event windows for bridge pass key_events=5 span=1170.0s target=542.7s
+[highlights] window_optimizer: inserted continuity bridge windows count=17 max_gap=45.0s
+[highlights] window_optimizer: Phase 4 adjusted to 592.3s (9.9min), 20 windows
+[highlights] window_optimizer: Phase 5 quality check passed
+[highlights] protected speech boundaries count=5 tolerance=0.15s
+[highlights] trimmed low-value internal gaps count=17 removed=102.9s threshold=8.0s keep=3.0s
+[highlights] protected speech boundaries count=1 tolerance=0.15s
+[highlights] highlight plan written session_id=session-20260702092321-bc90812b match_index=2 windows=37
+[highlights] force replanning highlight plan session_id=session-20260702092321-bc90812b match_index=3
+[highlights] detected KDA key events session_id=session-20260702092321-bc90812b match_index=3 count=4
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.073 minimap=0.054 edge_var=0.083 → visual_activity=0.069
+[highlights] content_analyzer: match_duration=1355.0s highlight_event_density=0.071 narration_density=0.458 visual_activity=0.069 → content_density_score=0.260 → target_duration=544.9s (9.1min)
+[highlights] window_optimizer: starting with 138 cues, target_duration=544.9s (9.1min)
+[highlights] window_optimizer: Phase 1 generated 125 initial windows
+[highlights] window_optimizer: Phase 3.1 merged to 19 windows
+[highlights] window_optimizer: Phase 3.2 removed short windows, 19 remain
+[highlights] window_optimizer: Phase 3.3 added context padding
+[highlights] window_optimizer: Phase 3.4 removed boring gaps, 19 windows
+[highlights] window_optimizer: preserving dispersed key-event windows for bridge pass key_events=5 span=1316.8s target=544.9s
+[highlights] window_optimizer: inserted continuity bridge windows count=14 max_gap=45.0s
+[highlights] window_optimizer: Phase 4 adjusted to 569.9s (9.5min), 24 windows
+[highlights] window_optimizer: Phase 5 quality check passed
+[highlights] trimmed post-death low-value waits dropped=2 shifted=0 window=120.0s
+[highlights] protected speech boundaries count=6 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=4 max_gap=45.0s
+[highlights] trimmed low-value internal gaps count=13 removed=51.2s threshold=8.0s keep=3.0s
+[highlights] protected speech boundaries count=2 tolerance=0.15s
+[highlights] highlight plan written session_id=session-20260702092321-bc90812b match_index=3 windows=37
+[highlights] processed_matches=3 emitted_plans=3 skipped_missing_subtitle=0 skipped_no_plan=0
+[copywriter] llm semantic starting
+[copywriter] llm semantic asset written session_id=session-20260617073649-4b5ec478 match_index=2 usage=prompt_tokens=6124,completion_tokens=835,total_tokens=6959
+[copywriter] llm_semantic generated=1 cached=0 failed=0
+[copywriter] starting
+[copywriter] filters total_subtitles=54 matched_subtitles=1 session_ids=session-20260617073649-4b5ec478 match_indices=2
+[copywriter] force reprocessing copy output session_id=session-20260617073649-4b5ec478 match_index=2
+[copywriter] copy asset written session_id=session-20260617073649-4b5ec478 match_index=2
+[copywriter] processed_copies=1
+[copywriter] llm semantic starting
+[copywriter] llm semantic asset written session_id=session-20260617073651-cf11bf9e match_index=2 usage=prompt_tokens=6159,completion_tokens=1381,total_tokens=7540
+[copywriter] llm semantic asset written session_id=session-20260617073651-cf11bf9e match_index=3 usage=prompt_tokens=6455,completion_tokens=975,total_tokens=7430
+[copywriter] llm semantic asset written session_id=session-20260617073651-cf11bf9e match_index=4 usage=prompt_tokens=7179,completion_tokens=895,total_tokens=8074
+[copywriter] llm_semantic generated=3 cached=0 failed=0
+[copywriter] starting
+[copywriter] filters total_subtitles=54 matched_subtitles=3 session_ids=session-20260617073651-cf11bf9e match_indices=2,3,4
+[copywriter] force reprocessing copy output session_id=session-20260617073651-cf11bf9e match_index=2
+[copywriter] copy asset written session_id=session-20260617073651-cf11bf9e match_index=2
+[copywriter] force reprocessing copy output session_id=session-20260617073651-cf11bf9e match_index=3
+[copywriter] copy asset written session_id=session-20260617073651-cf11bf9e match_index=3
+[copywriter] force reprocessing copy output session_id=session-20260617073651-cf11bf9e match_index=4
+[copywriter] copy asset written session_id=session-20260617073651-cf11bf9e match_index=4
+[copywriter] processed_copies=3
+[copywriter] llm semantic starting
+[copywriter] llm semantic asset written session_id=session-20260702092321-bc90812b match_index=1 usage=prompt_tokens=6929,completion_tokens=1863,total_tokens=8792
+[copywriter] llm semantic asset written session_id=session-20260702092321-bc90812b match_index=2 usage=prompt_tokens=6611,completion_tokens=529,total_tokens=7140
+[copywriter] llm semantic asset written session_id=session-20260702092321-bc90812b match_index=3 usage=prompt_tokens=6003,completion_tokens=1454,total_tokens=7457
+[copywriter] llm_semantic generated=3 cached=0 failed=0
+[copywriter] starting
+[copywriter] filters total_subtitles=54 matched_subtitles=3 session_ids=session-20260702092321-bc90812b match_indices=1,2,3
+[copywriter] force reprocessing copy output session_id=session-20260702092321-bc90812b match_index=1
+[copywriter] copy asset written session_id=session-20260702092321-bc90812b match_index=1
+[copywriter] force reprocessing copy output session_id=session-20260702092321-bc90812b match_index=2
+[copywriter] copy asset written session_id=session-20260702092321-bc90812b match_index=2
+[copywriter] force reprocessing copy output session_id=session-20260702092321-bc90812b match_index=3
+[copywriter] copy asset written session_id=session-20260702092321-bc90812b match_index=3
+[copywriter] processed_copies=3
+[editing] starting
+[editing] filters total_boundaries=27 matched_boundaries=1 session_ids=session-20260617073649-4b5ec478 match_indices=2
+[editing] rejected semantic teaser recommendations count=1 reason=no_highlight_anchor
+[editing] force replanning edit plan session_id=session-20260617073649-4b5ec478 match_index=2
+[editing] rejected semantic teaser recommendations count=1 reason=no_highlight_anchor
+[editing] bgm library loaded path=data\bgm\library.json tracks=20 total_items=20 skipped_non_object=0 skipped_missing_path=0 skipped_missing_file=0
+[editing] selected bgm library tracks session_id=session-20260617073649-4b5ec478 match_index=2 tracks=data\bgm\tracks\Town.mp3,data\bgm\tracks\Not The One (Original Version).mp3,data\bgm\tracks\The Real Slim Shady - Eminem.mp3
+[editing] sfx library loaded path=data\sfx\library.json tracks=7 total_items=7 skipped_non_object=0 skipped_missing_category=0 skipped_missing_path=0 skipped_missing_file=0
+[editing] edit plan written session_id=session-20260617073649-4b5ec478 match_index=2 segments=31
+[editing] processed_matches=1 emitted_plans=1 skipped_incomplete=0 skipped_missing_highlight=0 skipped_invalid_highlight=0 skipped_no_plan=0 emitted_without_teaser=0
+[editing] starting
+[editing] filters total_boundaries=27 matched_boundaries=3 session_ids=session-20260617073651-cf11bf9e match_indices=2,3,4
+[editing] rejected semantic teaser recommendations count=1 reason=no_highlight_anchor
+[editing] force replanning edit plan session_id=session-20260617073651-cf11bf9e match_index=2
+[editing] rejected semantic teaser recommendations count=1 reason=no_highlight_anchor
+[editing] bgm library loaded path=data\bgm\library.json tracks=20 total_items=20 skipped_non_object=0 skipped_missing_path=0 skipped_missing_file=0
+[editing] selected bgm library tracks session_id=session-20260617073651-cf11bf9e match_index=2 tracks=data\bgm\tracks\Town.mp3,data\bgm\tracks\Not The One (Original Version).mp3,data\bgm\tracks\Otto Croy - Odjbox.mp3
+[editing] sfx library loaded path=data\sfx\library.json tracks=7 total_items=7 skipped_non_object=0 skipped_missing_category=0 skipped_missing_path=0 skipped_missing_file=0
+[editing] edit plan written session_id=session-20260617073651-cf11bf9e match_index=2 segments=27
+[editing] rejected semantic teaser recommendations count=1 reason=no_highlight_anchor
+[editing] force replanning edit plan session_id=session-20260617073651-cf11bf9e match_index=3
+[editing] rejected semantic teaser recommendations count=1 reason=no_highlight_anchor
+[editing] selected bgm library tracks session_id=session-20260617073651-cf11bf9e match_index=3 tracks=data\bgm\tracks\Westway-央视节目《动物世界》片尾曲 - SKY.mp3,data\bgm\tracks\Monkeybiz - DJ大力.mp3,data\bgm\tracks\We No Speak Americano - Yolanda Be Cool&Dcup.mp3
+[editing] edit plan written session_id=session-20260617073651-cf11bf9e match_index=3 segments=37
+[editing] rejected semantic teaser recommendations count=1 reason=no_highlight_anchor
+[editing] force replanning edit plan session_id=session-20260617073651-cf11bf9e match_index=4
+[editing] rejected semantic teaser recommendations count=1 reason=no_highlight_anchor
+[editing] selected bgm library tracks session_id=session-20260617073651-cf11bf9e match_index=4 tracks=data\bgm\tracks\のんびりした場所 - 西郷憲一郎.mp3,data\bgm\tracks\Not The One (Original Version).mp3,data\bgm\tracks\The Real Slim Shady - Eminem.mp3
+[editing] edit plan written session_id=session-20260617073651-cf11bf9e match_index=4 segments=55
+[editing] processed_matches=3 emitted_plans=3 skipped_incomplete=0 skipped_missing_highlight=0 skipped_invalid_highlight=0 skipped_no_plan=0 emitted_without_teaser=0
+[editing] starting
+[editing] filters total_boundaries=27 matched_boundaries=3 session_ids=session-20260702092321-bc90812b match_indices=1,2,3
+[editing] rejected semantic teaser recommendations count=1 reason=no_highlight_anchor
+[editing] force replanning edit plan session_id=session-20260702092321-bc90812b match_index=1
+[editing] rejected semantic teaser recommendations count=1 reason=no_highlight_anchor
+[editing] bgm library loaded path=data\bgm\library.json tracks=20 total_items=20 skipped_non_object=0 skipped_missing_path=0 skipped_missing_file=0
+[editing] selected bgm library tracks session_id=session-20260702092321-bc90812b match_index=1 tracks=data\bgm\tracks\Town.mp3,data\bgm\tracks\Not The One (Original Version).mp3,data\bgm\tracks\Otto Croy - Odjbox.mp3
+[editing] sfx library loaded path=data\sfx\library.json tracks=7 total_items=7 skipped_non_object=0 skipped_missing_category=0 skipped_missing_path=0 skipped_missing_file=0
+[editing] edit plan written session_id=session-20260702092321-bc90812b match_index=1 segments=53
+[editing] rejected semantic teaser recommendations count=2 reason=no_highlight_anchor
+[editing] force replanning edit plan session_id=session-20260702092321-bc90812b match_index=2
+[editing] rejected semantic teaser recommendations count=2 reason=no_highlight_anchor
+[editing] selected bgm library tracks session_id=session-20260702092321-bc90812b match_index=2 tracks=data\bgm\tracks\のんびりした場所 - 西郷憲一郎.mp3,data\bgm\tracks\The Real Slim Shady - Eminem.mp3
+[editing] edit plan written session_id=session-20260702092321-bc90812b match_index=2 segments=45
+[editing] rejected semantic teaser recommendations count=1 reason=no_highlight_anchor
+[editing] force replanning edit plan session_id=session-20260702092321-bc90812b match_index=3
+[editing] rejected semantic teaser recommendations count=1 reason=no_highlight_anchor
+[editing] selected bgm library tracks session_id=session-20260702092321-bc90812b match_index=3 tracks=data\bgm\tracks\Town.mp3,data\bgm\tracks\The Real Slim Shady - Eminem.mp3
+[editing] edit plan written session_id=session-20260702092321-bc90812b match_index=3 segments=46
+[editing] processed_matches=3 emitted_plans=3 skipped_incomplete=0 skipped_missing_highlight=0 skipped_invalid_highlight=0 skipped_no_plan=0 emitted_without_teaser=0
+[exporter] starting
+[exporter] ffmpeg_enabled=True
+[exporter] ffmpeg_video_codec=h264
+[exporter] burn_subtitles=1
+[exporter] use_ass_subtitles=1
+[exporter] use_edit_plans=1
+[exporter] use_highlight_plans=1
+[exporter] filters total_boundaries=27 matched_boundaries=1 session_ids=session-20260617073649-4b5ec478 match_indices=2
+[exporter] force reprocessing export output session_id=session-20260617073649-4b5ec478 match_index=2
+[exporter] edit plan export session_id=session-20260617073649-4b5ec478 match_index=2 segments=31 teaser_inputs=4
+[exporter] export asset written session_id=session-20260617073649-4b5ec478 match_index=2
+[exporter] processed_exports=1
+[exporter] starting
+[exporter] ffmpeg_enabled=True
+[exporter] ffmpeg_video_codec=h264
+[exporter] burn_subtitles=1
+[exporter] use_ass_subtitles=1
+[exporter] use_edit_plans=1
+[exporter] use_highlight_plans=1
+[exporter] filters total_boundaries=27 matched_boundaries=3 session_ids=session-20260617073651-cf11bf9e match_indices=2,3,4
+[exporter] force reprocessing export output session_id=session-20260617073651-cf11bf9e match_index=2
+[exporter] edit plan export session_id=session-20260617073651-cf11bf9e match_index=2 segments=27 teaser_inputs=1
+[exporter] export asset written session_id=session-20260617073651-cf11bf9e match_index=2
+[exporter] force reprocessing export output session_id=session-20260617073651-cf11bf9e match_index=3
+[exporter] edit plan export session_id=session-20260617073651-cf11bf9e match_index=3 segments=37 teaser_inputs=2
+[exporter] export asset written session_id=session-20260617073651-cf11bf9e match_index=3
+[exporter] force reprocessing export output session_id=session-20260617073651-cf11bf9e match_index=4
+[exporter] edit plan export session_id=session-20260617073651-cf11bf9e match_index=4 segments=55 teaser_inputs=3
+[exporter] export asset written session_id=session-20260617073651-cf11bf9e match_index=4
+[exporter] processed_exports=3
+[exporter] starting
+[exporter] ffmpeg_enabled=True
+[exporter] ffmpeg_video_codec=h264
+[exporter] burn_subtitles=1
+[exporter] use_ass_subtitles=1
+[exporter] use_edit_plans=1
+[exporter] use_highlight_plans=1
+[exporter] filters total_boundaries=27 matched_boundaries=3 session_ids=session-20260702092321-bc90812b match_indices=1,2,3
+[exporter] force reprocessing export output session_id=session-20260702092321-bc90812b match_index=1
+[exporter] edit plan export session_id=session-20260702092321-bc90812b match_index=1 segments=53 teaser_inputs=1
+[exporter] export asset written session_id=session-20260702092321-bc90812b match_index=1
+[exporter] force reprocessing export output session_id=session-20260702092321-bc90812b match_index=2
+[exporter] edit plan export session_id=session-20260702092321-bc90812b match_index=2 segments=45 teaser_inputs=3
+[exporter] export asset written session_id=session-20260702092321-bc90812b match_index=2
+[exporter] force reprocessing export output session_id=session-20260702092321-bc90812b match_index=3
+[exporter] edit plan export session_id=session-20260702092321-bc90812b match_index=3 segments=46 teaser_inputs=4
+[exporter] export asset written session_id=session-20260702092321-bc90812b match_index=3
+[exporter] processed_exports=3
+[copywriter] llm semantic starting
+[copywriter] llm_semantic generated=0 cached=1 failed=0
+[copywriter] starting
+[copywriter] filters total_subtitles=54 matched_subtitles=1 session_ids=session-20260617073649-4b5ec478 match_indices=2
+[copywriter] processed_copies=0
+[copywriter] llm semantic starting
+[copywriter] llm_semantic generated=0 cached=3 failed=0
+[copywriter] starting
+[copywriter] filters total_subtitles=54 matched_subtitles=3 session_ids=session-20260617073651-cf11bf9e match_indices=2,3,4
+[copywriter] processed_copies=0
+[copywriter] llm semantic starting
+[copywriter] llm_semantic generated=0 cached=3 failed=0
+[copywriter] starting
+[copywriter] filters total_subtitles=54 matched_subtitles=3 session_ids=session-20260702092321-bc90812b match_indices=1,2,3
+[copywriter] reprocessing missing publishing package artifacts session_id=session-20260702092321-bc90812b match_index=2
+[copywriter] copy asset written session_id=session-20260702092321-bc90812b match_index=2
+[copywriter] reprocessing missing publishing package artifacts session_id=session-20260702092321-bc90812b match_index=3
+[copywriter] copy asset written session_id=session-20260702092321-bc90812b match_index=3
+[copywriter] processed_copies=2
+[quality-report] starting
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.074 minimap=0.044 edge_var=0.081 → visual_activity=0.066
+[highlights] content_analyzer: match_duration=1360.0s highlight_event_density=0.124 narration_density=0.889 visual_activity=0.066 → content_density_score=0.394 → target_duration=609.2s (10.2min)
+[quality-report] reports=1 warnings=0
+## Quality Report
+
+| Sample | Export min | Bitrate | Res | Target min | Budget min | Plan min | Max source gap | KDA uncovered | Subtitle active | No-sub gaps | Teaser | BGM | SFX | Zoom | Warnings |
+|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|
+| `session-20260617073649-4b5ec478` m02 | 12.58 | 16.16 | 1920x1080 | 10.15 | 12.69 | 12.58 | 45.0s | 0/9 | 57.3% | 8, max 17.2s | 2 | 4 | 8 | 3 | 0 |
+[quality-report] starting
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.080 minimap=0.054 edge_var=0.094 → visual_activity=0.075
+[highlights] content_analyzer: match_duration=1280.0s highlight_event_density=0.113 narration_density=0.937 visual_activity=0.075 → content_density_score=0.402 → target_duration=612.8s (10.2min)
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.080 minimap=0.054 edge_var=0.094 → visual_activity=0.075
+[highlights] content_analyzer: match_duration=1650.0s highlight_event_density=0.095 narration_density=0.951 visual_activity=0.075 → content_density_score=0.396 → target_duration=610.2s (10.2min)
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.080 minimap=0.054 edge_var=0.094 → visual_activity=0.075
+[highlights] content_analyzer: match_duration=2235.0s highlight_event_density=0.091 narration_density=0.823 visual_activity=0.075 → content_density_score=0.363 → target_duration=594.0s (9.9min)
+[quality-report] reports=3 warnings=0
+## Quality Report
+
+| Sample | Export min | Bitrate | Res | Target min | Budget min | Plan min | Max source gap | KDA uncovered | Subtitle active | No-sub gaps | Teaser | BGM | SFX | Zoom | Warnings |
+|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|
+| `session-20260617073651-cf11bf9e` m02 | 12.74 | 16.16 | 1920x1080 | 10.21 | 12.77 | 12.73 | 45.0s | 0/8 | 67.4% | 9, max 25.1s | 1 | 3 | 8 | 3 | 0 |
+| `session-20260617073651-cf11bf9e` m03 | 13.38 | 16.15 | 1920x1080 | 10.17 | 12.71 | 13.38 | 45.0s | 0/6 | 64.1% | 8, max 44.0s | 2 | 4 | 4 | 3 | 0 |
+| `session-20260617073651-cf11bf9e` m04 | 13.16 | 16.15 | 1920x1080 | 9.90 | 12.38 | 13.16 | 45.0s | 0/11 | 62.1% | 11, max 32.7s | 1 | 3 | 8 | 3 | 0 |
+[quality-report] starting
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.073 minimap=0.054 edge_var=0.083 → visual_activity=0.069
+[highlights] content_analyzer: match_duration=2095.0s highlight_event_density=0.074 narration_density=0.665 visual_activity=0.069 → content_density_score=0.314 → target_duration=570.7s (9.5min)
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.073 minimap=0.054 edge_var=0.083 → visual_activity=0.069
+[highlights] content_analyzer: match_duration=1220.0s highlight_event_density=0.079 narration_density=0.423 visual_activity=0.069 → content_density_score=0.256 → target_duration=542.7s (9.0min)
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.073 minimap=0.054 edge_var=0.083 → visual_activity=0.069
+[highlights] content_analyzer: match_duration=1355.0s highlight_event_density=0.071 narration_density=0.458 visual_activity=0.069 → content_density_score=0.260 → target_duration=544.9s (9.1min)
+[quality-report] reports=3 warnings=2
+## Quality Report
+
+| Sample | Export min | Bitrate | Res | Target min | Budget min | Plan min | Max source gap | KDA uncovered | Subtitle active | No-sub gaps | Teaser | BGM | SFX | Zoom | Warnings |
+|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|
+| `session-20260702092321-bc90812b` m01 | 13.82 | 16.15 | 1920x1080 | 9.51 | 11.89 | 13.82 | 45.0s | 0/10 | 55.1% | 12, max 40.3s | 1 | 5 | 4 | 3 | 0 |
+| `session-20260702092321-bc90812b` m02 | 9.15 | 16.15 | 1920x1080 | 9.04 | 11.31 | 9.15 | 45.0s | 0/3 | 52.0% | 9, max 14.0s | 1 | 3 | 3 | 3 | 1 |
+| `session-20260702092321-bc90812b` m03 | 9.34 | 16.15 | 1920x1080 | 9.08 | 11.35 | 9.34 | 45.0s | 0/4 | 53.1% | 11, max 21.6s | 2 | 3 | 4 | 3 | 1 |

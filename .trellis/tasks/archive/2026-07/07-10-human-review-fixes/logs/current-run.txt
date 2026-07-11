@@ -1,0 +1,9 @@
+stamp=20260711-100316
+subtitles_pid=21820
+pipeline_pid=20524
+subtitles_stdout=.trellis/tasks/07-10-human-review-fixes/logs/subtitles-20260711-100316.stdout.log
+subtitles_stderr=.trellis/tasks/07-10-human-review-fixes/logs/subtitles-20260711-100316.stderr.log
+pipeline_stdout=.trellis/tasks/07-10-human-review-fixes/logs/pipeline-20260711-100316.stdout.log
+pipeline_stderr=.trellis/tasks/07-10-human-review-fixes/logs/pipeline-20260711-100316.stderr.log
+monitor_pid=21604
+monitor_log=.trellis/tasks/07-10-human-review-fixes/logs/monitor-20260711-100316.log

@@ -1,0 +1,307 @@
+=== SAMPLE START session=session-20260617073649-4b5ec478 match=2 ===
+[subtitles] starting
+[subtitles] provider=faster-whisper model=medium
+[subtitles] filters summary total_boundaries=27 matched_boundaries=1
+[subtitles] force reprocessing subtitle output session_id=session-20260617073649-4b5ec478 match_index=2
+[subtitles] audio preprocess written session_id=session-20260617073649-4b5ec478 match_index=2
+[subtitles] configured CUDA DLL directories C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin,C:\Program Files\NVIDIA\CUDNN\v9.12\bin\12.9
+[subtitles] subtitle asset written session_id=session-20260617073649-4b5ec478 match_index=2
+[subtitles] processed_matches=1
+[segmenter] stage-signals-from-subtitles starting
+[segmenter] stage-signals-from-subtitles filter summary total_assets=56 matched_assets=7
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260617073649-4b5ec478 match_index=2 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260617073649-4b5ec478 match_index=2 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260617073649-4b5ec478 match_index=2 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260617073649-4b5ec478 match_index=2 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260617073649-4b5ec478 match_index=2 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260617073649-4b5ec478 match_index=2 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260617073649-4b5ec478 match_index=2 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed_subtitles=7 emitted_signals=0 matched_assets=7 skipped_already_processed=0 skipped_missing_subtitle=0
+[highlights] starting
+[highlights] filters total_boundaries=27 matched_boundaries=1 session_ids=session-20260617073649-4b5ec478 match_indices=2
+[highlights] force replanning highlight plan session_id=session-20260617073649-4b5ec478 match_index=2
+[highlights] detected KDA key events session_id=session-20260617073649-4b5ec478 match_index=2 count=9
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.074 minimap=0.044 edge_var=0.081 → visual_activity=0.066
+[highlights] content_analyzer: match_duration=1360.0s highlight_event_density=0.115 narration_density=0.591 visual_activity=0.066 → content_density_score=0.315 → target_duration=571.2s (9.5min)
+[highlights] window_optimizer: starting with 353 cues, target_duration=571.2s (9.5min)
+[highlights] window_optimizer: Phase 1 generated 310 initial windows
+[highlights] window_optimizer: Phase 3.1 merged to 5 windows
+[highlights] window_optimizer: Phase 3.2 removed short windows, 5 remain
+[highlights] window_optimizer: Phase 3.3 added context padding
+[highlights] window_optimizer: Phase 3.4 removed boring gaps, 3 windows
+[highlights] window_optimizer: restored 8 missing key-event windows
+[highlights] window_optimizer: preserving near-full-span key-event windows for bridge pass largest_gap=156.2s
+[highlights] window_optimizer: inserted continuity bridge windows count=16 max_gap=45.0s
+[highlights] window_optimizer: Phase 4 adjusted to 745.7s (12.4min), 18 windows
+[highlights] window_optimizer: Phase 5 quality check passed
+[highlights] extended action resolution windows count=5 tail=40.0s gap=8.0s
+[highlights] protected speech boundaries count=7 tolerance=0.15s
+[highlights] capped condensed duration budget from=901.2s to=708.0s budget=714.0s target=571.2s
+[highlights] window_optimizer: inserted continuity bridge windows count=15 max_gap=45.0s
+[highlights] restored missing KDA event windows count=1
+[highlights] protected speech boundaries count=8 tolerance=0.15s
+[highlights] trimmed low-value internal gaps count=11 removed=71.7s threshold=8.0s keep=3.0s
+[highlights] window_optimizer: inserted continuity bridge windows count=2 max_gap=45.0s
+[highlights] budget shrink from=735.9s to=666.4s budget=714.0s target=571.2s exception=no
+[highlights] highlight plan written session_id=session-20260617073649-4b5ec478 match_index=2 windows=29
+[highlights] processed_matches=1 emitted_plans=1 skipped_missing_subtitle=0 skipped_no_plan=0
+[copywriter] llm semantic starting
+[copywriter] llm semantic retry attempt=1/2 reason=ReadTimeout
+[copywriter] llm semantic asset written session_id=session-20260617073649-4b5ec478 match_index=2 usage=prompt_tokens=11206,completion_tokens=2224,total_tokens=13430
+[copywriter] llm_semantic generated=1 cached=0 failed=0
+[copywriter] starting
+[copywriter] filters total_subtitles=56 matched_subtitles=1 session_ids=session-20260617073649-4b5ec478 match_indices=2
+[copywriter] force reprocessing copy output session_id=session-20260617073649-4b5ec478 match_index=2
+[copywriter] copy asset written session_id=session-20260617073649-4b5ec478 match_index=2
+[copywriter] processed_copies=1
+[editing] starting
+[editing] filters total_boundaries=27 matched_boundaries=1 session_ids=session-20260617073649-4b5ec478 match_indices=2
+[editing] bgm library loaded path=data\bgm\library.json tracks=20 total_items=20 skipped_non_object=0 skipped_missing_path=0 skipped_missing_file=0
+[editing] selected bgm library tracks session_id=session-20260617073649-4b5ec478 match_index=2 tracks=data\bgm\tracks\のんびりした場所 - 西郷憲一郎.mp3,data\bgm\tracks\Not The One (Original Version).mp3,data\bgm\tracks\The Real Slim Shady - Eminem.mp3
+[editing] sfx library loaded path=data\sfx\library.json tracks=7 total_items=7 skipped_non_object=0 skipped_missing_category=0 skipped_missing_path=0 skipped_missing_file=0
+[editing] force replanning edit plan session_id=session-20260617073649-4b5ec478 match_index=2
+[editing] edit plan omits teaser session_id=session-20260617073649-4b5ec478 match_index=2 reason=no_strong_story
+[editing] selected bgm library tracks session_id=session-20260617073649-4b5ec478 match_index=2 tracks=data\bgm\tracks\のんびりした場所 - 西郷憲一郎.mp3,data\bgm\tracks\Not The One (Original Version).mp3,data\bgm\tracks\The Real Slim Shady - Eminem.mp3
+[editing] edit plan written session_id=session-20260617073649-4b5ec478 match_index=2 segments=35
+[editing] processed_matches=1 emitted_plans=1 skipped_incomplete=0 skipped_missing_highlight=0 skipped_invalid_highlight=0 skipped_no_plan=0 emitted_without_teaser=1
+[exporter] starting
+[exporter] ffmpeg_enabled=True
+[exporter] ffmpeg_video_codec=h264
+[exporter] burn_subtitles=1
+[exporter] use_ass_subtitles=1
+[exporter] use_edit_plans=1
+[exporter] use_highlight_plans=1
+[exporter] filters total_boundaries=27 matched_boundaries=1 session_ids=session-20260617073649-4b5ec478 match_indices=2
+[exporter] force reprocessing export output session_id=session-20260617073649-4b5ec478 match_index=2
+[exporter] edit plan export session_id=session-20260617073649-4b5ec478 match_index=2 segments=35 teaser_inputs=0
+[exporter] export asset written session_id=session-20260617073649-4b5ec478 match_index=2
+[exporter] processed_exports=1
+[copywriter] llm semantic starting
+[copywriter] llm semantic retry attempt=1/2 reason=ReadTimeout
+[copywriter] llm semantic retry attempt=2/2 reason=ReadTimeout
+[copywriter] llm semantic fallback session_id=session-20260617073649-4b5ec478 match_index=2 reason=ReadTimeout
+[copywriter] llm_semantic generated=0 cached=0 failed=1
+[copywriter] starting
+[copywriter] filters total_subtitles=56 matched_subtitles=1 session_ids=session-20260617073649-4b5ec478 match_indices=2
+[copywriter] force reprocessing copy output session_id=session-20260617073649-4b5ec478 match_index=2
+[copywriter] copy asset written session_id=session-20260617073649-4b5ec478 match_index=2
+[copywriter] processed_copies=1
+[quality-report] starting
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.074 minimap=0.044 edge_var=0.081 → visual_activity=0.066
+[highlights] content_analyzer: match_duration=1360.0s highlight_event_density=0.115 narration_density=0.591 visual_activity=0.066 → content_density_score=0.315 → target_duration=571.2s (9.5min)
+[quality-report] reports=1 warnings=0
+## Quality Report
+
+| Sample | Export min | Bitrate | Res | Target min | Budget min | Plan min | Max source gap | KDA uncovered | Subtitle active | No-sub gaps | Teaser | BGM | SFX | Zoom | Warnings |
+|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|
+| `session-20260617073649-4b5ec478` m02 | 11.11 | 8.15 | 1920x1080 | 9.52 | 11.90 | 11.11 | 45.0s | 0/9 | 40.3% | 8, max 18.6s | 0 | 5 | 6 | 3 | 0 |
+=== SAMPLE DONE session=session-20260617073649-4b5ec478 match=2 ===
+=== SAMPLE START session=session-20260617073651-cf11bf9e match=3 ===
+[subtitles] starting
+[subtitles] provider=faster-whisper model=medium
+[subtitles] filters summary total_boundaries=27 matched_boundaries=1
+[subtitles] force reprocessing subtitle output session_id=session-20260617073651-cf11bf9e match_index=3
+[subtitles] audio preprocess written session_id=session-20260617073651-cf11bf9e match_index=3
+[subtitles] configured CUDA DLL directories C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin,C:\Program Files\NVIDIA\CUDNN\v9.12\bin\12.9
+[subtitles] subtitle asset written session_id=session-20260617073651-cf11bf9e match_index=3
+[subtitles] processed_matches=1
+[segmenter] stage-signals-from-subtitles starting
+[segmenter] stage-signals-from-subtitles filter summary total_assets=57 matched_assets=6
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260617073651-cf11bf9e match_index=3 signals=1 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260617073651-cf11bf9e match_index=3 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260617073651-cf11bf9e match_index=3 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260617073651-cf11bf9e match_index=3 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260617073651-cf11bf9e match_index=3 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260617073651-cf11bf9e match_index=3 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed_subtitles=6 emitted_signals=1 matched_assets=6 skipped_already_processed=0 skipped_missing_subtitle=0
+[highlights] starting
+[highlights] filters total_boundaries=27 matched_boundaries=1 session_ids=session-20260617073651-cf11bf9e match_indices=3
+[highlights] force replanning highlight plan session_id=session-20260617073651-cf11bf9e match_index=3
+[highlights] detected KDA key events session_id=session-20260617073651-cf11bf9e match_index=3 count=6
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.080 minimap=0.054 edge_var=0.094 → visual_activity=0.075
+[highlights] content_analyzer: match_duration=1650.0s highlight_event_density=0.109 narration_density=0.686 visual_activity=0.075 → content_density_score=0.337 → target_duration=581.9s (9.7min)
+[highlights] window_optimizer: starting with 504 cues, target_duration=581.9s (9.7min)
+[highlights] window_optimizer: Phase 1 generated 461 initial windows
+[highlights] window_optimizer: Phase 3.1 merged to 4 windows
+[highlights] window_optimizer: Phase 3.2 removed short windows, 4 remain
+[highlights] window_optimizer: Phase 3.3 added context padding
+[highlights] window_optimizer: Phase 3.4 removed boring gaps, 3 windows
+[highlights] window_optimizer: restored 5 missing key-event windows
+[highlights] window_optimizer: preserving dispersed key-event windows for bridge pass key_events=4 span=1565.0s target=581.9s
+[highlights] window_optimizer: inserted continuity bridge windows count=22 max_gap=45.0s
+[highlights] window_optimizer: Phase 4 adjusted to 718.5s (12.0min), 24 windows
+[highlights] window_optimizer: Phase 5 quality check passed
+[highlights] extended action resolution windows count=1 tail=40.0s gap=8.0s
+[highlights] protected speech boundaries count=14 tolerance=0.15s
+[highlights] capped condensed duration budget from=826.9s to=721.4s budget=727.4s target=581.9s
+[highlights] protected speech boundaries count=1 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=19 max_gap=45.0s
+[highlights] restored missing KDA event windows count=2
+[highlights] protected speech boundaries count=12 tolerance=0.15s
+[highlights] trimmed low-value internal gaps count=6 removed=37.5s threshold=8.0s keep=3.0s
+[highlights] protected speech boundaries count=6 tolerance=0.15s
+[highlights] protected speech boundaries count=5 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=5 max_gap=45.0s
+[highlights] budget shrink from=879.7s to=696.6s budget=727.4s target=581.9s exception=no
+[highlights] highlight plan written session_id=session-20260617073651-cf11bf9e match_index=3 windows=27
+[highlights] processed_matches=1 emitted_plans=1 skipped_missing_subtitle=0 skipped_no_plan=0
+[copywriter] llm semantic starting
+[copywriter] llm semantic retry attempt=1/2 reason=ReadTimeout
+[copywriter] llm semantic retry attempt=2/2 reason=ReadTimeout
+[copywriter] llm semantic fallback session_id=session-20260617073651-cf11bf9e match_index=3 reason=ReadTimeout
+[copywriter] llm_semantic generated=0 cached=0 failed=1
+[copywriter] starting
+[copywriter] filters total_subtitles=57 matched_subtitles=1 session_ids=session-20260617073651-cf11bf9e match_indices=3
+[copywriter] force reprocessing copy output session_id=session-20260617073651-cf11bf9e match_index=3
+[copywriter] copy asset written session_id=session-20260617073651-cf11bf9e match_index=3
+[copywriter] processed_copies=1
+[editing] starting
+[editing] filters total_boundaries=27 matched_boundaries=1 session_ids=session-20260617073651-cf11bf9e match_indices=3
+[editing] force replanning edit plan session_id=session-20260617073651-cf11bf9e match_index=3
+[editing] edit plan omits teaser session_id=session-20260617073651-cf11bf9e match_index=3 reason=no_strong_story
+[editing] bgm library loaded path=data\bgm\library.json tracks=20 total_items=20 skipped_non_object=0 skipped_missing_path=0 skipped_missing_file=0
+[editing] selected bgm library tracks session_id=session-20260617073651-cf11bf9e match_index=3 tracks=data\bgm\tracks\Westway-央视节目《动物世界》片尾曲 - SKY.mp3,data\bgm\tracks\Dolly Song ( Ieva's Polka ) - Holly Dolly.mp3,data\bgm\tracks\Maxi poi☆poi poi poi！ - S9ryne.mp3
+[editing] sfx library loaded path=data\sfx\library.json tracks=7 total_items=7 skipped_non_object=0 skipped_missing_category=0 skipped_missing_path=0 skipped_missing_file=0
+[editing] edit plan written session_id=session-20260617073651-cf11bf9e match_index=3 segments=33
+[editing] processed_matches=1 emitted_plans=1 skipped_incomplete=0 skipped_missing_highlight=0 skipped_invalid_highlight=0 skipped_no_plan=0 emitted_without_teaser=1
+[exporter] starting
+[exporter] ffmpeg_enabled=True
+[exporter] ffmpeg_video_codec=h264
+[exporter] burn_subtitles=1
+[exporter] use_ass_subtitles=1
+[exporter] use_edit_plans=1
+[exporter] use_highlight_plans=1
+[exporter] filters total_boundaries=27 matched_boundaries=1 session_ids=session-20260617073651-cf11bf9e match_indices=3
+[exporter] force reprocessing export output session_id=session-20260617073651-cf11bf9e match_index=3
+[exporter] edit plan export session_id=session-20260617073651-cf11bf9e match_index=3 segments=33 teaser_inputs=0
+[exporter] export asset written session_id=session-20260617073651-cf11bf9e match_index=3
+[exporter] processed_exports=1
+[copywriter] llm semantic starting
+[copywriter] llm semantic retry attempt=1/2 reason=ReadTimeout
+[copywriter] llm semantic retry attempt=2/2 reason=ReadTimeout
+[copywriter] llm semantic fallback session_id=session-20260617073651-cf11bf9e match_index=3 reason=ReadTimeout
+[copywriter] llm_semantic generated=0 cached=0 failed=1
+[copywriter] starting
+[copywriter] filters total_subtitles=57 matched_subtitles=1 session_ids=session-20260617073651-cf11bf9e match_indices=3
+[copywriter] force reprocessing copy output session_id=session-20260617073651-cf11bf9e match_index=3
+[copywriter] copy asset written session_id=session-20260617073651-cf11bf9e match_index=3
+[copywriter] processed_copies=1
+[quality-report] starting
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.080 minimap=0.054 edge_var=0.094 → visual_activity=0.075
+[highlights] content_analyzer: match_duration=1650.0s highlight_event_density=0.109 narration_density=0.686 visual_activity=0.075 → content_density_score=0.337 → target_duration=581.9s (9.7min)
+[quality-report] reports=1 warnings=0
+## Quality Report
+
+| Sample | Export min | Bitrate | Res | Target min | Budget min | Plan min | Max source gap | KDA uncovered | Subtitle active | No-sub gaps | Teaser | BGM | SFX | Zoom | Warnings |
+|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|
+| `session-20260617073651-cf11bf9e` m03 | 11.61 | 8.15 | 1920x1080 | 9.70 | 12.12 | 11.61 | 45.0s | 0/6 | 54.2% | 6, max 44.0s | 0 | 4 | 2 | 3 | 0 |
+=== SAMPLE DONE session=session-20260617073651-cf11bf9e match=3 ===
+=== SAMPLE START session=session-20260702092321-bc90812b match=1 ===
+[subtitles] starting
+[subtitles] provider=faster-whisper model=medium
+[subtitles] filters summary total_boundaries=27 matched_boundaries=1
+[subtitles] force reprocessing subtitle output session_id=session-20260702092321-bc90812b match_index=1
+[subtitles] audio preprocess written session_id=session-20260702092321-bc90812b match_index=1
+[subtitles] configured CUDA DLL directories C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin,C:\Program Files\NVIDIA\CUDNN\v9.12\bin\12.9
+[subtitles] subtitle asset written session_id=session-20260702092321-bc90812b match_index=1
+[subtitles] processed_matches=1
+[segmenter] stage-signals-from-subtitles starting
+[segmenter] stage-signals-from-subtitles filter summary total_assets=58 matched_assets=5
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260702092321-bc90812b match_index=1 signals=1 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260702092321-bc90812b match_index=1 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260702092321-bc90812b match_index=1 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260702092321-bc90812b match_index=1 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260702092321-bc90812b match_index=1 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed_subtitles=5 emitted_signals=1 matched_assets=5 skipped_already_processed=0 skipped_missing_subtitle=0
+[highlights] starting
+[highlights] filters total_boundaries=27 matched_boundaries=1 session_ids=session-20260702092321-bc90812b match_indices=1
+[highlights] force replanning highlight plan session_id=session-20260702092321-bc90812b match_index=1
+[highlights] detected KDA key events session_id=session-20260702092321-bc90812b match_index=1 count=10
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.073 minimap=0.054 edge_var=0.083 → visual_activity=0.069
+[highlights] content_analyzer: match_duration=2095.0s highlight_event_density=0.074 narration_density=0.711 visual_activity=0.069 → content_density_score=0.325 → target_duration=576.2s (9.6min)
+[highlights] window_optimizer: starting with 154 cues, target_duration=576.2s (9.6min)
+[highlights] window_optimizer: Phase 1 generated 144 initial windows
+[highlights] window_optimizer: Phase 3.1 merged to 21 windows
+[highlights] window_optimizer: Phase 3.2 removed short windows, 21 remain
+[highlights] window_optimizer: Phase 3.3 added context padding
+[highlights] window_optimizer: Phase 3.4 removed boring gaps, 20 windows
+[highlights] window_optimizer: restored 6 missing key-event windows
+[highlights] window_optimizer: preserving dispersed key-event windows for bridge pass key_events=9 span=1825.5s target=576.2s
+[highlights] window_optimizer: inserted continuity bridge windows count=25 max_gap=45.0s
+[highlights] window_optimizer: Phase 4 adjusted to 1000.8s (16.7min), 30 windows
+[highlights] window_optimizer: Phase 5 quality check passed
+[highlights] extended action resolution windows count=4 tail=40.0s gap=8.0s
+[highlights] protected speech boundaries count=17 tolerance=0.15s
+[highlights] capped condensed duration budget from=1256.1s to=714.3s budget=720.3s target=576.2s
+[highlights] protected speech boundaries count=2 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=29 max_gap=45.0s
+[highlights] restored missing KDA event windows count=6
+[highlights] protected speech boundaries count=19 tolerance=0.15s
+[highlights] protected death-like continuity entries count=1 max_entry_gap=10.0s
+[highlights] trimmed low-value internal gaps count=16 removed=180.0s threshold=8.0s keep=3.0s
+[highlights] protected speech boundaries count=1 tolerance=0.15s
+[highlights] protected speech boundaries count=16 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=12 max_gap=45.0s
+[highlights] protected speech boundaries count=21 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=5 max_gap=45.0s
+[highlights] protected speech boundaries count=22 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=1 max_gap=45.0s
+[highlights] protected speech boundaries count=21 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=3 max_gap=45.0s
+[highlights] protected speech boundaries count=22 tolerance=0.15s
+[highlights] window_optimizer: inserted continuity bridge windows count=4 max_gap=45.0s
+[highlights] budget shrink from=1171.2s to=744.9s budget=720.3s target=576.2s exception=yes
+[highlights] highlight plan written session_id=session-20260702092321-bc90812b match_index=1 windows=46
+[highlights] processed_matches=1 emitted_plans=1 skipped_missing_subtitle=0 skipped_no_plan=0
+[copywriter] llm semantic starting
+[copywriter] llm semantic retry attempt=1/2 reason=ReadTimeout
+[copywriter] llm semantic retry attempt=2/2 reason=ReadTimeout
+[copywriter] llm semantic fallback session_id=session-20260702092321-bc90812b match_index=1 reason=ReadTimeout
+[copywriter] llm_semantic generated=0 cached=0 failed=1
+[copywriter] starting
+[copywriter] filters total_subtitles=58 matched_subtitles=1 session_ids=session-20260702092321-bc90812b match_indices=1
+[copywriter] force reprocessing copy output session_id=session-20260702092321-bc90812b match_index=1
+[copywriter] copy asset written session_id=session-20260702092321-bc90812b match_index=1
+[copywriter] processed_copies=1
+[editing] starting
+[editing] filters total_boundaries=27 matched_boundaries=1 session_ids=session-20260702092321-bc90812b match_indices=1
+[editing] force replanning edit plan session_id=session-20260702092321-bc90812b match_index=1
+[editing] edit plan omits teaser session_id=session-20260702092321-bc90812b match_index=1 reason=no_strong_story
+[editing] bgm library loaded path=data\bgm\library.json tracks=20 total_items=20 skipped_non_object=0 skipped_missing_path=0 skipped_missing_file=0
+[editing] selected bgm library tracks session_id=session-20260702092321-bc90812b match_index=1 tracks=data\bgm\tracks\のんびりした場所 - 西郷憲一郎.mp3,data\bgm\tracks\Not The One (Original Version).mp3,data\bgm\tracks\Libella Swing - Parov Stelar.mp3
+[editing] sfx library loaded path=data\sfx\library.json tracks=7 total_items=7 skipped_non_object=0 skipped_missing_category=0 skipped_missing_path=0 skipped_missing_file=0
+[editing] edit plan written session_id=session-20260702092321-bc90812b match_index=1 segments=52
+[editing] processed_matches=1 emitted_plans=1 skipped_incomplete=0 skipped_missing_highlight=0 skipped_invalid_highlight=0 skipped_no_plan=0 emitted_without_teaser=1
+[exporter] starting
+[exporter] ffmpeg_enabled=True
+[exporter] ffmpeg_video_codec=h264
+[exporter] burn_subtitles=1
+[exporter] use_ass_subtitles=1
+[exporter] use_edit_plans=1
+[exporter] use_highlight_plans=1
+[exporter] filters total_boundaries=27 matched_boundaries=1 session_ids=session-20260702092321-bc90812b match_indices=1
+[exporter] force reprocessing export output session_id=session-20260702092321-bc90812b match_index=1
+[exporter] edit plan export session_id=session-20260702092321-bc90812b match_index=1 segments=52 teaser_inputs=0
+[exporter] export asset written session_id=session-20260702092321-bc90812b match_index=1
+[exporter] processed_exports=1
+[copywriter] llm semantic starting
+[copywriter] llm semantic retry attempt=1/2 reason=ReadTimeout
+[copywriter] llm semantic retry attempt=2/2 reason=ReadTimeout
+[copywriter] llm semantic fallback session_id=session-20260702092321-bc90812b match_index=1 reason=ReadTimeout
+[copywriter] llm_semantic generated=0 cached=0 failed=1
+[copywriter] starting
+[copywriter] filters total_subtitles=58 matched_subtitles=1 session_ids=session-20260702092321-bc90812b match_indices=1
+[copywriter] force reprocessing copy output session_id=session-20260702092321-bc90812b match_index=1
+[copywriter] copy asset written session_id=session-20260702092321-bc90812b match_index=1
+[copywriter] processed_copies=1
+[quality-report] starting
+[highlights] visual_analyzer: recording-source.mp4 scene_change=0.073 minimap=0.054 edge_var=0.083 → visual_activity=0.069
+[highlights] content_analyzer: match_duration=2095.0s highlight_event_density=0.074 narration_density=0.711 visual_activity=0.069 → content_density_score=0.325 → target_duration=576.2s (9.6min)
+[quality-report] reports=1 warnings=0
+## Quality Report
+
+| Sample | Export min | Bitrate | Res | Target min | Budget min | Plan min | Max source gap | KDA uncovered | Subtitle active | No-sub gaps | Teaser | BGM | SFX | Zoom | Warnings |
+|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|
+| `session-20260702092321-bc90812b` m01 | 12.42 | 8.15 | 1920x1080 | 9.60 | 12.00 | 12.42 | 45.0s | 0/10 | 66.6% | 8, max 26.4s | 0 | 5 | 2 | 3 | 0 |
+=== SAMPLE DONE session=session-20260702092321-bc90812b match=1 ===
+=== ALL SAMPLES DONE ===

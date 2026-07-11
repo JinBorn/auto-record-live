@@ -1,0 +1,10 @@
+[editing] starting
+[editing] filters total_boundaries=27 matched_boundaries=1 session_ids=session-20260617073649-4b5ec478 match_indices=2
+[editing] bgm library loaded path=data\bgm\library.json tracks=20 total_items=20 skipped_non_object=0 skipped_missing_path=0 skipped_missing_file=0
+[editing] selected bgm library tracks session_id=session-20260617073649-4b5ec478 match_index=2 tracks=data\bgm\tracks\のんびりした場所 - 西郷憲一郎.mp3,data\bgm\tracks\Not The One (Original Version).mp3,data\bgm\tracks\The Real Slim Shady - Eminem.mp3
+[editing] sfx library loaded path=data\sfx\library.json tracks=7 total_items=7 skipped_non_object=0 skipped_missing_category=0 skipped_missing_path=0 skipped_missing_file=0
+[editing] force replanning edit plan session_id=session-20260617073649-4b5ec478 match_index=2
+[editing] edit plan omits teaser session_id=session-20260617073649-4b5ec478 match_index=2 reason=no_strong_story
+[editing] selected bgm library tracks session_id=session-20260617073649-4b5ec478 match_index=2 tracks=data\bgm\tracks\のんびりした場所 - 西郷憲一郎.mp3,data\bgm\tracks\Not The One (Original Version).mp3,data\bgm\tracks\The Real Slim Shady - Eminem.mp3
+[editing] edit plan written session_id=session-20260617073649-4b5ec478 match_index=2 segments=35
+[editing] processed_matches=1 emitted_plans=1 skipped_incomplete=0 skipped_missing_highlight=0 skipped_invalid_highlight=0 skipped_no_plan=0 emitted_without_teaser=1

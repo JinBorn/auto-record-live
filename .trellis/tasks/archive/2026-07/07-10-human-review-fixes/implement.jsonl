@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/editing-quality.md", "reason": "publish 验收阈值与重生成工作流；本任务将调整字幕活跃率/zoom/teaser 阈值口径"}
+{"file": ".trellis/spec/backend/export-configuration.md", "reason": "env 参考与导出/报告契约，新增多个 env 需入册"}
+{"file": ".trellis/tasks/07-10-07-06-batch-review-duration-tuning/validation-report.md", "reason": "上一轮 7 样本基线数字（本轮回归对比基准）"}

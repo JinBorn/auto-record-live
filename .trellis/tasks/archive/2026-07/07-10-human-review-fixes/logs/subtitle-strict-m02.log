@@ -1,0 +1,17 @@
+[subtitles] starting
+[subtitles] provider=faster-whisper model=medium
+[subtitles] filters summary total_boundaries=27 matched_boundaries=1
+[subtitles] force reprocessing subtitle output session_id=session-20260617073649-4b5ec478 match_index=2
+[subtitles] audio preprocess written session_id=session-20260617073649-4b5ec478 match_index=2
+[subtitles] transcribe failed session_id=session-20260617073649-4b5ec478 match_index=2 model=medium device=cuda compute_type=int8_float16 reason=Library cublas64_12.dll is not found or cannot be loaded
+[subtitles] subtitle asset written session_id=session-20260617073649-4b5ec478 match_index=2
+[subtitles] processed_matches=1
+[segmenter] stage-signals-from-subtitles starting
+[segmenter] stage-signals-from-subtitles filter summary total_assets=55 matched_assets=6
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260617073649-4b5ec478 match_index=2 signals=1 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260617073649-4b5ec478 match_index=2 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260617073649-4b5ec478 match_index=2 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260617073649-4b5ec478 match_index=2 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260617073649-4b5ec478 match_index=2 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed session_id=session-20260617073649-4b5ec478 match_index=2 signals=0 force_reprocess=1
+[segmenter] stage-signals-from-subtitles processed_subtitles=6 emitted_signals=1 matched_assets=6 skipped_already_processed=0 skipped_missing_subtitle=0
