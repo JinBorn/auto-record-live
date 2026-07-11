@@ -735,3 +735,36 @@ Archived the completed duration-budget convergence and LLM semantic pipeline tas
 ### Next Steps
 
 - None - task complete
+
+
+## Session 70: 修复金币音效误触发
+
+**Date**: 2026-07-12
+**Task**: 修复金币音效误触发
+**Branch**: `main`
+
+### Summary
+
+修复编辑器将击杀与死亡同时增加的混合 KDA 事件误判为击杀音效的问题；金币音效现在只在击杀增加且死亡不增加时触发。新增真实事件形状回归测试，更新 README 与编辑质量规范；编辑器测试 55 通过，全量测试 724 通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a0d26cb` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
