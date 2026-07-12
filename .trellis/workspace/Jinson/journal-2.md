@@ -801,3 +801,36 @@ Implemented adaptive fight/teamfight/chase protection using KDA, combat cues, na
 ### Next Steps
 
 - None - task complete
+
+
+## Session 72: Remove duplicate published cover
+
+**Date**: 2026-07-12
+**Task**: Remove duplicate published cover
+**Branch**: `main`
+
+### Summary
+
+Changed copywriter publishing so rank-one cover candidates reuse cover.jpg instead of creating duplicate cover-01.jpg. Repair runs remove stale cover-01 files, additional candidates retain cover-02/cover-03 names, and full tests passed.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ea47915` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
