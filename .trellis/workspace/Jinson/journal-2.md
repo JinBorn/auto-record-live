@@ -834,3 +834,36 @@ Changed copywriter publishing so rank-one cover candidates reuse cover.jpg inste
 ### Next Steps
 
 - None - task complete
+
+
+## Session 73: Add LLM-guided semantic SFX
+
+**Date**: 2026-07-12
+**Task**: Add LLM-guided semantic SFX
+**Branch**: `main`
+
+### Summary
+
+Added bounded streamer-centric semantic SFX candidates to the existing per-match LLM analysis, validated category/evidence references, persisted independent shadow reports, and mapped active recommendations into main timeline positions with deterministic-first spacing and caps. Defaults remain shadow-only; 732 tests passed.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `33675c9` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
