@@ -308,9 +308,9 @@ Publish edit defaults in current builds:
 - Long BGM plans can use laning -> momentum -> climax phases with overlapping crossfades when `data/bgm/library.json` has distinct matching tracks. Keep at least two usable tracks in each `phase` bucket for consistent three-phase behavior.
 - Source-music protection suppresses BGM only over detected source-music spans plus padding. If detected source music covers most BGM-active output, the planner skips BGM for that match.
 - Zoom defaults to short eased close-ups (`ARL_EDIT_ZOOM_MODE=closeup`) around KDA kills, chat bursts, then fallback high-signal segments. Set `ARL_EDIT_ZOOM_MODE=legacy` to restore whole-segment static punch-ins.
-- Copywriter publishing renders ranked cover candidates as `cover-01.jpg`,
-  `cover-02.jpg`, and `cover-03.jpg` when source frame scoring is available.
-  `cover.jpg` remains the rank-1 default in the publish package, and
+- Copywriter publishing writes the rank-1 default once as `cover.jpg`. When
+  multiple cover candidates are explicitly enabled, additional choices use
+  `cover-02.jpg`, `cover-03.jpg`, and so on; `cover-01.jpg` is not duplicated.
   `upload.txt` lists every candidate for manual selection.
 
 ```env

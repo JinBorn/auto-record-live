@@ -1012,11 +1012,14 @@ class CopywriterService:
             if source_cover.exists():
                 target_cover = package_dir / f"cover{source_cover.suffix or '.jpg'}"
                 published_cover_path = self._copy_file(source_cover, target_cover)
+        self._remove_duplicate_rank_one_covers(package_dir)
         published_candidates: list[CoverCandidate] = []
         for candidate in package.cover_candidates:
             source_candidate = Path(candidate.path)
             published_candidate_path: Path | None = None
-            if source_candidate.exists():
+            if candidate.rank == 1 and published_cover_path is not None:
+                published_candidate_path = published_cover_path
+            elif source_candidate.exists():
                 target_candidate = (
                     package_dir
                     / f"cover-{candidate.rank:02d}{source_candidate.suffix or '.jpg'}"
@@ -1070,6 +1073,19 @@ class CopywriterService:
                 ),
             }
         )
+
+    def _remove_duplicate_rank_one_covers(self, package_dir: Path) -> None:
+        if not package_dir.is_dir():
+            return
+        for duplicate in package_dir.glob("cover-01.*"):
+            if duplicate.is_file():
+                try:
+                    duplicate.unlink(missing_ok=True)
+                except OSError as exc:
+                    log(
+                        "copywriter",
+                        f"failed to remove duplicate rank-one cover {duplicate}: {exc}",
+                    )
 
     def _published_stem(self, package: PublishingPackage) -> str:
         streamer = self._safe_filename_part(package.streamer_name or "unknown-streamer")
@@ -1794,6 +1810,11 @@ class CopywriterService:
         if source_export_exists and package.published_package_dir is None:
             return False
         if self._legacy_flat_publish_aliases_present(package):
+            return False
+        if package.published_package_dir is not None and any(
+            path.is_file()
+            for path in Path(package.published_package_dir).glob("cover-01.*")
+        ):
             return False
         has_published_aliases = any(
             path is not None

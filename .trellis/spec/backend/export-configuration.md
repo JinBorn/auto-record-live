@@ -1672,7 +1672,6 @@ validation reports for regenerated exports.
 - Published package files:
   ```text
   cover.jpg        # default rank-1 cover for legacy upload workflow
-  cover-01.jpg
   cover-02.jpg
   cover-03.jpg
   upload.txt
@@ -1686,8 +1685,11 @@ validation reports for regenerated exports.
   `published_cover_path` always points at `cover.jpg`, a copy of the same
   rank-1 candidate inside the published package directory.
 - `cover_candidates[*].path` records every successfully rendered processed
-  candidate. `cover_candidates[*].published_path` records the matching
-  `cover-XX.jpg` copy after publishing.
+  candidate. The rank-1 candidate's `published_path` reuses `cover.jpg`;
+  rank 2 and later record matching `cover-XX.jpg` copies after publishing.
+- Publishing must not create `cover-01.jpg`. If a stale `cover-01.*` exists
+  from an older package, output completeness returns false and the repair run
+  removes it.
 - Final copywriter publishing may read a valid matching `EditPlanAsset` for
   teaser/high-signal source windows, but cover generation must still work when
   edit plans are missing or stale.
@@ -1722,7 +1724,7 @@ validation reports for regenerated exports.
 ### 5. Good/Base/Bad Cases
 - Good: Recording media is available, frame scoring selects distinct source
   timestamps, `cover_path` points to rank 1, and the package directory contains
-  both `cover.jpg` and `cover-XX.jpg` candidates.
+  `cover.jpg` plus numbered rank-2-and-later candidates when configured.
 - Base: Only exported media is available, so copywriter renders one fallback
   candidate at export time `0.0` and still writes the publishing JSON and
   upload metadata.
@@ -1733,7 +1735,10 @@ validation reports for regenerated exports.
 ### 6. Tests Required
 - Model: legacy `PublishingPackage` rows default `cover_candidates=[]`.
 - Copywriter: ranked candidates preserve `cover_path` / `published_cover_path`
-  defaults, publish `cover-XX.jpg`, and list candidates in JSON and `upload.txt`.
+  defaults, reuse `cover.jpg` for rank 1, publish rank-2-and-later
+  `cover-XX.jpg`, and list candidates in JSON and `upload.txt`.
+- Copywriter: a stale `cover-01.jpg` makes the package incomplete and is removed
+  during repair.
 - Copywriter: export-only fallback remains a single candidate at `0.0`.
 - Cover helper: synthetic frame scoring covers sharpness/brightness, scene
   penalty/bonus, chat activity, event priority, spacing, and degraded sampling.

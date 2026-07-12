@@ -1222,11 +1222,12 @@ class CopywriterServiceTest(unittest.TestCase):
             chat[70:112, 0:58] = 255
             return [(timestamp - 1.0, base), (timestamp, chat)]
 
-        CopywriterService(
+        service = CopywriterService(
             self.settings,
             cover_renderer=_cover_renderer,
             cover_frame_sampler=_sampler,
-        ).run()
+        )
+        service.run()
 
         packages = load_models(self.temp_root / "publishing-packages.jsonl", PublishingPackage)
         self.assertEqual(len(packages), 1)
@@ -1257,15 +1258,36 @@ class CopywriterServiceTest(unittest.TestCase):
             self.assertIsNotNone(candidate.published_path)
             published_candidate = Path(candidate.published_path or "")
             self.assertEqual(published_candidate.parent, published_package_dir)
-            self.assertEqual(published_candidate.name, f"cover-{candidate.rank:02d}.jpg")
+            expected_name = (
+                "cover.jpg"
+                if candidate.rank == 1
+                else f"cover-{candidate.rank:02d}.jpg"
+            )
+            self.assertEqual(published_candidate.name, expected_name)
             self.assertTrue(published_candidate.exists())
+        self.assertFalse((published_package_dir / "cover-01.jpg").exists())
         metadata_text = Path(package.published_metadata_path or "").read_text(
             encoding="utf-8"
         )
         self.assertIn("Cover Candidates:", metadata_text)
-        self.assertIn("cover-01.jpg", metadata_text)
+        self.assertIn("cover.jpg", metadata_text)
+        self.assertNotIn("cover-01.jpg", metadata_text)
         package_payload = json.loads(Path(package.path or "").read_text(encoding="utf-8"))
         self.assertEqual(len(package_payload["cover_candidates"]), 3)
+
+        stale_duplicate = published_package_dir / "cover-01.jpg"
+        stale_duplicate.write_text("stale duplicate", encoding="utf-8")
+        service.run()
+
+        repaired = load_models(
+            self.temp_root / "publishing-packages.jsonl",
+            PublishingPackage,
+        )[0]
+        self.assertFalse(stale_duplicate.exists())
+        self.assertEqual(
+            Path(repaired.cover_candidates[0].published_path or "").name,
+            "cover.jpg",
+        )
 
     def test_cover_renderer_uses_export_when_recording_is_unavailable(self) -> None:
         session_id = "session-copywriter-cover-export-fallback"
