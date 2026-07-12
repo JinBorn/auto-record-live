@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 70
+- **Total Sessions**: 71
 - **Last Active**: 2026-07-12
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~770 | Active |
+| `journal-2.md` | ~803 | Active |
 | `journal-1.md` | ~1986 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 71 | 2026-07-12 | Protect combat continuity in condensed highlights | `f577e20` | `main` |
 | 70 | 2026-07-12 | 修复金币音效误触发 | `a0d26cb` | `main` |
 | 69 | 2026-07-12 | Duration tuning and LLM semantic pipeline wrap-up | `f1dc333`, `b082fec` | `main` |
 | 68 | 2026-07-12 | Human review fixes and semantic pipeline refinement | `46c4c4e`, `b082fec` | `main` |

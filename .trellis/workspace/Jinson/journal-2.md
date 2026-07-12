@@ -768,3 +768,36 @@ Archived the completed duration-budget convergence and LLM semantic pipeline tas
 ### Next Steps
 
 - None - task complete
+
+
+## Session 71: Protect combat continuity in condensed highlights
+
+**Date**: 2026-07-12
+**Task**: Protect combat continuity in condensed highlights
+**Branch**: `main`
+
+### Summary
+
+Implemented adaptive fight/teamfight/chase protection using KDA, combat cues, narration, and candidate-local video activity hysteresis. Shared protected intervals across internal-gap trimming and final budget shrinking, added rollback/config documentation and regressions, validated 728 tests plus a real match plan.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f577e20` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
