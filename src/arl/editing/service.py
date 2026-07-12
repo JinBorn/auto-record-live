@@ -43,6 +43,7 @@ from arl.shared.contracts import (
 )
 from arl.shared.jsonl_store import append_model, load_models
 from arl.shared.logging import log
+from arl.shared.semantic_sfx import discover_semantic_sfx_candidates_from_srt
 from arl.subtitles.ass import SrtCue, parse_srt_cues
 
 
@@ -341,6 +342,7 @@ class EditingPlannerService:
         semantic_asset: CopywriterSemanticAsset | None,
         streamer_name: str | None,
     ) -> EditPlanAsset | None:
+        audio_semantic_asset = semantic_asset
         semantic_asset = self._semantic_asset_for_editing(semantic_asset)
         duration = boundary.ended_at_seconds - boundary.started_at_seconds
         if duration <= 0.0:
@@ -408,6 +410,7 @@ class EditingPlannerService:
             recording,
             subtitle,
             streamer_name,
+            audio_semantic_asset,
         )
         return EditPlanAsset(
             session_id=boundary.session_id,
@@ -862,6 +865,7 @@ class EditingPlannerService:
         recording: RecordingAsset | None,
         subtitle: SubtitleAsset | None,
         streamer_name: str | None,
+        semantic_asset: CopywriterSemanticAsset | None = None,
     ) -> tuple[list[AudioBed], list[SoundEffectHit]]:
         if not self.settings.editing.audio_mixing_enabled:
             return [], []
@@ -983,8 +987,117 @@ class EditingPlannerService:
         if teaser_impact_hit is not None:
             sound_effects.append(teaser_impact_hit)
         sound_effects.extend(kill_sfx_hits)
+        sound_effects.extend(
+            self._semantic_sfx_hits(
+                timeline,
+                subtitle=subtitle,
+                semantic_asset=semantic_asset,
+                existing_hits=sound_effects,
+            )
+        )
         sound_effects.sort(key=lambda hit: hit.at_seconds)
         return audio_beds, sound_effects
+
+    def _semantic_sfx_hits(
+        self,
+        timeline: list[TimelineSegment],
+        *,
+        subtitle: SubtitleAsset | None,
+        semantic_asset: CopywriterSemanticAsset | None,
+        existing_hits: list[SoundEffectHit],
+    ) -> list[SoundEffectHit]:
+        settings = self.settings.llm
+        if (
+            not settings.semantic_sfx_enabled
+            or settings.semantic_sfx_shadow_mode
+            or settings.semantic_sfx_max_hits <= 0
+            or subtitle is None
+            or semantic_asset is None
+            or not semantic_asset.result.sfx_recommendations
+        ):
+            return []
+        subtitle_path = Path(subtitle.path)
+        if not subtitle_path.is_file():
+            return []
+        reserved = {"kill_coin", "multi_kill", "transition_whoosh", "teaser_impact"}
+        available_categories = {
+            track.category for track in self._sfx_library() if track.category not in reserved
+        }
+        candidates = {
+            candidate.candidate_id: candidate
+            for candidate in discover_semantic_sfx_candidates_from_srt(
+                subtitle_path,
+                session_id=semantic_asset.session_id,
+                match_index=semantic_asset.match_index,
+                allowed_categories=available_categories,
+                max_candidates=settings.semantic_sfx_max_candidates,
+            )
+        }
+        recommendations = sorted(
+            semantic_asset.result.sfx_recommendations,
+            key=lambda item: (-item.confidence, item.candidate_id),
+        )
+        hits: list[SoundEffectHit] = []
+        effective_max_hits = min(
+            settings.semantic_sfx_max_hits,
+            max(0, self.settings.editing.sfx_max_hits - len(existing_hits)),
+        )
+        category_counts: dict[str, int] = {}
+        occupied = [hit.at_seconds for hit in existing_hits]
+        for recommendation in recommendations:
+            if len(hits) >= effective_max_hits:
+                break
+            if (
+                recommendation.category == "none"
+                or recommendation.confidence < settings.semantic_sfx_min_confidence
+                or recommendation.category not in available_categories
+                or category_counts.get(recommendation.category, 0)
+                >= settings.semantic_sfx_max_per_category
+            ):
+                continue
+            candidate = candidates.get(recommendation.candidate_id)
+            if candidate is None:
+                continue
+            at_seconds = self._map_semantic_sfx_anchor_to_main(
+                timeline,
+                candidate.anchor_seconds,
+            )
+            if at_seconds is None or any(
+                abs(at_seconds - existing) < settings.semantic_sfx_min_spacing_seconds
+                for existing in [*occupied, *(hit.at_seconds for hit in hits)]
+            ):
+                continue
+            track = self._first_sfx_library_track(recommendation.category)
+            if track is None:
+                continue
+            gain_db = self.settings.editing.sfx_gain_db
+            if track.gain_db is not None:
+                gain_db = min(6.0, max(-60.0, track.gain_db))
+            hits.append(
+                SoundEffectHit(
+                    source_path=str(track.path),
+                    at_seconds=round(at_seconds, 3),
+                    gain_db=gain_db,
+                    reason=f"semantic_sfx:{recommendation.category}",
+                )
+            )
+            category_counts[recommendation.category] = (
+                category_counts.get(recommendation.category, 0) + 1
+            )
+        return hits
+
+    def _map_semantic_sfx_anchor_to_main(
+        self,
+        timeline: list[TimelineSegment],
+        source_seconds: float,
+    ) -> float | None:
+        output_starts = self._timeline_output_starts(timeline)
+        for index, segment in enumerate(timeline):
+            if segment.role != "main":
+                continue
+            if segment.source_start_seconds <= source_seconds <= segment.source_end_seconds:
+                return output_starts[index] + source_seconds - segment.source_start_seconds
+        return None
 
     def _teaser_impact_hit(
         self,
@@ -2715,6 +2828,7 @@ class EditingPlannerService:
         semantic_asset: CopywriterSemanticAsset | None,
         streamer_name: str | None,
     ) -> bool:
+        audio_semantic_asset = semantic_asset
         semantic_asset = self._semantic_asset_for_editing(semantic_asset)
         if plan is None:
             return False
@@ -2746,6 +2860,7 @@ class EditingPlannerService:
             highlight_plan,
             subtitle,
             streamer_name,
+            audio_semantic_asset,
         )
 
     def _semantic_asset_for_editing(
@@ -2770,6 +2885,7 @@ class EditingPlannerService:
         highlight_plan: HighlightPlanAsset | None,
         subtitle: SubtitleAsset | None,
         streamer_name: str | None,
+        semantic_asset: CopywriterSemanticAsset | None,
     ) -> bool:
         if not self.settings.editing.audio_mixing_enabled:
             return not plan.audio_beds and not plan.sound_effects
@@ -2782,6 +2898,7 @@ class EditingPlannerService:
             recording,
             subtitle,
             streamer_name,
+            semantic_asset,
         )
         return self._audio_beds_match(
             plan.audio_beds,

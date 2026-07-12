@@ -345,8 +345,11 @@ ARL_EDIT_SFX_KDA_ALIGNMENT_ENABLED=1
 ```
 
 Put sound files under `data/sfx/tracks/` and reference them from
-`data/sfx/library.json`. Supported categories are `kill_coin`, `multi_kill`,
-`transition_whoosh`, and `teaser_impact`. Kill SFX is aligned to `kda_change`
+`data/sfx/library.json`. Deterministic categories are `kill_coin`, `multi_kill`,
+`transition_whoosh`, and `teaser_impact`. Additional categories such as `mistake`,
+`boom`, `pew`, and `transition_bruh` can be proposed by the existing LLM semantic
+analysis. Semantic SFX defaults to shadow mode, so recommendations are recorded without
+changing the edit plan until `ARL_LLM_SEMANTIC_SFX_SHADOW_MODE=0`. Kill SFX is aligned to `kda_change`
 timestamps when available; KDA changes that increase deaths do not trigger coin
 hits, even when kills also increase in the same observation interval.
 If the manifest is missing, invalid, or lacks a usable kill category, the edit

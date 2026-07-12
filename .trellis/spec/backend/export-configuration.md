@@ -2017,6 +2017,13 @@ def _video_quality_args(self) -> list[str]:
 | `ARL_EDIT_SFX_MAX_HITS` | int | `6` | Maximum kill SFX hits per edit plan, clamped to at least 0 |
 | `ARL_EDIT_SFX_KDA_ALIGNMENT_ENABLED` | bool | True | Align kill SFX to parsed `kda_change` timestamps before falling back to segment starts |
 | `ARL_EDIT_SFX_MULTIKILL_WINDOW_SECONDS` | float | `8.0` | Subtitle keyword search window around a KDA kill event for multi-kill variant selection |
+| `ARL_LLM_SEMANTIC_SFX_ENABLED` | bool | True | Include bounded streamer-centric semantic SFX candidates in the existing per-match LLM analysis |
+| `ARL_LLM_SEMANTIC_SFX_SHADOW_MODE` | bool | True | Persist semantic SFX recommendations without changing edit-plan sound effects |
+| `ARL_LLM_SEMANTIC_SFX_MIN_CONFIDENCE` | float | 0.80 | Minimum validated recommendation confidence for active semantic SFX |
+| `ARL_LLM_SEMANTIC_SFX_MAX_HITS` | int | 2 | Maximum optional semantic SFX per match, excluding deterministic effects |
+| `ARL_LLM_SEMANTIC_SFX_MAX_PER_CATEGORY` | int | 1 | Maximum active semantic effects from one category per match |
+| `ARL_LLM_SEMANTIC_SFX_MIN_SPACING_SECONDS` | float | 8.0 | Minimum distance from deterministic and already accepted optional SFX |
+| `ARL_LLM_SEMANTIC_SFX_MAX_CANDIDATES` | int | 20 | Maximum deterministic semantic SFX candidates included in one prompt |
 | `ARL_HIGHLIGHT_PLANNER_ENABLED` | bool | False | Run highlight detection stage |
 | `ARL_HIGHLIGHT_CONDENSED_TARGET_DURATION_RANGE` | `min,max` minutes | `7,20` | Global dynamic condensed target span and max continuous content cap |
 | `ARL_HIGHLIGHT_CONDENSED_HIGH_DENSITY_DURATION_RANGE` | `min,max` minutes | `16,20` | Target duration range for high composite density matches |

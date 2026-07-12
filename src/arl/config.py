@@ -581,6 +581,13 @@ class LlmSettings(BaseModel):
     story_shadow_mode: bool = True
     semantic_weight: float = 0.25
     semantic_schema_version: int = 2
+    semantic_sfx_enabled: bool = True
+    semantic_sfx_shadow_mode: bool = True
+    semantic_sfx_min_confidence: float = 0.80
+    semantic_sfx_max_hits: int = 2
+    semantic_sfx_max_per_category: int = 1
+    semantic_sfx_min_spacing_seconds: float = 8.0
+    semantic_sfx_max_candidates: int = 20
 
     @model_validator(mode="after")
     def _normalize(self) -> "LlmSettings":
@@ -593,6 +600,20 @@ class LlmSettings(BaseModel):
         self.temperature = min(1.5, max(0.0, self.temperature))
         self.semantic_weight = min(1.0, max(0.0, self.semantic_weight))
         self.semantic_schema_version = max(1, self.semantic_schema_version)
+        self.semantic_sfx_min_confidence = min(
+            1.0,
+            max(0.0, self.semantic_sfx_min_confidence),
+        )
+        self.semantic_sfx_max_hits = max(0, self.semantic_sfx_max_hits)
+        self.semantic_sfx_max_per_category = max(
+            1,
+            self.semantic_sfx_max_per_category,
+        )
+        self.semantic_sfx_min_spacing_seconds = max(
+            0.0,
+            self.semantic_sfx_min_spacing_seconds,
+        )
+        self.semantic_sfx_max_candidates = max(1, self.semantic_sfx_max_candidates)
         return self
 
 
@@ -1773,6 +1794,34 @@ def load_settings() -> Settings:
             story_shadow_mode=_env_bool("ARL_LLM_STORY_SHADOW_MODE", True),
             semantic_weight=_env_float("ARL_HIGHLIGHT_SEMANTIC_WEIGHT", 0.25),
             semantic_schema_version=_env_int("ARL_LLM_SEMANTIC_SCHEMA_VERSION", 2),
+            semantic_sfx_enabled=_env_bool(
+                "ARL_LLM_SEMANTIC_SFX_ENABLED",
+                True,
+            ),
+            semantic_sfx_shadow_mode=_env_bool(
+                "ARL_LLM_SEMANTIC_SFX_SHADOW_MODE",
+                True,
+            ),
+            semantic_sfx_min_confidence=_env_float(
+                "ARL_LLM_SEMANTIC_SFX_MIN_CONFIDENCE",
+                0.80,
+            ),
+            semantic_sfx_max_hits=_env_int(
+                "ARL_LLM_SEMANTIC_SFX_MAX_HITS",
+                2,
+            ),
+            semantic_sfx_max_per_category=_env_int(
+                "ARL_LLM_SEMANTIC_SFX_MAX_PER_CATEGORY",
+                1,
+            ),
+            semantic_sfx_min_spacing_seconds=_env_float(
+                "ARL_LLM_SEMANTIC_SFX_MIN_SPACING_SECONDS",
+                8.0,
+            ),
+            semantic_sfx_max_candidates=_env_int(
+                "ARL_LLM_SEMANTIC_SFX_MAX_CANDIDATES",
+                20,
+            ),
         ),
     )
     if _postprocess_publish_preset_enabled():

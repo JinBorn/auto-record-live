@@ -11,7 +11,11 @@ from pathlib import Path
 import numpy as np
 
 from arl.config import EditingSettings, Settings, StorageSettings
-from arl.copywriter.models import CopywriterSemanticAsset, LlmCopywritingResult
+from arl.copywriter.models import (
+    CopywriterSemanticAsset,
+    LlmCopywritingResult,
+    SemanticSfxRecommendation,
+)
 from arl.editing.models import EditPlannerStateFile
 from arl.editing.audio import (
     BgmLibraryTrack,
@@ -31,12 +35,14 @@ from arl.shared.contracts import (
     RecordingAsset,
     RecordingChunk,
     RecordingChunkManifest,
+    SoundEffectHit,
     SourceType,
     SubtitleAsset,
     TimelineSegment,
     TimelineVideoTransform,
 )
 from arl.shared.jsonl_store import append_model, load_models
+from arl.shared.semantic_sfx import discover_semantic_sfx_candidates_from_srt
 
 
 class EditingPlannerServiceTest(unittest.TestCase):
@@ -1214,6 +1220,126 @@ class EditingPlannerServiceTest(unittest.TestCase):
         self.assertEqual(plan.timeline[0].role, "teaser")
         self.assertEqual(
             [hit for hit in plan.sound_effects if hit.reason == "teaser_impact"],
+            [],
+        )
+
+    def test_semantic_sfx_active_maps_verified_candidate_to_main_timeline(self) -> None:
+        library_dir = self.temp_root / "semantic-sfx"
+        library_dir.mkdir(parents=True, exist_ok=True)
+        mistake_path = library_dir / "mistake.wav"
+        mistake_path.write_text("audio", encoding="utf-8")
+        library_path = library_dir / "library.json"
+        library_path.write_text(
+            json.dumps(
+                {
+                    "tracks": [
+                        {
+                            "category": "mistake",
+                            "path": mistake_path.name,
+                            "gain_db": -9,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.settings.editing.sfx_library_path = library_path
+        self.settings.llm.semantic_sfx_enabled = True
+        self.settings.llm.semantic_sfx_shadow_mode = False
+        self.settings.llm.semantic_sfx_min_confidence = 0.8
+        subtitle_path = self.temp_root / "semantic.srt"
+        subtitle_path.write_text(
+            "1\n00:00:10,000 --> 00:00:12,000\n这波我操作失误了\n",
+            encoding="utf-8",
+        )
+        candidate = discover_semantic_sfx_candidates_from_srt(
+            subtitle_path,
+            session_id="session-semantic-sfx",
+            match_index=1,
+            allowed_categories={"mistake"},
+        )[0]
+        result = LlmCopywritingResult(
+            title_candidates=["title one", "title two", "title three"],
+            recommended_title="title one",
+            cover_lines=["cover one", "cover two"],
+            summary="summary",
+            description="description",
+            tags=["tag1", "tag2", "tag3", "tag4", "tag5"],
+            sfx_recommendations=[
+                SemanticSfxRecommendation(
+                    candidate_id=candidate.candidate_id,
+                    category="mistake",
+                    confidence=0.92,
+                    evidence_refs=[candidate.evidence_id],
+                    reason="clear streamer mistake",
+                )
+            ],
+        )
+        asset = CopywriterSemanticAsset(
+            session_id="session-semantic-sfx",
+            match_index=1,
+            source_subtitle_path=str(subtitle_path),
+            provider="fake",
+            model="fake",
+            prompt_fingerprint="prompt",
+            input_fingerprint="input",
+            result=result,
+            status="generated",
+            created_at=datetime.now(timezone.utc),
+        )
+        timeline = [
+            TimelineSegment(
+                role="main",
+                source_start_seconds=0.0,
+                source_end_seconds=60.0,
+                reason="condensed_key_event",
+            )
+        ]
+        subtitle = SubtitleAsset(
+            session_id="session-semantic-sfx",
+            match_index=1,
+            path=str(subtitle_path),
+            format="srt",
+        )
+
+        service = EditingPlannerService(self.settings)
+        hits = service._semantic_sfx_hits(
+            timeline,
+            subtitle=subtitle,
+            semantic_asset=asset,
+            existing_hits=[],
+        )
+
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0].source_path, str(mistake_path))
+        self.assertEqual(hits[0].at_seconds, 11.0)
+        self.assertEqual(hits[0].reason, "semantic_sfx:mistake")
+
+        self.assertEqual(
+            service._semantic_sfx_hits(
+                timeline,
+                subtitle=subtitle,
+                semantic_asset=asset,
+                existing_hits=[
+                    SoundEffectHit(
+                        source_path="coin.wav",
+                        at_seconds=12.0,
+                        gain_db=-12.0,
+                        reason="condensed_key_event",
+                    )
+                ],
+            ),
+            [],
+        )
+
+        self.settings.llm.semantic_sfx_shadow_mode = True
+        self.assertEqual(
+            service._semantic_sfx_hits(
+                timeline,
+                subtitle=subtitle,
+                semantic_asset=asset,
+                existing_hits=[],
+            ),
             [],
         )
 

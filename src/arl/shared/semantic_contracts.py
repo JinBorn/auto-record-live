@@ -13,8 +13,19 @@ class SemanticCandidateDecisionView(BaseModel):
     recommendation: str = "keep"
 
 
+class SemanticSfxRecommendationView(BaseModel):
+    candidate_id: str
+    category: str = "none"
+    confidence: float = 0.0
+    evidence_refs: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
 class SemanticResultView(BaseModel):
     candidate_decisions: list[SemanticCandidateDecisionView] = Field(
+        default_factory=list
+    )
+    sfx_recommendations: list[SemanticSfxRecommendationView] = Field(
         default_factory=list
     )
 

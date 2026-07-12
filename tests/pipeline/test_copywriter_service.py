@@ -24,6 +24,8 @@ from arl.copywriter.models import (
     LlmCopywritingResult,
     PublishingPackage,
     SemanticShadowReport,
+    SemanticSfxRecommendation,
+    SemanticSfxShadowReport,
 )
 from arl.copywriter.service import CopywriterService
 from arl.orchestrator.models import (
@@ -44,6 +46,7 @@ from arl.shared.contracts import (
     TimelineSegment,
 )
 from arl.shared.jsonl_store import append_model, load_models
+from arl.shared.semantic_sfx import discover_semantic_sfx_candidates_from_srt
 
 
 class CopywriterServiceTest(unittest.TestCase):
@@ -388,6 +391,116 @@ class CopywriterServiceTest(unittest.TestCase):
         self.assertEqual(packages[0].recommended_title, "神钩开团逆转")
         self.assertEqual(packages[0].cover_lines, ["神钩开团", "团战逆转"])
         self.assertIn("英雄联盟", packages[0].tags)
+
+    def test_semantic_sfx_validation_drops_unknown_rows(self) -> None:
+        result = LlmCopywritingResult.model_validate_json(_llm_payload("语义音效测试"))
+        result.sfx_recommendations = [
+            SemanticSfxRecommendation(
+                candidate_id="sfx-known",
+                category="mistake",
+                confidence=0.9,
+                evidence_refs=["subtitle-known"],
+                reason="clear streamer mistake",
+            ),
+            SemanticSfxRecommendation(
+                candidate_id="sfx-unknown",
+                category="mistake",
+                confidence=0.9,
+            ),
+            SemanticSfxRecommendation(
+                candidate_id="sfx-known",
+                category="unknown-category",
+                confidence=0.9,
+            ),
+        ]
+
+        CopywriterService._validate_semantic_sfx_result(
+            result,
+            {
+                "sfx_candidates": [
+                    {
+                        "candidate_id": "sfx-known",
+                        "evidence_id": "subtitle-known",
+                    }
+                ],
+                "sfx_categories": [{"category": "mistake"}],
+                "subtitle_cues": [{"evidence_id": "subtitle-known"}],
+                "kda_events": [],
+            },
+        )
+
+        self.assertEqual(len(result.sfx_recommendations), 1)
+        self.assertEqual(result.sfx_recommendations[0].candidate_id, "sfx-known")
+
+    def test_semantic_sfx_shadow_report_is_written_without_changing_edit_plan(self) -> None:
+        session_id = "session-semantic-sfx-shadow"
+        self.settings.llm.enabled = True
+        self.settings.llm.api_key = "test-key"
+        self.settings.llm.semantic_sfx_enabled = True
+        self.settings.llm.semantic_sfx_shadow_mode = True
+        library_dir = self.temp_root / "semantic-sfx-library"
+        library_dir.mkdir(parents=True, exist_ok=True)
+        track = library_dir / "mistake.wav"
+        track.write_text("audio", encoding="utf-8")
+        self.settings.editing.sfx_library_path = library_dir / "library.json"
+        self.settings.editing.sfx_library_path.write_text(
+            json.dumps(
+                {
+                    "tracks": [
+                        {
+                            "category": "mistake",
+                            "path": track.name,
+                            "description": "streamer mistake",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        subtitle_path = self._write_subtitle(
+            session_id,
+            "1\n00:00:10,000 --> 00:00:12,000\n这波我操作失误了\n",
+        )
+        append_model(
+            self.temp_root / "subtitle-assets.jsonl",
+            SubtitleAsset(
+                session_id=session_id,
+                match_index=1,
+                path=str(subtitle_path),
+                format="srt",
+            ),
+        )
+        candidate = discover_semantic_sfx_candidates_from_srt(
+            subtitle_path,
+            session_id=session_id,
+            match_index=1,
+            allowed_categories={"mistake"},
+        )[0]
+        payload = json.loads(_llm_payload("语义失误音效"))
+        payload["sfx_recommendations"] = [
+            {
+                "candidate_id": candidate.candidate_id,
+                "category": "mistake",
+                "confidence": 0.91,
+                "evidence_refs": [candidate.evidence_id],
+                "reason": "clear streamer mistake",
+            }
+        ]
+
+        CopywriterService(
+            self.settings,
+            llm_provider=_FakeLlmProvider(json.dumps(payload, ensure_ascii=False)),
+        ).run_semantic()
+
+        reports = load_models(
+            self.temp_root / "copywriter-semantic-sfx-shadow-reports.jsonl",
+            SemanticSfxShadowReport,
+        )
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0].candidate_count, 1)
+        self.assertEqual(reports[0].decisions[0].category, "mistake")
+        self.assertEqual(reports[0].decisions[0].status, "proposed")
+        self.assertFalse((self.temp_root / "edit-plans.jsonl").exists())
 
     def test_llm_semantic_force_reprocess_bypasses_cache(self) -> None:
         session_id = "session-copywriter-llm-force"

@@ -362,6 +362,10 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertTrue(settings.llm.story_shadow_mode)
         self.assertEqual(settings.llm.semantic_weight, 0.25)
         self.assertEqual(settings.llm.semantic_schema_version, 2)
+        self.assertTrue(settings.llm.semantic_sfx_enabled)
+        self.assertTrue(settings.llm.semantic_sfx_shadow_mode)
+        self.assertEqual(settings.llm.semantic_sfx_min_confidence, 0.8)
+        self.assertEqual(settings.llm.semantic_sfx_max_hits, 2)
 
     def test_llm_envs_load_and_clamp(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):
@@ -377,6 +381,13 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             os.environ["ARL_LLM_STORY_SHADOW_MODE"] = "0"
             os.environ["ARL_HIGHLIGHT_SEMANTIC_WEIGHT"] = "3"
             os.environ["ARL_LLM_SEMANTIC_SCHEMA_VERSION"] = "0"
+            os.environ["ARL_LLM_SEMANTIC_SFX_ENABLED"] = "0"
+            os.environ["ARL_LLM_SEMANTIC_SFX_SHADOW_MODE"] = "0"
+            os.environ["ARL_LLM_SEMANTIC_SFX_MIN_CONFIDENCE"] = "3"
+            os.environ["ARL_LLM_SEMANTIC_SFX_MAX_HITS"] = "-1"
+            os.environ["ARL_LLM_SEMANTIC_SFX_MAX_PER_CATEGORY"] = "0"
+            os.environ["ARL_LLM_SEMANTIC_SFX_MIN_SPACING_SECONDS"] = "-1"
+            os.environ["ARL_LLM_SEMANTIC_SFX_MAX_CANDIDATES"] = "0"
             settings = load_settings()
 
         self.assertTrue(settings.llm.enabled)
@@ -391,6 +402,13 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(settings.llm.semantic_schema_version, 1)
         self.assertEqual(settings.llm.max_input_cues, 20)
         self.assertEqual(settings.llm.temperature, 1.5)
+        self.assertFalse(settings.llm.semantic_sfx_enabled)
+        self.assertFalse(settings.llm.semantic_sfx_shadow_mode)
+        self.assertEqual(settings.llm.semantic_sfx_min_confidence, 1.0)
+        self.assertEqual(settings.llm.semantic_sfx_max_hits, 0)
+        self.assertEqual(settings.llm.semantic_sfx_max_per_category, 1)
+        self.assertEqual(settings.llm.semantic_sfx_min_spacing_seconds, 0.0)
+        self.assertEqual(settings.llm.semantic_sfx_max_candidates, 1)
 
     def test_postprocess_publish_preset_env_enables_publish_pipeline(self) -> None:
         with _ARLEnvIsolation(), patch("arl.config._load_dotenv"):

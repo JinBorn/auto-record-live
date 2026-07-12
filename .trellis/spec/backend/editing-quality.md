@@ -286,6 +286,25 @@ graph was fixed).
   and sampling latency vary per event, and fixed offsets preserve false hits.
 - If refinement cannot confirm a transition, omit the decorative SFX.
 
+## Semantic SFX Selection Contract
+
+- Optional reaction/comedic SFX uses the existing one-call copywriter semantic asset;
+  do not add an independent edit-planner LLM call.
+- Deterministic code owns stable candidate IDs, subtitle evidence IDs, source anchors,
+  source-to-rendered mapping, library paths, gain, spacing, and count limits. The LLM
+  may return only a known candidate ID, an available non-reserved category or `none`,
+  confidence, evidence references, and a reason.
+- Candidate discovery is streamer-centric and subtitle-evidenced. Ordinary teammate or
+  opponent behavior and unattributed visual motion do not create MVP candidates.
+- Deterministic kill/multi-kill, transition, and teaser effects win every timing
+  conflict. Optional semantic categories never fall back to `kill_coin`.
+- Defaults are conservative: shadow mode on, confidence >=0.80, at most two optional
+  effects per match, at most one per category, and >=8s from any existing effect.
+- Missing/invalid LLM output, unavailable categories, trimmed-out candidates, and
+  absent credentials preserve the existing deterministic sound-effect list.
+- `copywriter-semantic-sfx-shadow-reports.jsonl` is the rollout evidence. Do not enable
+  active mode until representative real-match category/timing decisions are reviewed.
+
 ## Common Mistake: Treating Mixed Kill/Death KDA Changes As Confirmed Kills
 
 **Symptom**: A coin accent plays immediately after the streamer dies. The KDA

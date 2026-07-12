@@ -31,6 +31,8 @@ from arl.copywriter.models import (
     PublishingPackage,
     SemanticShadowCandidate,
     SemanticShadowReport,
+    SemanticSfxShadowDecision,
+    SemanticSfxShadowReport,
 )
 from arl.orchestrator.models import OrchestratorStateFile
 from arl.shared.contracts import (
@@ -44,6 +46,10 @@ from arl.shared.contracts import (
 )
 from arl.shared.jsonl_store import append_model, load_models
 from arl.shared.logging import log
+from arl.shared.semantic_sfx import (
+    discover_semantic_sfx_candidates,
+    load_semantic_sfx_catalog,
+)
 from arl.shared.semantic_ids import semantic_reference_id
 
 
@@ -103,6 +109,9 @@ class CopywriterService:
         )
         self.semantic_shadow_reports_path = (
             settings.storage.temp_dir / "copywriter-semantic-shadow-reports.jsonl"
+        )
+        self.semantic_sfx_shadow_reports_path = (
+            settings.storage.temp_dir / "copywriter-semantic-sfx-shadow-reports.jsonl"
         )
         self.copy_assets_path = settings.storage.temp_dir / "copy-assets.jsonl"
         self.publishing_packages_path = settings.storage.temp_dir / "publishing-packages.jsonl"
@@ -228,6 +237,11 @@ class CopywriterService:
                 and self.settings.llm.story_shadow_mode
             ):
                 self._write_semantic_shadow_report(asset, prompt_input)
+            if (
+                self.settings.llm.semantic_sfx_enabled
+                and self.settings.llm.semantic_sfx_shadow_mode
+            ):
+                self._write_semantic_sfx_shadow_report(asset, prompt_input)
             semantic_assets[(asset.session_id, asset.match_index)] = asset
             generated += 1
             usage = ",".join(f"{key}={value}" for key, value in token_usage.items()) or "-"
@@ -538,6 +552,39 @@ class CopywriterService:
             "highlight_windows": highlight_windows,
             "kda_events": kda_events,
         }
+        if self.settings.llm.semantic_sfx_enabled:
+            catalog = load_semantic_sfx_catalog(
+                self.settings.editing.sfx_library_path
+            )
+            categories = {entry.category for entry in catalog}
+            sfx_candidates = discover_semantic_sfx_candidates(
+                session_id=subtitle.session_id,
+                match_index=subtitle.match_index,
+                cues=[
+                    (cue.started_at_seconds, cue.ended_at_seconds, cue.text)
+                    for cue in selected_cues
+                ],
+                allowed_categories=categories,
+                max_candidates=self.settings.llm.semantic_sfx_max_candidates,
+            )
+            payload["sfx_categories"] = [
+                {
+                    "category": entry.category,
+                    "description": entry.description,
+                }
+                for entry in catalog
+            ]
+            payload["sfx_candidates"] = [
+                candidate.prompt_dict() for candidate in sfx_candidates
+            ]
+            payload["sfx_policy"] = {
+                "streamer_centric": True,
+                "allow_none": True,
+                "allow_arbitrary_timestamps": False,
+                "prefer_none_when_ambiguous": True,
+                "max_optional_hits": self.settings.llm.semantic_sfx_max_hits,
+                "minimum_confidence": self.settings.llm.semantic_sfx_min_confidence,
+            }
         if self.settings.llm.story_analysis_enabled:
             payload["semantic_schema_version"] = self.settings.llm.semantic_schema_version
             payload["editorial_policy"] = {
@@ -610,6 +657,7 @@ class CopywriterService:
                 self._validate_story_result(result, prompt_input)
                 self._validate_known_entity_terms(result, prompt_input)
                 self._validate_multikill_claims(result, prompt_input)
+                self._validate_semantic_sfx_result(result, prompt_input)
                 if self._llm_title_is_raw_excerpt(result, cues):
                     raise LlmProviderError("raw_excerpt_title")
                 return result, response.token_usage
@@ -636,6 +684,14 @@ class CopywriterService:
             "source_start_seconds, source_end_seconds, hook_reason). Do not copy a "
             "raw leading subtitle line as the title; synthesize the gameplay/topic hook."
         )
+        if self.settings.llm.semantic_sfx_enabled:
+            base = (
+                f"{base} Also return sfx_recommendations as a list of objects with "
+                "candidate_id, category, confidence, evidence_refs, and reason. Use "
+                "only supplied sfx candidate IDs, evidence IDs, and categories; category "
+                "may be none. Never invent timestamps. Prefer none when ambiguous and "
+                "judge only the streamer's own action or reaction."
+            )
         if not self.settings.llm.story_analysis_enabled:
             return base
         return (
@@ -655,6 +711,47 @@ class CopywriterService:
             "emotion and a clear outcome. If evidence is weak, return no_strong_story "
             "with no teaser."
         )
+
+    @staticmethod
+    def _validate_semantic_sfx_result(
+        result: LlmCopywritingResult,
+        prompt_input: dict[str, object],
+    ) -> None:
+        raw_candidates = [
+            item
+            for item in prompt_input.get("sfx_candidates", [])
+            if isinstance(item, dict)
+        ]
+        candidate_evidence = {
+            str(item.get("candidate_id")): str(item.get("evidence_id"))
+            for item in raw_candidates
+            if item.get("candidate_id") and item.get("evidence_id")
+        }
+        categories = {
+            str(item.get("category"))
+            for item in prompt_input.get("sfx_categories", [])
+            if isinstance(item, dict) and item.get("category")
+        }
+        known_evidence = {
+            str(item.get("evidence_id"))
+            for key in ("subtitle_cues", "kda_events")
+            for item in prompt_input.get(key, [])
+            if isinstance(item, dict) and item.get("evidence_id")
+        }
+        validated = []
+        seen: set[str] = set()
+        for recommendation in result.sfx_recommendations:
+            candidate_id = recommendation.candidate_id
+            if candidate_id in seen or candidate_id not in candidate_evidence:
+                continue
+            if recommendation.category != "none" and recommendation.category not in categories:
+                continue
+            allowed_evidence = known_evidence | {candidate_evidence[candidate_id]}
+            if not set(recommendation.evidence_refs).issubset(allowed_evidence):
+                continue
+            validated.append(recommendation)
+            seen.add(candidate_id)
+        result.sfx_recommendations = validated
 
     @staticmethod
     def _filter_weak_teaser_candidates(result: LlmCopywritingResult) -> None:
@@ -855,6 +952,7 @@ class CopywriterService:
             recommended_title=asset.result.recommended_title,
             cover_lines=asset.result.cover_lines,
             teaser_candidate_ids=asset.result.teaser_candidate_ids,
+            sfx_recommendations=asset.result.sfx_recommendations,
             created_at=datetime.now(timezone.utc),
         )
         append_model(self.semantic_shadow_reports_path, report)
@@ -865,6 +963,50 @@ class CopywriterService:
             f"story_status={report.story_status} "
             f"current_seconds={report.current_total_seconds:.1f} "
             f"proposed_drop_seconds={report.proposed_drop_seconds:.1f}",
+        )
+
+    def _write_semantic_sfx_shadow_report(
+        self,
+        asset: CopywriterSemanticAsset,
+        prompt_input: dict[str, object],
+    ) -> None:
+        decisions = []
+        for recommendation in asset.result.sfx_recommendations:
+            accepted = (
+                recommendation.category != "none"
+                and recommendation.confidence
+                >= self.settings.llm.semantic_sfx_min_confidence
+            )
+            decisions.append(
+                SemanticSfxShadowDecision(
+                    candidate_id=recommendation.candidate_id,
+                    category=recommendation.category,
+                    confidence=recommendation.confidence,
+                    status="proposed" if accepted else "rejected",
+                    reason=recommendation.reason,
+                )
+            )
+        report = SemanticSfxShadowReport(
+            session_id=asset.session_id,
+            match_index=asset.match_index,
+            input_fingerprint=asset.input_fingerprint,
+            available_categories=[
+                str(item.get("category"))
+                for item in prompt_input.get("sfx_categories", [])
+                if isinstance(item, dict) and item.get("category")
+            ],
+            candidate_count=sum(
+                1 for item in prompt_input.get("sfx_candidates", []) if isinstance(item, dict)
+            ),
+            decisions=decisions,
+            created_at=datetime.now(timezone.utc),
+        )
+        append_model(self.semantic_sfx_shadow_reports_path, report)
+        log(
+            "copywriter",
+            "llm semantic sfx shadow report written "
+            f"session_id={report.session_id} match_index={report.match_index} "
+            f"candidates={report.candidate_count} decisions={len(report.decisions)}",
         )
 
     def _llm_title_is_raw_excerpt(

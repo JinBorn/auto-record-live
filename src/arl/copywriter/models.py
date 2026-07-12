@@ -118,6 +118,25 @@ class CandidateSemanticDecision(BaseModel):
         return self
 
 
+class SemanticSfxRecommendation(BaseModel):
+    candidate_id: str
+    category: str = "none"
+    confidence: float = 0.0
+    evidence_refs: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+    @model_validator(mode="after")
+    def _normalize(self) -> "SemanticSfxRecommendation":
+        self.candidate_id = self.candidate_id.strip()
+        if not self.candidate_id:
+            raise ValueError("semantic SFX candidate_id is required")
+        self.category = self.category.strip() or "none"
+        self.confidence = min(1.0, max(0.0, self.confidence))
+        self.evidence_refs = _clean_text_list(self.evidence_refs, max_items=10)
+        self.reason = self.reason.strip()
+        return self
+
+
 class LlmCopywritingResult(BaseModel):
     title_candidates: list[str]
     recommended_title: str
@@ -136,6 +155,7 @@ class LlmCopywritingResult(BaseModel):
     candidate_decisions: list[CandidateSemanticDecision] = Field(default_factory=list)
     teaser_candidate_ids: list[str] = Field(default_factory=list)
     claim_evidence: dict[str, list[str]] = Field(default_factory=dict)
+    sfx_recommendations: list[SemanticSfxRecommendation] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -219,6 +239,7 @@ class LlmCopywritingResult(BaseModel):
             for claim, refs in self.claim_evidence.items()
             if str(claim).strip()
         }
+        self.sfx_recommendations = self.sfx_recommendations[:20]
         return self
 
 
@@ -260,6 +281,25 @@ class SemanticShadowReport(BaseModel):
     recommended_title: str
     cover_lines: list[str] = Field(default_factory=list)
     teaser_candidate_ids: list[str] = Field(default_factory=list)
+    sfx_recommendations: list[SemanticSfxRecommendation] = Field(default_factory=list)
+    created_at: datetime
+
+
+class SemanticSfxShadowDecision(BaseModel):
+    candidate_id: str
+    category: str = "none"
+    confidence: float = 0.0
+    status: Literal["proposed", "rejected"] = "proposed"
+    reason: str = ""
+
+
+class SemanticSfxShadowReport(BaseModel):
+    session_id: str
+    match_index: int
+    input_fingerprint: str
+    available_categories: list[str] = Field(default_factory=list)
+    candidate_count: int = 0
+    decisions: list[SemanticSfxShadowDecision] = Field(default_factory=list)
     created_at: datetime
 
 
