@@ -39,10 +39,38 @@ class _WindowDraft:
     reason: str
 
 
+@dataclass(frozen=True)
+class _CombatActivitySample:
+    at_seconds: float
+    activity: float
+
+
 _SPEECH_BOUNDARY_TOLERANCE_SECONDS = 0.15
 _SPEECH_CHAIN_GAP_SECONDS = 0.6
 _CONDENSED_DURATION_BUDGET_MULTIPLIER = 1.25
 _CONDENSED_DURATION_BUDGET_EXTRA_SECONDS = 60.0
+
+_COMBAT_KEYWORDS = tuple(
+    item.lower()
+    for item in (
+        "fight",
+        "teamfight",
+        "gank",
+        "chase",
+        "escape",
+        "all in",
+        "团战",
+        "打团",
+        "打架",
+        "开团",
+        "抓",
+        "追",
+        "逃",
+        "撤",
+        "反杀",
+        "越塔",
+    )
+)
 
 
 def condensed_duration_budget(
@@ -1452,6 +1480,7 @@ class HighlightPlannerService:
         kda_event_cues: list[ClassifiedCue],
         classified_cues: list[ClassifiedCue],
         match_duration_seconds: float,
+        combat_protected_intervals: list[tuple[float, float]] | None = None,
     ) -> list[HighlightClipWindow]:
         settings = self.settings.highlights
         if (
@@ -1466,10 +1495,15 @@ class HighlightPlannerService:
         min_piece_seconds = settings.condensed_min_window_duration_seconds
         keep_seconds = settings.condensed_internal_gap_keep_seconds
         min_removed_seconds = max(1.0, min_piece_seconds / 2.0)
-        protected_intervals = self._internal_trim_protected_intervals(
-            kda_event_cues=kda_event_cues,
-            classified_cues=classified_cues,
-            match_duration_seconds=match_duration_seconds,
+        protected_intervals = self._merge_time_ranges(
+            [
+                *self._internal_trim_protected_intervals(
+                    kda_event_cues=kda_event_cues,
+                    classified_cues=classified_cues,
+                    match_duration_seconds=match_duration_seconds,
+                ),
+                *(combat_protected_intervals or []),
+            ]
         )
 
         trimmed: list[HighlightClipWindow] = []
@@ -1615,6 +1649,301 @@ class HighlightPlannerService:
             merged[-1] = (previous_start, max(previous_end, end))
         return merged
 
+    def _detect_combat_protected_intervals(
+        self,
+        *,
+        classified_cues: list[ClassifiedCue],
+        kda_event_cues: list[ClassifiedCue],
+        match_duration_seconds: float,
+        windows: list[HighlightClipWindow] | None = None,
+        recording: RecordingAsset | None = None,
+        boundary: MatchBoundary | None = None,
+        activity_samples: list[_CombatActivitySample] | None = None,
+    ) -> list[tuple[float, float]]:
+        settings = self.settings.highlights
+        if (
+            not settings.condensed_combat_continuity_enabled
+            or match_duration_seconds <= 0.0
+        ):
+            return []
+
+        anchors = self._merge_time_ranges(
+            [
+                (cue.started_at_seconds, cue.ended_at_seconds)
+                for cue in classified_cues
+                if cue.text.startswith("kda_change ")
+                or self._is_combat_cue(cue)
+            ]
+            + [
+                (cue.started_at_seconds, cue.ended_at_seconds)
+                for cue in kda_event_cues
+            ]
+        )
+        if not anchors:
+            return []
+        if windows:
+            expanded_anchors: list[tuple[float, float]] = []
+            for anchor_start, anchor_end in anchors:
+                containing = [
+                    window
+                    for window in windows
+                    if window.reason in {"condensed_key_event", "condensed_tactical"}
+                    and window.started_at_seconds <= anchor_start
+                    and window.ended_at_seconds >= anchor_end
+                    and window.ended_at_seconds - window.started_at_seconds
+                    <= settings.condensed_combat_safety_cap_seconds
+                ]
+                if containing:
+                    expanded_anchors.append(
+                        (
+                            min(window.started_at_seconds for window in containing),
+                            max(window.ended_at_seconds for window in containing),
+                        )
+                    )
+                else:
+                    expanded_anchors.append((anchor_start, anchor_end))
+            anchors = self._merge_time_ranges(expanded_anchors)
+
+        lookaround = settings.condensed_combat_lookaround_seconds
+        candidate_ranges = self._merge_time_ranges(
+            [
+                (
+                    max(0.0, start - lookaround),
+                    min(match_duration_seconds, end + lookaround),
+                )
+                for start, end in anchors
+            ]
+        )
+        samples = activity_samples
+        evidence_mode = "injected"
+        if samples is None:
+            visual_samples = self._sample_combat_activity(
+                candidate_ranges,
+                recording=recording,
+                boundary=boundary,
+            )
+            cue_samples = self._combat_cue_activity_samples(
+                classified_cues,
+                candidate_ranges=candidate_ranges,
+            )
+            samples = [*visual_samples, *cue_samples]
+            evidence_mode = "video+cue" if visual_samples else "cue_only"
+        samples = sorted(samples, key=lambda item: item.at_seconds)
+
+        protected: list[tuple[float, float]] = []
+        for anchor_start, anchor_end in anchors:
+            containing_start, containing_end = next(
+                (
+                    (start, end)
+                    for start, end in candidate_ranges
+                    if start <= anchor_start and end >= anchor_end
+                ),
+                (anchor_start, anchor_end),
+            )
+            local_samples = [
+                sample
+                for sample in samples
+                if containing_start <= sample.at_seconds <= containing_end
+            ]
+            start = self._adaptive_combat_edge(
+                local_samples,
+                anchor_seconds=anchor_start,
+                direction=-1,
+                boundary_seconds=containing_start,
+            )
+            end = self._adaptive_combat_edge(
+                local_samples,
+                anchor_seconds=anchor_end,
+                direction=1,
+                boundary_seconds=containing_end,
+            )
+            safety_cap = settings.condensed_combat_safety_cap_seconds
+            if end - start > safety_cap:
+                if anchor_end - anchor_start >= safety_cap:
+                    start, end = anchor_start, anchor_end
+                    log(
+                        "highlights",
+                        "combat anchor exceeds safety cap; preserving anchor "
+                        f"anchor={anchor_start:.1f}-{anchor_end:.1f} cap={safety_cap:.1f}s",
+                    )
+                else:
+                    midpoint = (anchor_start + anchor_end) / 2.0
+                    start = max(start, midpoint - safety_cap / 2.0)
+                    end = min(end, start + safety_cap)
+                    start = max(0.0, min(start, anchor_start))
+                    end = min(match_duration_seconds, max(end, anchor_end))
+                    log(
+                        "highlights",
+                        "combat continuity safety cap applied "
+                        f"anchor={anchor_start:.1f}-{anchor_end:.1f} cap={safety_cap:.1f}s",
+                    )
+            protected.append((start, end))
+
+        merged = self._merge_time_ranges(protected)
+        log(
+            "highlights",
+            "detected combat continuity intervals "
+            f"count={len(merged)} duration={sum(end - start for start, end in merged):.1f}s "
+            f"anchors={len(anchors)} evidence={evidence_mode}",
+        )
+        return merged
+
+    def _combat_cue_activity_samples(
+        self,
+        classified_cues: list[ClassifiedCue],
+        *,
+        candidate_ranges: list[tuple[float, float]],
+    ) -> list[_CombatActivitySample]:
+        settings = self.settings.highlights
+        samples: list[_CombatActivitySample] = []
+        for cue in classified_cues:
+            if cue.text.startswith("kda_change "):
+                activity = settings.condensed_combat_enter_activity_threshold
+            elif self._is_combat_cue(cue):
+                activity = settings.condensed_combat_enter_activity_threshold
+            elif cue.category in {"key_event", "tactical", "narration"}:
+                activity = settings.condensed_combat_release_activity_threshold
+            else:
+                continue
+            if not any(
+                start <= cue.started_at_seconds <= end
+                or start <= cue.ended_at_seconds <= end
+                for start, end in candidate_ranges
+            ):
+                continue
+            samples.extend(
+                [
+                    _CombatActivitySample(cue.started_at_seconds, activity),
+                    _CombatActivitySample(cue.ended_at_seconds, activity),
+                ]
+            )
+        return samples
+
+    @staticmethod
+    def _is_combat_cue(cue: ClassifiedCue) -> bool:
+        if cue.category not in {"key_event", "tactical"}:
+            return False
+        text = cue.text.lower()
+        return any(keyword in text for keyword in _COMBAT_KEYWORDS)
+
+    def _adaptive_combat_edge(
+        self,
+        samples: list[_CombatActivitySample],
+        *,
+        anchor_seconds: float,
+        direction: int,
+        boundary_seconds: float,
+    ) -> float:
+        settings = self.settings.highlights
+        relevant = [
+            sample
+            for sample in samples
+            if (sample.at_seconds <= anchor_seconds if direction < 0 else sample.at_seconds >= anchor_seconds)
+        ]
+        relevant.sort(key=lambda item: item.at_seconds, reverse=direction < 0)
+        if not relevant:
+            return anchor_seconds
+
+        edge = anchor_seconds
+        low_run = 0
+        release_samples = settings.condensed_combat_release_samples
+        enter_threshold = settings.condensed_combat_enter_activity_threshold
+        release_threshold = min(
+            enter_threshold,
+            settings.condensed_combat_release_activity_threshold,
+        )
+        # The anchor itself is strong deterministic evidence. Visual samples
+        # decide how far continuity extends away from it; they do not need to
+        # rediscover the encounter before hysteresis can begin.
+        saw_activity = True
+        for sample in relevant:
+            if sample.activity >= enter_threshold:
+                saw_activity = True
+                low_run = 0
+                edge = sample.at_seconds
+                continue
+            if saw_activity and sample.activity >= release_threshold:
+                low_run = 0
+                edge = sample.at_seconds
+                continue
+            low_run += 1
+            if low_run >= release_samples:
+                break
+            if saw_activity:
+                edge = sample.at_seconds
+        return max(boundary_seconds, edge) if direction < 0 else min(boundary_seconds, edge)
+
+    def _sample_combat_activity(
+        self,
+        ranges: list[tuple[float, float]],
+        *,
+        recording: RecordingAsset | None,
+        boundary: MatchBoundary | None,
+    ) -> list[_CombatActivitySample]:
+        if recording is None or boundary is None:
+            return []
+        candidate_duration = sum(end - start for start, end in ranges)
+        max_visual_duration = (
+            self.settings.highlights.condensed_combat_safety_cap_seconds * 2.0
+        )
+        if candidate_duration > max_visual_duration:
+            log(
+                "highlights",
+                "skip combat visual sampling "
+                f"candidate_duration={candidate_duration:.1f}s "
+                f"limit={max_visual_duration:.1f}s evidence=cue_only",
+            )
+            return []
+        import cv2
+
+        interval = self.settings.highlights.condensed_combat_sample_interval_seconds
+        samples: list[_CombatActivitySample] = []
+        for start, end in ranges:
+            source_start = boundary.started_at_seconds + start
+            source_end = boundary.started_at_seconds + end
+            spans = resolve_recording_window(
+                recording,
+                start_seconds=source_start,
+                end_seconds=source_end,
+            )
+            previous = None
+            for span in spans:
+                cap = cv2.VideoCapture(str(span.path))
+                if not cap.isOpened():
+                    continue
+                local_seconds = span.local_start_seconds
+                while local_seconds <= span.local_end_seconds + 0.001:
+                    cap.set(cv2.CAP_PROP_POS_MSEC, local_seconds * 1000.0)
+                    ok, frame = cap.read()
+                    if not ok or frame is None:
+                        local_seconds += interval
+                        continue
+                    source_seconds = span.source_start_seconds + (
+                        local_seconds - span.local_start_seconds
+                    )
+                    timestamp = source_seconds - boundary.started_at_seconds
+                    if timestamp < start - 0.001 or timestamp > end + 0.001:
+                        local_seconds += interval
+                        continue
+                    try:
+                        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    except (cv2.error, TypeError):
+                        continue
+                    height, width = gray.shape
+                    if width > 320:
+                        gray = cv2.resize(
+                            gray,
+                            (320, max(1, int(height * 320 / width))),
+                            interpolation=cv2.INTER_AREA,
+                        )
+                    if previous is not None and previous.shape == gray.shape:
+                        activity = float(cv2.absdiff(previous, gray).mean() / 255.0)
+                        samples.append(_CombatActivitySample(timestamp, activity))
+                    previous = gray
+                    local_seconds += interval
+                cap.release()
+        return samples
+
     def _protect_death_like_continuity_entries(
         self,
         windows: list[HighlightClipWindow],
@@ -1722,6 +2051,7 @@ class HighlightPlannerService:
         classified_cues: list[ClassifiedCue],
         target_duration_seconds: float,
         match_duration_seconds: float,
+        combat_protected_intervals: list[tuple[float, float]] | None = None,
     ) -> tuple[list[HighlightClipWindow], str | None]:
         """Final-stage duration convergence for condensed plans.
 
@@ -1760,6 +2090,7 @@ class HighlightPlannerService:
                 if cue.text.startswith("kda_change ")
                 and cue.ended_at_seconds > cue.started_at_seconds
             ]
+            + list(combat_protected_intervals or [])
         )
         ordered_cues = sorted(
             speech_cues,
@@ -1832,11 +2163,15 @@ class HighlightPlannerService:
         total = self._clip_window_total_duration(working)
         if total > budget_seconds + 1.0:
             protected_total = sum(end - start for start, end in protected_spans)
+            combat_total = sum(
+                end - start for start, end in (combat_protected_intervals or [])
+            )
             exception_reason = (
                 "protected content floor reached: "
                 f"plan={total:.0f}s budget={budget_seconds:.0f}s "
-                f"kda_protected={protected_total:.0f}s "
-                f"kda_events={len(protected_spans)}"
+                f"protected={protected_total:.0f}s "
+                f"combat_protected={combat_total:.0f}s "
+                f"combat_intervals={len(combat_protected_intervals or [])}"
             )
         log(
             "highlights",
@@ -2773,12 +3108,22 @@ class HighlightPlannerService:
                 recording=recording,
             )
 
+        combat_protected_intervals = self._detect_combat_protected_intervals(
+            classified_cues=classified_cues,
+            kda_event_cues=kda_event_cues,
+            match_duration_seconds=duration,
+            windows=windows,
+            recording=recording,
+            boundary=boundary,
+        )
+
         trimmed_windows = self._trim_low_value_internal_gaps(
             windows,
             speech_cues=meaningful_cues,
             kda_event_cues=kda_event_cues,
             classified_cues=classified_cues,
             match_duration_seconds=duration,
+            combat_protected_intervals=combat_protected_intervals,
         )
         if trimmed_windows != windows:
             windows = self._protect_speech_boundaries(
@@ -2822,6 +3167,7 @@ class HighlightPlannerService:
             classified_cues=classified_cues,
             target_duration_seconds=density_result.target_duration_seconds,
             match_duration_seconds=duration,
+            combat_protected_intervals=combat_protected_intervals,
         )
         if not windows:
             return None
@@ -2869,6 +3215,7 @@ class HighlightPlannerService:
         classified_cues: list[ClassifiedCue],
         target_duration_seconds: float,
         match_duration_seconds: float,
+        combat_protected_intervals: list[tuple[float, float]] | None = None,
     ) -> tuple[list[HighlightClipWindow], str | None]:
         """Finalize stable condensed candidates under deterministic hard constraints.
 
@@ -2886,4 +3233,5 @@ class HighlightPlannerService:
             classified_cues=classified_cues,
             target_duration_seconds=target_duration_seconds,
             match_duration_seconds=match_duration_seconds,
+            combat_protected_intervals=combat_protected_intervals,
         )

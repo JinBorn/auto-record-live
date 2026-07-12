@@ -352,6 +352,11 @@ hits, even when kills also increase in the same observation interval.
 If the manifest is missing, invalid, or lacks a usable kill category, the edit
 planner falls back to the generated `coin.wav`.
 
+Condensed highlight plans protect retained fights, teamfights, and chases from
+source-time jump cuts. Encounter boundaries use KDA/cue evidence plus local visual
+activity hysteresis; fixed time values are only debounce and safety controls. Disable
+the behavior with `ARL_HIGHLIGHT_CONDENSED_COMBAT_CONTINUITY_ENABLED=0` for rollback.
+
 如果你只想导出完整对局，不使用浓缩剪辑：
 
 ```env

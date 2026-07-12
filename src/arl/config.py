@@ -240,6 +240,13 @@ class HighlightSettings(BaseModel):
     condensed_continuity_bridge_seconds: float = 3.0
     condensed_action_resolution_tail_seconds: float = 40.0
     condensed_action_resolution_gap_seconds: float = 8.0
+    condensed_combat_continuity_enabled: bool = True
+    condensed_combat_sample_interval_seconds: float = 2.0
+    condensed_combat_enter_activity_threshold: float = 0.055
+    condensed_combat_release_activity_threshold: float = 0.025
+    condensed_combat_lookaround_seconds: float = 30.0
+    condensed_combat_release_samples: int = 3
+    condensed_combat_safety_cap_seconds: float = 180.0
 
     # 优先级权重
     condensed_priority_key_event: float = 1.0
@@ -1251,6 +1258,58 @@ def load_settings() -> Settings:
                 _env_float(
                     "ARL_HIGHLIGHT_CONDENSED_ACTION_RESOLUTION_GAP_SECONDS",
                     8.0,
+                ),
+            ),
+            condensed_combat_continuity_enabled=_env_bool(
+                "ARL_HIGHLIGHT_CONDENSED_COMBAT_CONTINUITY_ENABLED",
+                True,
+            ),
+            condensed_combat_sample_interval_seconds=max(
+                0.5,
+                _env_float(
+                    "ARL_HIGHLIGHT_CONDENSED_COMBAT_SAMPLE_INTERVAL_SECONDS",
+                    2.0,
+                ),
+            ),
+            condensed_combat_enter_activity_threshold=min(
+                1.0,
+                max(
+                    0.0,
+                    _env_float(
+                        "ARL_HIGHLIGHT_CONDENSED_COMBAT_ENTER_ACTIVITY_THRESHOLD",
+                        0.055,
+                    ),
+                ),
+            ),
+            condensed_combat_release_activity_threshold=min(
+                1.0,
+                max(
+                    0.0,
+                    _env_float(
+                        "ARL_HIGHLIGHT_CONDENSED_COMBAT_RELEASE_ACTIVITY_THRESHOLD",
+                        0.025,
+                    ),
+                ),
+            ),
+            condensed_combat_lookaround_seconds=max(
+                0.0,
+                _env_float(
+                    "ARL_HIGHLIGHT_CONDENSED_COMBAT_LOOKAROUND_SECONDS",
+                    30.0,
+                ),
+            ),
+            condensed_combat_release_samples=max(
+                2,
+                _env_int(
+                    "ARL_HIGHLIGHT_CONDENSED_COMBAT_RELEASE_SAMPLES",
+                    3,
+                ),
+            ),
+            condensed_combat_safety_cap_seconds=max(
+                30.0,
+                _env_float(
+                    "ARL_HIGHLIGHT_CONDENSED_COMBAT_SAFETY_CAP_SECONDS",
+                    180.0,
                 ),
             ),
             condensed_kda_event_detection_enabled=_env_bool(

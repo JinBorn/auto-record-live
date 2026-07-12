@@ -827,6 +827,13 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
             os.environ["ARL_HIGHLIGHT_CONDENSED_CONTINUITY_BRIDGE_SECONDS"] = "6"
             os.environ["ARL_HIGHLIGHT_CONDENSED_ACTION_RESOLUTION_TAIL_SECONDS"] = "31"
             os.environ["ARL_HIGHLIGHT_CONDENSED_ACTION_RESOLUTION_GAP_SECONDS"] = "9"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_COMBAT_CONTINUITY_ENABLED"] = "0"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_COMBAT_SAMPLE_INTERVAL_SECONDS"] = "1.5"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_COMBAT_ENTER_ACTIVITY_THRESHOLD"] = "0.08"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_COMBAT_RELEASE_ACTIVITY_THRESHOLD"] = "0.03"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_COMBAT_LOOKAROUND_SECONDS"] = "24"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_COMBAT_RELEASE_SAMPLES"] = "4"
+            os.environ["ARL_HIGHLIGHT_CONDENSED_COMBAT_SAFETY_CAP_SECONDS"] = "150"
             os.environ["ARL_HIGHLIGHT_CONDENSED_KDA_EVENT_DETECTION_ENABLED"] = "0"
             os.environ["ARL_HIGHLIGHT_CONDENSED_KDA_CROP_REGION"] = "10,20,30,40"
             os.environ["ARL_HIGHLIGHT_CONDENSED_KDA_SAMPLE_INTERVAL_SECONDS"] = "3"
@@ -879,6 +886,13 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
         self.assertEqual(settings.highlights.condensed_continuity_bridge_seconds, 6.0)
         self.assertEqual(settings.highlights.condensed_action_resolution_tail_seconds, 31.0)
         self.assertEqual(settings.highlights.condensed_action_resolution_gap_seconds, 9.0)
+        self.assertFalse(settings.highlights.condensed_combat_continuity_enabled)
+        self.assertEqual(settings.highlights.condensed_combat_sample_interval_seconds, 1.5)
+        self.assertEqual(settings.highlights.condensed_combat_enter_activity_threshold, 0.08)
+        self.assertEqual(settings.highlights.condensed_combat_release_activity_threshold, 0.03)
+        self.assertEqual(settings.highlights.condensed_combat_lookaround_seconds, 24.0)
+        self.assertEqual(settings.highlights.condensed_combat_release_samples, 4)
+        self.assertEqual(settings.highlights.condensed_combat_safety_cap_seconds, 150.0)
         self.assertFalse(settings.highlights.condensed_kda_event_detection_enabled)
         self.assertEqual(settings.highlights.condensed_kda_crop_region, (10, 20, 30, 40))
         self.assertEqual(settings.highlights.condensed_kda_sample_interval_seconds, 3.0)

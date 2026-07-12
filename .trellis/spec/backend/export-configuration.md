@@ -2025,6 +2025,13 @@ def _video_quality_args(self) -> list[str]:
 | `ARL_HIGHLIGHT_CONDENSED_START_EDGE_SECONDS` | float or unset | unset normally; publish preset sets `1.0` | Optional shorter match-start context. When unset, start context follows `ARL_HIGHLIGHT_KEEP_EDGE_SECONDS`; publish uses a short marker to avoid long fountain/scoreboard openings while preserving edit-plan edge validity |
 | `ARL_HIGHLIGHT_CONDENSED_ACTION_RESOLUTION_TAIL_SECONDS` | float | 40.0 | Maximum short narration tail retained after key/tactical action windows |
 | `ARL_HIGHLIGHT_CONDENSED_ACTION_RESOLUTION_GAP_SECONDS` | float | 8.0 | Maximum subtitle gap considered continuous action-resolution narration |
+| `ARL_HIGHLIGHT_CONDENSED_COMBAT_CONTINUITY_ENABLED` | bool | True | Protect adaptive fight/teamfight/chase intervals from internal trimming and final budget shrinking |
+| `ARL_HIGHLIGHT_CONDENSED_COMBAT_SAMPLE_INTERVAL_SECONDS` | float | 2.0 | Candidate-local video sampling interval for combat-boundary activity, minimum 0.5s |
+| `ARL_HIGHLIGHT_CONDENSED_COMBAT_ENTER_ACTIVITY_THRESHOLD` | float | 0.055 | Strong local frame-difference threshold that sustains combat protection |
+| `ARL_HIGHLIGHT_CONDENSED_COMBAT_RELEASE_ACTIVITY_THRESHOLD` | float | 0.025 | Lower hysteresis threshold that keeps a resolving encounter active |
+| `ARL_HIGHLIGHT_CONDENSED_COMBAT_LOOKAROUND_SECONDS` | float | 30.0 | Candidate-local search range before and after combat anchors |
+| `ARL_HIGHLIGHT_CONDENSED_COMBAT_RELEASE_SAMPLES` | int | 3 | Consecutive low-activity samples required before releasing protection, minimum 2 |
+| `ARL_HIGHLIGHT_CONDENSED_COMBAT_SAFETY_CAP_SECONDS` | float | 180.0 | Failsafe adaptive-interval target; logged when reached, not the normal release rule |
 | `ARL_HIGHLIGHT_CONDENSED_KDA_EVENT_DETECTION_ENABLED` | bool | True | Preserve detected KDA kill/death changes as condensed key events |
 | `ARL_HIGHLIGHT_CONDENSED_KDA_CROP_REGION` | `x,y,w,h` | `1665,0,85,32` | 1080p top-right player KDA crop |
 | `ARL_HIGHLIGHT_CONDENSED_KDA_SAMPLE_INTERVAL_SECONDS` | float | 10.0 | Sampling interval for KDA event detection |

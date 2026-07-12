@@ -11,7 +11,11 @@ import numpy as np
 
 from arl.config import HighlightSettings, Settings, StorageSettings
 from arl.highlights.models import ClassifiedCue, HighlightPlannerStateFile
-from arl.highlights.service import HighlightPlannerService, _SrtCue
+from arl.highlights.service import (
+    HighlightPlannerService,
+    _CombatActivitySample,
+    _SrtCue,
+)
 from arl.shared.contracts import (
     HighlightClipWindow,
     HighlightPlanAsset,
@@ -844,6 +848,74 @@ class HighlightPlannerServiceTest(unittest.TestCase):
             100.0,
         )
 
+    def test_adaptive_combat_interval_extends_until_activity_releases(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        cue = ClassifiedCue(50.0, 52.0, "teamfight starts", "key_event", 1.0)
+        samples = [
+            _CombatActivitySample(40.0, 0.01),
+            _CombatActivitySample(42.0, 0.07),
+            _CombatActivitySample(44.0, 0.04),
+            _CombatActivitySample(46.0, 0.06),
+            _CombatActivitySample(52.0, 0.08),
+            _CombatActivitySample(54.0, 0.04),
+            _CombatActivitySample(56.0, 0.03),
+            _CombatActivitySample(58.0, 0.01),
+            _CombatActivitySample(60.0, 0.01),
+            _CombatActivitySample(62.0, 0.01),
+        ]
+
+        intervals = service._detect_combat_protected_intervals(
+            classified_cues=[cue],
+            kda_event_cues=[],
+            match_duration_seconds=120.0,
+            activity_samples=samples,
+        )
+
+        self.assertEqual(len(intervals), 1)
+        self.assertLessEqual(intervals[0][0], 42.0)
+        self.assertGreaterEqual(intervals[0][1], 56.0)
+        self.assertLess(intervals[0][1], 62.0)
+
+    def test_combat_continuity_does_not_protect_motion_without_combat_anchor(self) -> None:
+        service = HighlightPlannerService(self.settings)
+
+        intervals = service._detect_combat_protected_intervals(
+            classified_cues=[
+                ClassifiedCue(20.0, 22.0, "ordinary lane narration", "narration", 0.4)
+            ],
+            kda_event_cues=[],
+            match_duration_seconds=120.0,
+            activity_samples=[_CombatActivitySample(20.0, 0.2)],
+        )
+
+        self.assertEqual(intervals, [])
+
+    def test_combat_interval_protects_silent_internal_fight(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        windows = [HighlightClipWindow(
+            started_at_seconds=0.0,
+            ended_at_seconds=100.0,
+            reason="condensed_key_event",
+        )]
+        speech_cues = [
+            _SrtCue(0.0, 10.0, "setup"),
+            _SrtCue(90.0, 100.0, "resolution"),
+        ]
+
+        trimmed = service._trim_low_value_internal_gaps(
+            windows,
+            speech_cues=speech_cues,
+            kda_event_cues=[],
+            classified_cues=[],
+            match_duration_seconds=120.0,
+            combat_protected_intervals=[(20.0, 80.0)],
+        )
+
+        self.assertTrue(any(
+            item.started_at_seconds <= 20.0 and item.ended_at_seconds >= 80.0
+            for item in trimmed
+        ))
+
     def test_extend_action_resolution_keeps_failed_gank_explanation(self) -> None:
         service = HighlightPlannerService(self.settings)
         windows = [
@@ -1179,6 +1251,33 @@ class HighlightPlannerServiceTest(unittest.TestCase):
                     for w in shrunk
                 )
             )
+
+    def test_budget_shrink_preserves_combat_interval_and_records_it(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        windows = [HighlightClipWindow(
+            started_at_seconds=0.0,
+            ended_at_seconds=500.0,
+            reason="condensed_key_event",
+        )]
+
+        shrunk, exception_reason = service._shrink_windows_to_budget(
+            windows,
+            kda_event_cues=[],
+            speech_cues=[],
+            classified_cues=[
+                ClassifiedCue(200.0, 202.0, "teamfight", "key_event", 1.0)
+            ],
+            target_duration_seconds=60.0,
+            match_duration_seconds=600.0,
+            combat_protected_intervals=[(100.0, 400.0)],
+        )
+
+        self.assertTrue(any(
+            item.started_at_seconds <= 100.0 and item.ended_at_seconds >= 400.0
+            for item in shrunk
+        ))
+        self.assertIsNotNone(exception_reason)
+        self.assertIn("combat_protected=300s", exception_reason)
 
     def test_protect_speech_boundaries_caps_extension_in_shrink_mode(self) -> None:
         service = HighlightPlannerService(self.settings)

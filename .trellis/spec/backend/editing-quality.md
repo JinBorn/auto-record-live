@@ -77,10 +77,23 @@ pipeline stage (after the KDA-restore/bridge fixpoint):
   boundary — a retreat could cut back into a protected KDA span).
 - When protected content + 45s-gap bridging exceed the budget, the plan keeps
   quality guarantees and records `budget_exception_reason` instead.
+- Combat continuity is a hard protection source alongside KDA. Combat-related
+  key/tactical windows seed adaptive encounter intervals; candidate-local frame
+  activity and nearby narration determine how far protection extends. Internal-gap
+  trimming and final budget shrinking consume the same merged protection set.
+- Combat release uses hysteresis (`enter > release`) and several consecutive low
+  samples. Fixed durations are debounce/lookaround/safety controls, not the primary
+  encounter boundary. If video evidence is unavailable, the containing retained
+  combat window remains protected using cue/KDA evidence.
 
 Env knobs: `ARL_HIGHLIGHT_CONDENSED_BUDGET_SHRINK_ENABLED` (rollback switch),
 `..._BUDGET_TRIM_STEP_SECONDS` (15), `..._BUDGET_MAX_SPEECH_EXTENSION_SECONDS`
 (3), `ARL_QUALITY_REPORT_DURATION_BUDGET_ENFORCED`.
+
+Combat continuity knobs: `ARL_HIGHLIGHT_CONDENSED_COMBAT_CONTINUITY_ENABLED`,
+`..._COMBAT_SAMPLE_INTERVAL_SECONDS`, `..._COMBAT_ENTER_ACTIVITY_THRESHOLD`,
+`..._COMBAT_RELEASE_ACTIVITY_THRESHOLD`, `..._COMBAT_LOOKAROUND_SECONDS`,
+`..._COMBAT_RELEASE_SAMPLES`, and `..._COMBAT_SAFETY_CAP_SECONDS`.
 
 ## Lesson: Mid-Pipeline Budget Caps Get Re-Inflated
 
