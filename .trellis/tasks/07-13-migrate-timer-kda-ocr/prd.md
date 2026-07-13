@@ -14,10 +14,10 @@ Run existing timer and KDA recognition through the shared visual-analysis stage 
 
 ## Acceptance Criteria
 
-- [ ] Existing timer/KDA OCR and pipeline tests pass against asset-backed consumers.
-- [ ] Fixture boundaries and KDA events match legacy behavior within timestamp tolerance.
-- [ ] Highlight/edit reruns do not repeat coarse OCR when the visual asset is valid.
-- [ ] Fallback behavior works with missing, stale, and partially degraded assets.
+- [x] Existing timer/KDA OCR and pipeline tests pass against asset-backed consumers.
+- [x] Fixture boundaries and KDA events match legacy behavior within timestamp tolerance.
+- [x] Highlight/edit reruns do not repeat coarse OCR when the visual asset is valid.
+- [x] Fallback behavior works with missing, stale, and partially degraded assets.
 
 ## Out of Scope
 

@@ -290,6 +290,10 @@ graph was fixed).
 - Never compensate coarse OCR timestamps with a fixed negative offset. HUD
   and sampling latency vary per event, and fixed offsets preserve false hits.
 - If refinement cannot confirm a transition, omit the decorative SFX.
+- Shared `vision-analysis` now owns this coarse-to-refined KDA evidence. The
+  highlight planner must consume the persisted event instead of opening the
+  recording again; compatibility plan events remain the durable downstream SFX
+  and zoom contract during migration.
 
 ## Semantic SFX Selection Contract
 

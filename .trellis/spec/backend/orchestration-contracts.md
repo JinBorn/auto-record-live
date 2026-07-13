@@ -1823,3 +1823,25 @@ subtitle_path.write_text(build_srt(entries), encoding="utf-8")
 - Detector failure isolation preserves other readings.
 - Refinement ranges merge and obey source/frame caps.
 - Chunk-local frames map to correct recording-relative timestamps.
+
+### Timer / Scene / KDA Migration
+
+- The shared stage registers `timer` and `scene` at the legacy vision sample
+  interval and `kda` at the condensed KDA interval. The smallest due interval
+  still owns one coarse decode schedule.
+- Timer and scene adapters call the existing `read_timer` and `classify_scene`
+  functions; KDA calls the existing `read_kda` function. Migration must not
+  introduce a second OCR implementation.
+- KDA coarse changes use the existing confidence, non-decreasing counter,
+  reading-gap, and maximum-event-delta rules. Publish frame refinement requests
+  the coarse baseline-to-target range and accepts the first target value that
+  remains stable for three frames after a baseline frame.
+- `SegmenterService` prefers persisted timer+scene evidence only when both
+  detector sections are usable and produce complete segments. Incomplete or
+  missing evidence logs `source=legacy_scan` and retains the adaptive direct
+  scan during rollout.
+- `HighlightPlannerService` prefers persisted `kda_change` events, converts
+  source timestamps to match-relative compatibility cues, and continues
+  populating `HighlightPlanAsset.kda_events`. Missing/degraded KDA evidence
+  retains the legacy direct scan; a healthy detector with zero events is a
+  valid no-kill/death result and must not trigger a duplicate scan.

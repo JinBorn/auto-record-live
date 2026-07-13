@@ -32,3 +32,7 @@ class VisionDetector(Protocol):
         *,
         provenance: str,
     ) -> DetectorOutput: ...
+
+
+class FinalizingVisionDetector(VisionDetector, Protocol):
+    def finalize(self) -> DetectorOutput: ...

@@ -285,13 +285,39 @@ class SegmenterService:
     ) -> list[MatchBoundary]:
         """Use vision module to detect match boundaries."""
         from arl.vision import VisionMatchDetector
+        from arl.vision_analysis.view import VisionAnalysisView
 
         recording_path = Path(asset.path)
         if not recording_path.exists():
             raise FileNotFoundError(f"Recording not found: {recording_path}")
 
         detector = VisionMatchDetector(self.settings.vision)
-        segments = detector.detect(recording_path)
+        view = VisionAnalysisView.latest_for_session(
+            self.settings.storage.temp_dir / "vision-analysis-assets.jsonl",
+            asset.session_id,
+        )
+        segments = []
+        if (
+            view is not None
+            and view.detector_usable("timer")
+            and view.detector_usable("scene")
+        ):
+            candidate_segments = detector.detect_from_readings(
+                timer_readings=view.timer_readings(),
+                scene_readings=view.scene_readings(),
+            )
+            if candidate_segments and all(item.is_complete for item in candidate_segments):
+                segments = candidate_segments
+                log(
+                    "segmenter",
+                    f"vision source=shared_asset session_id={asset.session_id}",
+                )
+        if not segments:
+            log(
+                "segmenter",
+                f"vision source=legacy_scan session_id={asset.session_id}",
+            )
+            segments = detector.detect(recording_path)
 
         if not segments:
             log(

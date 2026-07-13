@@ -77,6 +77,33 @@ class VisionMatchDetector:
 
         return segments
 
+    def detect_from_readings(
+        self,
+        *,
+        timer_readings: list[TimerReading],
+        scene_readings: list[SceneReading],
+    ) -> list[MatchSegment]:
+        """Build match segments from durable shared-analysis evidence.
+
+        Local adaptive refinement remains owned by ``detect`` during rollout;
+        callers fall back to that path when persisted coarse evidence does not
+        yield complete segments.
+        """
+        segments = stitch_scene_readings(
+            scene_readings,
+            match_start_threshold_seconds=self.settings.match_start_threshold_seconds,
+            min_match_duration_seconds=self.settings.min_match_duration_seconds,
+            min_complete_timer_seconds=self.settings.min_complete_timer_seconds,
+            timer_readings=timer_readings,
+        )
+        if segments:
+            return segments
+        return stitch_matches(
+            timer_readings,
+            match_start_threshold_seconds=self.settings.match_start_threshold_seconds,
+            lobby_gap_threshold_seconds=self.settings.lobby_gap_threshold_seconds,
+        )
+
     # ── refinement ───────────────────────────────────────────────
 
     def _refine_segment_starts(

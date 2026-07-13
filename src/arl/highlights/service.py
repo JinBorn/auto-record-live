@@ -776,6 +776,24 @@ class HighlightPlannerService:
         ):
             return []
 
+        persisted = self._kda_event_cues_from_vision_asset(
+            boundary=boundary,
+            duration=duration,
+        )
+        if persisted is not None:
+            log(
+                "highlights",
+                "KDA source=shared_asset "
+                f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                f"count={len(persisted)}",
+            )
+            return persisted
+        log(
+            "highlights",
+            "KDA source=legacy_scan "
+            f"session_id={boundary.session_id} match_index={boundary.match_index}",
+        )
+
         from arl.vision.frame_sampler import sample_every_frame_window, sample_frame_window
         from arl.vision.kda_ocr import read_kda
 
@@ -919,6 +937,84 @@ class HighlightPlannerService:
             previous = current
 
         return events
+
+    def _kda_event_cues_from_vision_asset(
+        self,
+        *,
+        boundary: MatchBoundary,
+        duration: float,
+    ) -> list[ClassifiedCue] | None:
+        from arl.vision_analysis.view import VisionAnalysisView
+
+        view = VisionAnalysisView.latest_for_session(
+            self.settings.storage.temp_dir / "vision-analysis-assets.jsonl",
+            boundary.session_id,
+        )
+        if view is None or not view.detector_usable("kda"):
+            return None
+        cues: list[ClassifiedCue] = []
+        last_death_observed_at: float | None = None
+        for event in view.events("kda_change"):
+            observed_at = event.observed_at_seconds
+            if not (
+                boundary.started_at_seconds
+                <= observed_at
+                <= boundary.ended_at_seconds
+            ):
+                continue
+            attrs = event.attributes
+            previous_kills = int(attrs.get("previous_kills", 0))
+            current_kills = int(attrs.get("current_kills", previous_kills))
+            previous_deaths = int(attrs.get("previous_deaths", 0))
+            current_deaths = int(attrs.get("current_deaths", previous_deaths))
+            kill_delta = current_kills - previous_kills
+            death_delta = current_deaths - previous_deaths
+            current_relative = observed_at - boundary.started_at_seconds
+            previous_relative = max(
+                0.0, event.started_at_seconds - boundary.started_at_seconds
+            )
+            suppression_seconds = (
+                self.settings.highlights.condensed_kda_post_death_kill_suppression_seconds
+            )
+            if (
+                death_delta == 0
+                and kill_delta > 0
+                and last_death_observed_at is not None
+                and suppression_seconds > 0.0
+                and current_relative - last_death_observed_at <= suppression_seconds
+            ):
+                continue
+            preroll = (
+                self.settings.highlights.condensed_kda_death_preroll_seconds
+                if death_delta > 0
+                else self.settings.highlights.condensed_kda_kill_preroll_seconds
+            )
+            event_start = max(0.0, previous_relative - preroll)
+            event_end = min(
+                duration,
+                current_relative
+                + self.settings.highlights.condensed_kda_postroll_seconds,
+            )
+            if event_end <= event_start:
+                event_end = min(duration, event_start + 1.0)
+            cues.append(
+                ClassifiedCue(
+                    started_at_seconds=event_start,
+                    ended_at_seconds=event_end,
+                    text=(
+                        "kda_change "
+                        f"kills={previous_kills}->{current_kills} "
+                        f"deaths={previous_deaths}->{current_deaths} "
+                        f"previous_at={previous_relative:.3f} "
+                        f"current_at={current_relative:.3f}"
+                    ),
+                    category="key_event",
+                    priority=self.settings.highlights.condensed_priority_key_event,
+                )
+            )
+            if death_delta > 0:
+                last_death_observed_at = current_relative
+        return cues
 
     def _refine_kda_change_timestamp(
         self,

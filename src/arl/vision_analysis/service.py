@@ -16,6 +16,7 @@ from arl.shared.logging import log
 from arl.vision.frame_sampler import sample_every_frame_window, sample_frame_window
 
 from .detectors import RefinementRequest, VisionDetector
+from .builtin_detectors import build_builtin_detectors
 from .layouts import LOL_ZH_1080P, VisionLayoutProfile
 from .models import (
     VisionAnalysisAsset,
@@ -30,13 +31,16 @@ class VisionAnalysisService:
         self,
         settings: Settings,
         *,
-        detectors: Iterable[VisionDetector] = (),
+        detectors: Iterable[VisionDetector] | None = None,
         layout: VisionLayoutProfile = LOL_ZH_1080P,
         sample_window: Callable[..., list[tuple[float, Any]]] = sample_frame_window,
         sample_every_frame: Callable[..., list[tuple[float, Any]]] = sample_every_frame_window,
     ) -> None:
         self.settings = settings
-        self.detectors = sorted(detectors, key=lambda item: item.name)
+        resolved_detectors = (
+            build_builtin_detectors(settings) if detectors is None else list(detectors)
+        )
+        self.detectors = sorted(resolved_detectors, key=lambda item: item.name)
         self.layout = layout
         self.sample_window = sample_window
         self.sample_every_frame = sample_every_frame
@@ -73,6 +77,10 @@ class VisionAnalysisService:
         *,
         force_reprocess: bool,
     ) -> VisionAnalysisAsset | None:
+        for detector in self.detectors:
+            reset = getattr(detector, "reset", None)
+            if reset is not None:
+                reset()
         started = time.perf_counter()
         duration = recording_duration_seconds(recording)
         input_fingerprint = self._input_fingerprint(recording, duration)
@@ -199,6 +207,22 @@ class VisionAnalysisService:
                     break
             if metrics.refinement_cap_exhausted:
                 break
+
+        for detector in self.detectors:
+            finalize = getattr(detector, "finalize", None)
+            if finalize is None:
+                continue
+            item = health[detector.name]
+            try:
+                output = finalize()
+            except Exception as exc:
+                item.status = "degraded"
+                item.detail = f"finalize {type(exc).__name__}: {exc}"
+                status = "degraded"
+                continue
+            item.accepted_readings += len(output.readings)
+            readings.extend(output.readings)
+            events.extend(output.events)
 
         metrics.wall_time_seconds = round(time.perf_counter() - started, 3)
         asset = VisionAnalysisAsset(

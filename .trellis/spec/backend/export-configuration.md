@@ -287,6 +287,11 @@ command.extend(["-vf", self._subtitle_filter_arg(subtitle_filter_path)])
 - Condensed target duration is dynamic, not a fixed 7-9 or 7-11 minute target. Defaults map low/mid/high density to roughly 7-20 minutes: `condensed_low_density_duration_range=(7,11)`, `condensed_mid_density_duration_range=(10,16)`, `condensed_high_density_duration_range=(16,20)`, with `condensed_target_duration_range=(7,20)` as the continuous-span cap.
 - Condensed optimization must preserve every `key_event` cue even when duration reduction would otherwise drop a lower-positioned key-event window. The optimizer may exceed the target duration slightly to restore missing key-event windows.
 - Condensed planning must treat detected player KDA kill/death increases from the top-right HUD as synthetic `key_event` cues. This KDA pass is best-effort OCR: unreadable frames must not block plan generation, but valid non-decreasing K/D/A changes must be preserved like subtitle-derived key events.
+- During the shared-vision rollout, condensed planning prefers durable
+  `vision-analysis` KDA events and falls back to its legacy direct scan only
+  when the asset/detector section is missing, stale, or degraded. Durable event
+  timestamps are recording-relative and are converted to match-relative cue
+  text before writing compatibility `HighlightPlanAsset.kda_events`.
 - KDA event windows must cover the interval from before the previous stable KDA reading through shortly after the changed reading, not only the changed/death-wait sample. Death changes need more pre-roll than kill-only changes because the lead-up to being killed is usually more valuable than the waiting-to-respawn segment.
 - KDA default context should stay tight enough for highlight density: kill-only events default to `15s` preroll, death events default to `30s` preroll, and postroll defaults to `5s`. Operators may increase these via env when OCR sampling is sparse, but longer values make oversized `condensed_key_event` windows more likely.
 - KDA-derived kill-only changes after a death are still key events by default. A non-zero `condensed_kda_post_death_kill_suppression_seconds` is an explicit operator override for known HUD catch-up noise; the default must preserve these changes because real post-death kill credit can happen before respawn.
