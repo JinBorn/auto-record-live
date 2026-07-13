@@ -1063,6 +1063,13 @@ class SettingsValidatorTests(unittest.TestCase):
         self.assertEqual(settings.vision_analysis.refinement_max_source_fraction, 1.0)
         self.assertEqual(settings.vision_analysis.refinement_max_frames, 1)
 
+    def test_new_vision_signals_default_to_shadow_mode(self) -> None:
+        settings = Settings()
+
+        self.assertTrue(settings.vision_analysis.death_respawn_enabled)
+        self.assertTrue(settings.vision_analysis.match_result_enabled)
+        self.assertTrue(settings.vision_analysis.new_signals_shadow_mode)
+
     def test_settings_with_empty_platforms_defaults_to_douyin(self) -> None:
         """``WindowsAgentService(settings)`` calls ``build_probes(settings.platforms)``
         — an empty list would silently produce a service with no probes. The

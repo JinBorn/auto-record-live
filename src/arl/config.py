@@ -200,6 +200,13 @@ class VisionAnalysisSettings(BaseModel):
     coarse_interval_seconds: float = 10.0
     refinement_max_source_fraction: float = 0.15
     refinement_max_frames: int = 54000
+    death_respawn_enabled: bool = True
+    match_result_enabled: bool = True
+    new_signals_shadow_mode: bool = True
+    respawn_crop_region: tuple[int, int, int, int] = (610, 270, 700, 170)
+    match_result_crop_region: tuple[int, int, int, int] = (560, 300, 800, 420)
+    respawn_coarse_interval_seconds: float = 10.0
+    match_result_coarse_interval_seconds: float = 10.0
 
     @model_validator(mode="after")
     def _normalize(self) -> "VisionAnalysisSettings":
@@ -209,6 +216,12 @@ class VisionAnalysisSettings(BaseModel):
             1.0, max(0.0, self.refinement_max_source_fraction)
         )
         self.refinement_max_frames = max(1, self.refinement_max_frames)
+        self.respawn_coarse_interval_seconds = max(
+            1.0, self.respawn_coarse_interval_seconds
+        )
+        self.match_result_coarse_interval_seconds = max(
+            1.0, self.match_result_coarse_interval_seconds
+        )
         return self
 class HighlightSettings(BaseModel):
     enabled: bool = True
@@ -1469,6 +1482,35 @@ def load_settings() -> Settings:
             ),
             refinement_max_frames=max(
                 1, _env_int("ARL_VISION_ANALYSIS_REFINEMENT_MAX_FRAMES", 54000)
+            ),
+            death_respawn_enabled=_env_bool(
+                "ARL_VISION_ANALYSIS_DEATH_RESPAWN_ENABLED", True
+            ),
+            match_result_enabled=_env_bool(
+                "ARL_VISION_ANALYSIS_MATCH_RESULT_ENABLED", True
+            ),
+            new_signals_shadow_mode=_env_bool(
+                "ARL_VISION_ANALYSIS_NEW_SIGNALS_SHADOW_MODE", True
+            ),
+            respawn_crop_region=_env_int_tuple4(
+                "ARL_VISION_ANALYSIS_RESPAWN_CROP_REGION",
+                (610, 270, 700, 170),
+            ),
+            match_result_crop_region=_env_int_tuple4(
+                "ARL_VISION_ANALYSIS_MATCH_RESULT_CROP_REGION",
+                (560, 300, 800, 420),
+            ),
+            respawn_coarse_interval_seconds=max(
+                1.0,
+                _env_float(
+                    "ARL_VISION_ANALYSIS_RESPAWN_COARSE_INTERVAL_SECONDS", 10.0
+                ),
+            ),
+            match_result_coarse_interval_seconds=max(
+                1.0,
+                _env_float(
+                    "ARL_VISION_ANALYSIS_MATCH_RESULT_COARSE_INTERVAL_SECONDS", 10.0
+                ),
             ),
         ),
         editing=EditingSettings(

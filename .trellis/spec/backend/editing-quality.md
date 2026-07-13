@@ -295,6 +295,17 @@ graph was fixed).
   recording again; compatibility plan events remain the durable downstream SFX
   and zoom contract during migration.
 
+## Vision Death/Result Shadow Review
+
+- Death/respawn and Chinese victory/defeat signals are evidence-only during
+  initial rollout. They may propose removing the middle of a respawn wait while
+  preserving three seconds of reaction/context, or propose a match-end/result
+  timestamp, but must not mutate production windows or boundaries.
+- Review at least three representative 1080p sessions before active mode. Check
+  countdown monotonicity, false gray-screen reads, missed deaths, result
+  agreement, proposed trim start/end, and whether ending context remains
+  natural.
+
 ## Semantic SFX Selection Contract
 
 - Optional reaction/comedic SFX uses the existing one-call copywriter semantic asset;

@@ -65,3 +65,20 @@ class VisionAnalysisAsset(BaseModel):
 
 class VisionAnalysisStateFile(BaseModel):
     processed_fingerprint_by_session: dict[str, str] = Field(default_factory=dict)
+
+
+class VisionShadowProposal(BaseModel):
+    kind: str
+    started_at_seconds: float | None = None
+    ended_at_seconds: float | None = None
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    evidence_event_ids: list[str] = Field(default_factory=list)
+
+
+class VisionAnalysisShadowReport(BaseModel):
+    session_id: str
+    input_fingerprint: str
+    proposals: list[VisionShadowProposal] = Field(default_factory=list)
+    accepted_event_count: int = 0
+    rejected_reason: str | None = None
+    created_at: datetime

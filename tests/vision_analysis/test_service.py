@@ -18,6 +18,7 @@ from arl.shared.contracts import (
 from arl.shared.jsonl_store import append_model, load_models
 from arl.vision_analysis.detectors import DetectorOutput, RefinementRequest
 from arl.vision_analysis.models import VisionAnalysisAsset, VisionReading
+from arl.vision_analysis.models import VisionEvent
 from arl.vision_analysis.service import VisionAnalysisService
 
 
@@ -218,3 +219,45 @@ class VisionAnalysisServiceTests(TestCase):
 
         self.assertEqual([item.at_seconds for item in asset.readings], [0.0, 10.0])
         self.assertEqual(asset.metrics.coarse_decoded_frames, 2)
+
+    def test_shadow_report_records_proposed_adjustments_without_mutation(self) -> None:
+        asset = VisionAnalysisAsset(
+            session_id="session-shadow",
+            recording_path=str(self.video),
+            source_duration_seconds=600.0,
+            input_fingerprint="input",
+            config_fingerprint="config",
+            schema_version=1,
+            layout_profile="lol_zh_1080p_v1",
+            status="ok",
+            events=[
+                VisionEvent(
+                    event_id="death-1",
+                    kind="death_respawn_state",
+                    started_at_seconds=100.0,
+                    ended_at_seconds=130.0,
+                    observed_at_seconds=100.0,
+                    confidence=0.8,
+                    attributes={"proposed_respawn_at": 130.0},
+                ),
+                VisionEvent(
+                    event_id="result-1",
+                    kind="match_result",
+                    started_at_seconds=590.0,
+                    ended_at_seconds=592.0,
+                    observed_at_seconds=590.0,
+                    confidence=0.9,
+                    attributes={"result": "victory"},
+                ),
+            ],
+            created_at=datetime.now(timezone.utc),
+        )
+
+        report = VisionAnalysisService._build_shadow_report(asset)
+
+        self.assertEqual(report.accepted_event_count, 2)
+        self.assertEqual(
+            [item.kind for item in report.proposals],
+            ["death_wait_trim_candidate", "match_end_candidate"],
+        )
+        self.assertEqual(asset.events[0].started_at_seconds, 100.0)

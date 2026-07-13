@@ -1845,3 +1845,37 @@ subtitle_path.write_text(build_srt(entries), encoding="utf-8")
   populating `HighlightPlanAsset.kda_events`. Missing/degraded KDA evidence
   retains the legacy direct scan; a healthy detector with zero events is a
   valid no-kill/death result and must not trigger a duplicate scan.
+
+### Death / Respawn and Match Result Shadow Signals
+
+- Initial support is limited to the versioned `1920x1080` Chinese-client
+  layout. Respawn and result crop regions are configuration-owned and are not
+  scaled for unsupported resolutions.
+- Respawn countdown OCR accepts only `1..120` seconds. A confirmed
+  `death_respawn_state` requires at least two temporally plausible,
+  non-increasing countdown readings; one frame or increasing/contradictory
+  values produce no event.
+- A coarse KDA death change may request a bounded respawn refinement window.
+  The respawn detector throttles OCR inside frame-by-frame ranges and remains
+  subject to the shared 15% source-range and frame budgets.
+- Chinese `胜利` / `失败` result OCR requires at least two matching observations
+  within three seconds. A single or contradictory read produces no event.
+- New signals default to shadow mode. `vision-analysis-shadow-reports.jsonl`
+  records proposed death-wait trims and match-end/result facts; segmenter,
+  highlights, editing, export, and publishing assets remain unchanged.
+- Reset removes targeted shadow rows. Status reports shadow report/proposal
+  counts. Active rollout requires explicit configuration after at least three
+  representative sessions are reviewed.
+- Missing `pytesseract`, missing Chinese language data, unreadable crops, or
+  detector exceptions are detector-local degradation/no-evidence conditions,
+  never pipeline failures.
+
+Configuration:
+
+- `ARL_VISION_ANALYSIS_DEATH_RESPAWN_ENABLED` (default `1`)
+- `ARL_VISION_ANALYSIS_MATCH_RESULT_ENABLED` (default `1`)
+- `ARL_VISION_ANALYSIS_NEW_SIGNALS_SHADOW_MODE` (default `1`)
+- `ARL_VISION_ANALYSIS_RESPAWN_CROP_REGION`
+- `ARL_VISION_ANALYSIS_MATCH_RESULT_CROP_REGION`
+- `ARL_VISION_ANALYSIS_RESPAWN_COARSE_INTERVAL_SECONDS` (default `10`)
+- `ARL_VISION_ANALYSIS_MATCH_RESULT_COARSE_INTERVAL_SECONDS` (default `10`)

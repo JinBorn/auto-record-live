@@ -21,7 +21,9 @@ from .layouts import LOL_ZH_1080P, VisionLayoutProfile
 from .models import (
     VisionAnalysisAsset,
     VisionAnalysisMetrics,
+    VisionAnalysisShadowReport,
     VisionDetectorHealth,
+    VisionShadowProposal,
 )
 from .store import VisionAnalysisStateStore
 
@@ -46,6 +48,9 @@ class VisionAnalysisService:
         self.sample_every_frame = sample_every_frame
         self.assets_path = settings.storage.temp_dir / "vision-analysis-assets.jsonl"
         self.recordings_path = settings.storage.temp_dir / "recording-assets.jsonl"
+        self.shadow_reports_path = (
+            settings.storage.temp_dir / "vision-analysis-shadow-reports.jsonl"
+        )
         self.state_store = VisionAnalysisStateStore(
             settings.storage.temp_dir / "vision-analysis-state.json"
         )
@@ -241,6 +246,8 @@ class VisionAnalysisService:
             created_at=datetime.now(timezone.utc),
         )
         append_model(self.assets_path, asset)
+        if self.settings.vision_analysis.new_signals_shadow_mode:
+            append_model(self.shadow_reports_path, self._build_shadow_report(asset))
         state = self.state_store.load()
         state.processed_fingerprint_by_session[recording.session_id] = (
             f"{input_fingerprint}:{config_fingerprint}"
@@ -253,6 +260,50 @@ class VisionAnalysisService:
             f"refined_frames={metrics.refined_decoded_frames}",
         )
         return asset
+
+    @staticmethod
+    def _build_shadow_report(asset: VisionAnalysisAsset) -> VisionAnalysisShadowReport:
+        proposals: list[VisionShadowProposal] = []
+        for event in asset.events:
+            if event.kind == "death_respawn_state":
+                proposed_respawn = float(
+                    event.attributes.get("proposed_respawn_at", event.ended_at_seconds)
+                )
+                proposals.append(
+                    VisionShadowProposal(
+                        kind="death_wait_trim_candidate",
+                        started_at_seconds=event.observed_at_seconds + 3.0,
+                        ended_at_seconds=max(
+                            event.observed_at_seconds + 3.0,
+                            proposed_respawn - 3.0,
+                        ),
+                        attributes={"preserve_reaction_seconds": 3.0},
+                        evidence_event_ids=[event.event_id],
+                    )
+                )
+            elif event.kind == "match_result":
+                proposals.append(
+                    VisionShadowProposal(
+                        kind="match_end_candidate",
+                        started_at_seconds=event.observed_at_seconds,
+                        ended_at_seconds=event.ended_at_seconds,
+                        attributes={"result": event.attributes.get("result")},
+                        evidence_event_ids=[event.event_id],
+                    )
+                )
+        new_signal_events = [
+            item
+            for item in asset.events
+            if item.kind in {"death_respawn_state", "match_result"}
+        ]
+        return VisionAnalysisShadowReport(
+            session_id=asset.session_id,
+            input_fingerprint=asset.input_fingerprint,
+            proposals=proposals,
+            accepted_event_count=len(new_signal_events),
+            rejected_reason=None if new_signal_events else "no_confirmed_new_signal_events",
+            created_at=datetime.now(timezone.utc),
+        )
 
     def _merge_refinement_requests(
         self,

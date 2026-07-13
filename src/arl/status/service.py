@@ -30,7 +30,7 @@ from arl.shared.contracts import (
 )
 from arl.shared.jsonl_store import load_models
 from arl.subtitles.models import SubtitleAuditEvent, SubtitleStateFile
-from arl.vision_analysis.models import VisionAnalysisAsset
+from arl.vision_analysis.models import VisionAnalysisAsset, VisionAnalysisShadowReport
 from arl.vision_analysis.store import VisionAnalysisStateStore
 
 
@@ -78,6 +78,10 @@ class StatusService:
         vision_analysis_assets = load_models(
             self.temp_dir / "vision-analysis-assets.jsonl",
             VisionAnalysisAsset,
+        )
+        vision_shadow_reports = load_models(
+            self.temp_dir / "vision-analysis-shadow-reports.jsonl",
+            VisionAnalysisShadowReport,
         )
         recorder_events = load_models(
             self.settings.orchestrator.recorder_event_log_path,
@@ -228,6 +232,11 @@ class StatusService:
                 ),
                 "refined_decoded_frames": sum(
                     item.metrics.refined_decoded_frames for item in vision_analysis_assets
+                ),
+                "shadow_mode": self.settings.vision_analysis.new_signals_shadow_mode,
+                "shadow_reports": len(vision_shadow_reports),
+                "shadow_proposals": sum(
+                    len(item.proposals) for item in vision_shadow_reports
                 ),
             },
             "editing": {

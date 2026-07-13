@@ -32,7 +32,11 @@ from arl.shared.contracts import (
 )
 from arl.shared.logging import log
 from arl.subtitles.models import SubtitleStateFile
-from arl.vision_analysis.models import VisionAnalysisAsset, VisionAnalysisStateFile
+from arl.vision_analysis.models import (
+    VisionAnalysisAsset,
+    VisionAnalysisShadowReport,
+    VisionAnalysisStateFile,
+)
 
 TModel = TypeVar("TModel", bound=BaseModel)
 TState = TypeVar("TState", bound=BaseModel)
@@ -100,6 +104,12 @@ class PostProcessResetService:
         self._rewrite_jsonl(
             self.temp_dir / "vision-analysis-assets.jsonl",
             VisionAnalysisAsset,
+            lambda item: item.session_id in session_ids,
+            result.removed_rows_by_file,
+        )
+        self._rewrite_jsonl(
+            self.temp_dir / "vision-analysis-shadow-reports.jsonl",
+            VisionAnalysisShadowReport,
             lambda item: item.session_id in session_ids,
             result.removed_rows_by_file,
         )

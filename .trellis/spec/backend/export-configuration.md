@@ -292,6 +292,10 @@ command.extend(["-vf", self._subtitle_filter_arg(subtitle_filter_path)])
   when the asset/detector section is missing, stale, or degraded. Durable event
   timestamps are recording-relative and are converted to match-relative cue
   text before writing compatibility `HighlightPlanAsset.kda_events`.
+- `death_respawn_state` and `match_result` visual events are shadow-only in the
+  initial release. Their reports may describe proposed death-wait compression
+  and ending metadata, but exporter inputs remain byte-for-byte governed by the
+  existing boundary/highlight/edit assets until active rollout is approved.
 - KDA event windows must cover the interval from before the previous stable KDA reading through shortly after the changed reading, not only the changed/death-wait sample. Death changes need more pre-roll than kill-only changes because the lead-up to being killed is usually more valuable than the waiting-to-respawn segment.
 - KDA default context should stay tight enough for highlight density: kill-only events default to `15s` preroll, death events default to `30s` preroll, and postroll defaults to `5s`. Operators may increase these via env when OCR sampling is sparse, but longer values make oversized `condensed_key_event` windows more likely.
 - KDA-derived kill-only changes after a death are still key events by default. A non-zero `condensed_kda_post_death_kill_suppression_seconds` is an explicit operator override for known HUD catch-up noise; the default must preserve these changes because real post-death kill credit can happen before respawn.

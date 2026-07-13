@@ -10,6 +10,7 @@ from arl.vision.timer_ocr import read_timer
 
 from .detectors import DetectorOutput, RefinementRequest
 from .models import VisionEvent, VisionReading
+from .new_signal_ocr import read_match_result, read_respawn_countdown
 
 
 def _reading_id(detector: str, at_seconds: float, provenance: str) -> str:
@@ -123,6 +124,17 @@ class KdaVisionDetector:
                                 ended_at_seconds=value[0],
                             )
                         )
+                    if (
+                        value[2] > previous[2]
+                        and self.settings.vision_analysis.death_respawn_enabled
+                    ):
+                        requests.append(
+                            RefinementRequest(
+                                detector="respawn",
+                                started_at_seconds=value[0],
+                                ended_at_seconds=value[0] + 120.0,
+                            )
+                        )
             target.append(value)
         return DetectorOutput(readings=[result], refinement_requests=requests)
 
@@ -226,8 +238,158 @@ class KdaVisionDetector:
         return None
 
 
+class RespawnVisionDetector:
+    name = "respawn"
+    version = "1"
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.coarse_interval_seconds = (
+            settings.vision_analysis.respawn_coarse_interval_seconds
+        )
+        self._observations: list[tuple[float, int, str]] = []
+        self._last_refined_check: float | None = None
+
+    def reset(self) -> None:
+        self._observations.clear()
+        self._last_refined_check = None
+
+    def analyze(self, frame: Any, at_seconds: float, *, provenance: str) -> DetectorOutput:
+        if (
+            provenance == "refined"
+            and self._last_refined_check is not None
+            and at_seconds - self._last_refined_check < 0.45
+        ):
+            return DetectorOutput()
+        if provenance == "refined":
+            self._last_refined_check = at_seconds
+        seconds, confidence = read_respawn_countdown(
+            frame,
+            self.settings.vision_analysis.respawn_crop_region,
+        )
+        reading = VisionReading(
+            reading_id=_reading_id(self.name, at_seconds, provenance),
+            detector=self.name,
+            at_seconds=at_seconds,
+            confidence=confidence,
+            payload={"seconds_remaining": seconds},
+            provenance=provenance,
+        )
+        if seconds is not None and confidence >= 0.7:
+            self._observations.append((at_seconds, seconds, reading.reading_id))
+        return DetectorOutput(readings=[reading])
+
+    def finalize(self) -> DetectorOutput:
+        accepted: list[tuple[float, int, str]] = []
+        for observation in sorted(self._observations):
+            if not accepted:
+                accepted.append(observation)
+                continue
+            elapsed = observation[0] - accepted[-1][0]
+            expected_max = accepted[-1][1] - max(0, int(elapsed) - 2)
+            if observation[1] <= accepted[-1][1] and observation[1] >= expected_max - 3:
+                accepted.append(observation)
+        if len(accepted) < 2:
+            return DetectorOutput()
+        start = accepted[0]
+        end = accepted[-1]
+        return DetectorOutput(
+            events=[
+                VisionEvent(
+                    event_id=hashlib.sha256(
+                        f"death_state:{start[2]}:{end[2]}".encode()
+                    ).hexdigest()[:24],
+                    kind="death_respawn_state",
+                    started_at_seconds=start[0],
+                    ended_at_seconds=end[0] + end[1],
+                    observed_at_seconds=start[0],
+                    confidence=0.8,
+                    evidence_reading_ids=[item[2] for item in accepted],
+                    attributes={
+                        "first_countdown": start[1],
+                        "last_countdown": end[1],
+                        "proposed_respawn_at": end[0] + end[1],
+                    },
+                )
+            ]
+        )
+
+
+class MatchResultVisionDetector:
+    name = "match_result"
+    version = "1"
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.coarse_interval_seconds = (
+            settings.vision_analysis.match_result_coarse_interval_seconds
+        )
+        self._observations: list[tuple[float, str, str]] = []
+
+    def reset(self) -> None:
+        self._observations.clear()
+
+    def analyze(self, frame: Any, at_seconds: float, *, provenance: str) -> DetectorOutput:
+        result, confidence = read_match_result(
+            frame,
+            self.settings.vision_analysis.match_result_crop_region,
+        )
+        reading = VisionReading(
+            reading_id=_reading_id(self.name, at_seconds, provenance),
+            detector=self.name,
+            at_seconds=at_seconds,
+            confidence=confidence,
+            payload={"result": result},
+            provenance=provenance,
+        )
+        requests = []
+        if result is not None and confidence >= 0.8:
+            self._observations.append((at_seconds, result, reading.reading_id))
+            if provenance == "coarse":
+                requests.append(
+                    RefinementRequest(
+                        detector=self.name,
+                        started_at_seconds=max(0.0, at_seconds - 3.0),
+                        ended_at_seconds=at_seconds + 3.0,
+                    )
+                )
+        return DetectorOutput(readings=[reading], refinement_requests=requests)
+
+    def finalize(self) -> DetectorOutput:
+        observations = sorted(self._observations)
+        for index, first in enumerate(observations):
+            matching = [
+                item
+                for item in observations[index:]
+                if item[1] == first[1] and item[0] - first[0] <= 3.0
+            ]
+            if len(matching) < 2:
+                continue
+            return DetectorOutput(
+                events=[
+                    VisionEvent(
+                        event_id=hashlib.sha256(
+                            f"match_result:{first[1]}:{first[2]}".encode()
+                        ).hexdigest()[:24],
+                        kind="match_result",
+                        started_at_seconds=first[0],
+                        ended_at_seconds=matching[-1][0],
+                        observed_at_seconds=first[0],
+                        confidence=0.9,
+                        evidence_reading_ids=[item[2] for item in matching],
+                        attributes={"result": first[1]},
+                    )
+                ]
+            )
+        return DetectorOutput()
+
+
 def build_builtin_detectors(settings: Settings) -> list[object]:
     detectors: list[object] = [TimerVisionDetector(settings), SceneVisionDetector(settings)]
     if settings.highlights.condensed_kda_event_detection_enabled:
         detectors.append(KdaVisionDetector(settings))
+    if settings.vision_analysis.death_respawn_enabled:
+        detectors.append(RespawnVisionDetector(settings))
+    if settings.vision_analysis.match_result_enabled:
+        detectors.append(MatchResultVisionDetector(settings))
     return detectors

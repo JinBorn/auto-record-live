@@ -17,11 +17,11 @@ Add the first new shared-vision signals: player death/respawn state and confirme
 
 ## Acceptance Criteria
 
-- [ ] Death-to-respawn state is stable across intermittent unreadable frames.
-- [ ] Long respawn waits can be trimmed while death setup and reaction remain protected.
-- [ ] Result recognition refines match end and exposes trustworthy win/loss metadata.
-- [ ] False single-frame result/countdown reads are rejected.
-- [ ] Detector failures preserve legacy behavior.
+- [x] Death-to-respawn state is stable across intermittent unreadable frames.
+- [x] Long respawn waits produce a shadow trim proposal while death setup and reaction remain protected.
+- [x] Result recognition produces a shadow match-end proposal and win/loss fact.
+- [x] False single-frame result/countdown reads are rejected.
+- [x] Detector failures preserve legacy behavior.
 - [ ] Shadow reports for at least three representative sessions include accepted/rejected evidence and proposed downstream changes before active rollout.
 
 ## Out of Scope
