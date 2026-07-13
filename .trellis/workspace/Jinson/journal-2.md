@@ -900,3 +900,36 @@ Made condensed highlight cuts finish the current subtitle sentence, raised the p
 ### Next Steps
 
 - None - task complete
+
+
+## Session 75: Shared vision analysis foundation
+
+**Date**: 2026-07-13
+**Task**: Shared vision analysis foundation
+**Branch**: `main`
+
+### Summary
+
+Created the unified vision-analysis task tree and implemented the first child: typed visual assets, 1080p layout validation, shared detector scheduling, chunk-aware source timestamps, bounded merged refinement, cache fingerprints, CLI/publish/postprocess/reset/status integration, tests, and orchestration specs. Full suite passed 743 tests.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `939012c` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
