@@ -9,6 +9,20 @@ from arl.config import Settings
 
 
 class CliUnattendedTest(unittest.TestCase):
+    def test_vision_analysis_command_parses_filters_and_force(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "vision-analysis",
+                "--session-ids",
+                "session-a,session-b",
+                "--force-reprocess",
+            ]
+        )
+
+        self.assertEqual(args.command, "vision-analysis")
+        self.assertEqual(args.session_ids, "session-a,session-b")
+        self.assertTrue(args.force_reprocess)
+
     def test_postprocess_command_parses(self) -> None:
         args = build_parser().parse_args(["postprocess", "--once"])
 

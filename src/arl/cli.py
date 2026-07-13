@@ -35,6 +35,7 @@ from arl.windows_agent.cookie_health import (
     run_cookie_health,
 )
 from arl.windows_agent.live_status import LiveStatusReport, run_live_status
+from arl.vision_analysis.service import VisionAnalysisService
 from arl.windows_agent.registry import build_probes
 from arl.windows_agent.service import WindowsAgentService
 
@@ -376,6 +377,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--keep-files",
         action="store_true",
         help="Only reset manifests/state; do not delete generated subtitle/export/copy files.",
+    )
+    vision_analysis = subparsers.add_parser(
+        "vision-analysis",
+        help="Run the shared recording-scoped visual analysis stage.",
+    )
+    vision_analysis.add_argument("--session-id", help="Only analyze one session id.")
+    vision_analysis.add_argument("--session-ids", help="Only analyze comma-separated session ids.")
+    vision_analysis.add_argument(
+        "--force-reprocess",
+        action="store_true",
+        help="Append replacement visual assets even when a compatible cache exists.",
     )
     subparsers.add_parser(
         "stage-hints-auto",
@@ -856,6 +868,14 @@ def main() -> int:
 
     if args.command == "postprocess":
         PostProcessService(settings).run_once(session_ids=_collect_session_ids(args))
+        return 0
+
+    if args.command == "vision-analysis":
+        assets = VisionAnalysisService(settings).run(
+            session_ids=_collect_session_ids(args),
+            force_reprocess=args.force_reprocess,
+        )
+        print(json.dumps([item.model_dump(mode="json") for item in assets], ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "postprocess-reset":

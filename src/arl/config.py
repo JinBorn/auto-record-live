@@ -188,15 +188,28 @@ class VisionSettings(BaseModel):
     min_match_duration_seconds: float = 360.0  # 6 minutes minimum
     min_complete_timer_seconds: float = 900.0  # 15 minutes minimum in-game timer
     # Adaptive refinement: when a segment is missing a start boundary
-    # after the coarse pass, re-sample a narrow window at this finer
-    # interval (seconds) to catch loading screens that are shorter than
-    # the coarse sample interval.
+    # after the coarse pass, re-sample a narrow window at this finer interval.
     match_start_refine_interval_seconds: float = 5.0
-    # How far back (seconds) before the segment start to search for a
-    # missed loading screen during refinement.
     match_start_refine_lookback_seconds: float = 120.0
 
 
+class VisionAnalysisSettings(BaseModel):
+    enabled: bool = False
+    schema_version: int = 1
+    layout_profile: str = "lol_zh_1080p_v1"
+    coarse_interval_seconds: float = 10.0
+    refinement_max_source_fraction: float = 0.15
+    refinement_max_frames: int = 54000
+
+    @model_validator(mode="after")
+    def _normalize(self) -> "VisionAnalysisSettings":
+        self.schema_version = max(1, self.schema_version)
+        self.coarse_interval_seconds = max(0.1, self.coarse_interval_seconds)
+        self.refinement_max_source_fraction = min(
+            1.0, max(0.0, self.refinement_max_source_fraction)
+        )
+        self.refinement_max_frames = max(1, self.refinement_max_frames)
+        return self
 class HighlightSettings(BaseModel):
     enabled: bool = True
     mode: str = "highlight"  # "highlight" | "condensed" | "disabled"
@@ -626,6 +639,7 @@ class Settings(BaseModel):
     orchestrator: OrchestratorSettings = Field(default_factory=OrchestratorSettings)
     segmenter: SegmenterSettings = Field(default_factory=SegmenterSettings)
     vision: VisionSettings = Field(default_factory=VisionSettings)
+    vision_analysis: VisionAnalysisSettings = Field(default_factory=VisionAnalysisSettings)
     highlights: HighlightSettings = Field(default_factory=HighlightSettings)
     editing: EditingSettings = Field(default_factory=EditingSettings)
     subtitles: SubtitleSettings = Field(default_factory=SubtitleSettings)
@@ -681,6 +695,9 @@ def apply_publish_preset(settings: Settings) -> Settings:
     return settings.model_copy(
         deep=True,
         update={
+            "vision_analysis": settings.vision_analysis.model_copy(
+                update={"enabled": True}
+            ),
             "highlights": settings.highlights.model_copy(
                 update={
                     "enabled": True,
@@ -1430,6 +1447,28 @@ def load_settings() -> Settings:
                     "ARL_HIGHLIGHT_CONDENSED_BUDGET_MAX_SPEECH_EXTENSION_SECONDS",
                     12.0,
                 ),
+            ),
+        ),
+        vision_analysis=VisionAnalysisSettings(
+            enabled=_env_bool("ARL_VISION_ANALYSIS_ENABLED", False),
+            schema_version=max(1, _env_int("ARL_VISION_ANALYSIS_SCHEMA_VERSION", 1)),
+            layout_profile=os.getenv(
+                "ARL_VISION_ANALYSIS_LAYOUT_PROFILE", "lol_zh_1080p_v1"
+            ),
+            coarse_interval_seconds=max(
+                0.1, _env_float("ARL_VISION_ANALYSIS_COARSE_INTERVAL_SECONDS", 10.0)
+            ),
+            refinement_max_source_fraction=min(
+                1.0,
+                max(
+                    0.0,
+                    _env_float(
+                        "ARL_VISION_ANALYSIS_REFINEMENT_MAX_SOURCE_FRACTION", 0.15
+                    ),
+                ),
+            ),
+            refinement_max_frames=max(
+                1, _env_int("ARL_VISION_ANALYSIS_REFINEMENT_MAX_FRAMES", 54000)
             ),
         ),
         editing=EditingSettings(

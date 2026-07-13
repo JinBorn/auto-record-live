@@ -1043,6 +1043,26 @@ class LoadSettingsBilibiliTests(unittest.TestCase):
 
 
 class SettingsValidatorTests(unittest.TestCase):
+    def test_vision_analysis_defaults_off_and_publish_enables_it(self) -> None:
+        settings = Settings()
+
+        self.assertFalse(settings.vision_analysis.enabled)
+        self.assertTrue(apply_publish_preset(settings).vision_analysis.enabled)
+        self.assertFalse(settings.vision_analysis.enabled)
+
+    def test_vision_analysis_settings_are_bounded(self) -> None:
+        settings = Settings(
+            vision_analysis={
+                "coarse_interval_seconds": 0,
+                "refinement_max_source_fraction": 2,
+                "refinement_max_frames": 0,
+            }
+        )
+
+        self.assertEqual(settings.vision_analysis.coarse_interval_seconds, 0.1)
+        self.assertEqual(settings.vision_analysis.refinement_max_source_fraction, 1.0)
+        self.assertEqual(settings.vision_analysis.refinement_max_frames, 1)
+
     def test_settings_with_empty_platforms_defaults_to_douyin(self) -> None:
         """``WindowsAgentService(settings)`` calls ``build_probes(settings.platforms)``
         — an empty list would silently produce a service with no probes. The

@@ -30,6 +30,8 @@ from arl.shared.contracts import (
 )
 from arl.shared.jsonl_store import load_models
 from arl.subtitles.models import SubtitleAuditEvent, SubtitleStateFile
+from arl.vision_analysis.models import VisionAnalysisAsset
+from arl.vision_analysis.store import VisionAnalysisStateStore
 
 
 class StatusService:
@@ -45,6 +47,9 @@ class StatusService:
         editing_state = self._load_editing_state()
         exporter_state = self._load_exporter_state()
         copywriter_state = self._load_copywriter_state()
+        vision_analysis_state = VisionAnalysisStateStore(
+            self.temp_dir / "vision-analysis-state.json"
+        ).load()
 
         recording_assets = load_models(
             self.temp_dir / "recording-assets.jsonl",
@@ -69,6 +74,10 @@ class StatusService:
         semantic_shadow_reports = load_models(
             self.temp_dir / "copywriter-semantic-shadow-reports.jsonl",
             SemanticShadowReport,
+        )
+        vision_analysis_assets = load_models(
+            self.temp_dir / "vision-analysis-assets.jsonl",
+            VisionAnalysisAsset,
         )
         recorder_events = load_models(
             self.settings.orchestrator.recorder_event_log_path,
@@ -176,6 +185,7 @@ class StatusService:
                 "recent_failure_events": len(recorder_failure_events),
             },
             "postprocess": {
+                "vision_analysis_assets": len(vision_analysis_assets),
                 "match_boundaries": len(boundaries),
                 "complete_match_boundaries": len(complete_boundaries),
                 "incomplete_match_boundaries": len(boundaries) - len(complete_boundaries),
@@ -203,6 +213,22 @@ class StatusService:
             "highlights": {
                 "processed_matches": len(highlight_state.processed_match_keys),
                 "plans": len(highlight_plans),
+            },
+            "vision_analysis": {
+                "enabled": self.settings.vision_analysis.enabled,
+                "processed_sessions": len(
+                    vision_analysis_state.processed_fingerprint_by_session
+                ),
+                "assets": len(vision_analysis_assets),
+                "degraded_assets": sum(
+                    1 for item in vision_analysis_assets if item.status != "ok"
+                ),
+                "coarse_decoded_frames": sum(
+                    item.metrics.coarse_decoded_frames for item in vision_analysis_assets
+                ),
+                "refined_decoded_frames": sum(
+                    item.metrics.refined_decoded_frames for item in vision_analysis_assets
+                ),
             },
             "editing": {
                 "processed_matches": len(editing_state.processed_match_keys),

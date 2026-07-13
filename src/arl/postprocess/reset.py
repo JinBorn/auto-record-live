@@ -32,6 +32,7 @@ from arl.shared.contracts import (
 )
 from arl.shared.logging import log
 from arl.subtitles.models import SubtitleStateFile
+from arl.vision_analysis.models import VisionAnalysisAsset, VisionAnalysisStateFile
 
 TModel = TypeVar("TModel", bound=BaseModel)
 TState = TypeVar("TState", bound=BaseModel)
@@ -96,6 +97,12 @@ class PostProcessResetService:
         result: PostProcessResetResult,
         delete_files: bool,
     ) -> None:
+        self._rewrite_jsonl(
+            self.temp_dir / "vision-analysis-assets.jsonl",
+            VisionAnalysisAsset,
+            lambda item: item.session_id in session_ids,
+            result.removed_rows_by_file,
+        )
         self._rewrite_jsonl(
             self.temp_dir / "match-stage-hints.jsonl",
             MatchStageHint,
@@ -188,6 +195,15 @@ class PostProcessResetService:
         session_ids: set[str],
         result: PostProcessResetResult,
     ) -> None:
+        self._rewrite_state(
+            self.temp_dir / "vision-analysis-state.json",
+            VisionAnalysisStateFile,
+            lambda state: self._remove_mapping_keys(
+                state.processed_fingerprint_by_session,
+                session_ids,
+            ),
+            result.removed_state_keys_by_file,
+        )
         self._rewrite_state(
             self.temp_dir / "segmenter-state.json",
             SegmenterStateFile,
@@ -460,6 +476,15 @@ class PostProcessResetService:
         removed = len(keys) - len(kept)
         if removed > 0:
             keys[:] = kept
+        return removed
+
+    @staticmethod
+    def _remove_mapping_keys(mapping: dict[str, str], session_ids: set[str]) -> int:
+        removed = 0
+        for session_id in session_ids:
+            if session_id in mapping:
+                del mapping[session_id]
+                removed += 1
         return removed
 
     @staticmethod

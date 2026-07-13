@@ -1764,3 +1764,62 @@ subtitle_path.write_text(build_srt(entries), encoding="utf-8")
 
 - Keeps cue timing precise, makes ASR tuning operator-controlled, and preserves
   the subtitle stage's degrade-to-placeholder contract.
+
+## Scenario: Shared Recording-Scoped Vision Analysis
+
+### Scope / Trigger
+
+- `vision-analysis` is the owner of recording-wide coarse frame decoding,
+  detector scheduling, bounded event-local refinement, fingerprints, and
+  reusable visual evidence.
+- Publish mode enables the stage before segmentation. Default/non-publish mode
+  remains opt-in during rollout.
+
+### Durable Contracts
+
+- Assets: `data/tmp/vision-analysis-assets.jsonl`
+- State: `data/tmp/vision-analysis-state.json`
+- Initial layout: `lol_zh_1080p_v1`, accepting exactly `1920x1080`; unsupported
+  frame geometry produces a degraded asset and must not use automatic crop
+  scaling.
+- `VisionAnalysisAsset` persists input/config fingerprints, schema/layout
+  versions, detector health, typed readings/events, decoded-frame counts,
+  refinement ranges/cost, cache status, and wall time.
+- Cache compatibility requires matching input fingerprint, detector/config
+  fingerprint, and schema version. A downstream force-reprocess does not
+  invalidate visual evidence; `vision-analysis --force-reprocess` appends the
+  replacement row.
+
+### Execution Contracts
+
+- The smallest enabled detector interval owns the shared coarse decode
+  schedule. Each decoded frame is dispatched to every detector due at that
+  source timestamp; detectors must not open their own coarse `VideoCapture`.
+- Segmented recordings resolve through `resolve_recording_window`; persisted
+  timestamps are always recording-relative source timestamps, never chunk-local
+  timestamps.
+- Detector exceptions degrade only that detector and do not discard successful
+  readings from other detectors.
+- Overlapping refinement requests are unioned before decoding. The default
+  union cap is 15% of recording/match source duration and a separate frame cap
+  stops pathological refinement. Cap exhaustion is persisted in metrics.
+- Postprocess reset removes targeted visual asset rows and session fingerprint
+  state. Status reports asset/degraded counts and coarse/refined decoded frames.
+
+### Configuration / CLI
+
+- `ARL_VISION_ANALYSIS_ENABLED` (default `0`; publish preset enables it)
+- `ARL_VISION_ANALYSIS_SCHEMA_VERSION` (default `1`)
+- `ARL_VISION_ANALYSIS_LAYOUT_PROFILE` (default `lol_zh_1080p_v1`)
+- `ARL_VISION_ANALYSIS_COARSE_INTERVAL_SECONDS` (default `10`)
+- `ARL_VISION_ANALYSIS_REFINEMENT_MAX_SOURCE_FRACTION` (default `0.15`)
+- `ARL_VISION_ANALYSIS_REFINEMENT_MAX_FRAMES` (default `54000`)
+- CLI: `arl vision-analysis [--session-id/--session-ids] [--force-reprocess]`
+
+### Tests Required
+
+- Multiple detectors share one coarse decode schedule.
+- Compatible cache hits perform no video decoding; changed input/config misses.
+- Detector failure isolation preserves other readings.
+- Refinement ranges merge and obey source/frame caps.
+- Chunk-local frames map to correct recording-relative timestamps.

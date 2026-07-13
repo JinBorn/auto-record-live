@@ -15,6 +15,7 @@ from arl.shared.contracts import ExportAsset, MatchBoundary, RecordingAsset
 from arl.shared.jsonl_store import load_models
 from arl.shared.logging import log
 from arl.subtitles.service import SubtitleService
+from arl.vision_analysis.service import VisionAnalysisService
 
 
 class PostProcessService:
@@ -39,6 +40,13 @@ class PostProcessService:
         session_ids: set[str] | None,
     ) -> list[tuple[str, Callable[[], None]]]:
         return [
+            (
+                "vision-analysis",
+                lambda: self._run_stage(
+                    VisionAnalysisService(self.settings),
+                    session_ids=session_ids,
+                ),
+            ),
             (
                 "stage-hints-semantic",
                 lambda: self._run_stage(
