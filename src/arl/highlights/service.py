@@ -47,6 +47,7 @@ class _CombatActivitySample:
 
 _SPEECH_BOUNDARY_TOLERANCE_SECONDS = 0.15
 _SPEECH_CHAIN_GAP_SECONDS = 0.6
+_SENTENCE_TERMINAL_RE = re.compile(r"[。！？!?…][\"'”’）)】》」』]*$")
 _CONDENSED_DURATION_BUDGET_MULTIPLIER = 1.25
 _CONDENSED_DURATION_BUDGET_EXTRA_SECONDS = 60.0
 
@@ -1360,10 +1361,14 @@ class HighlightPlannerService:
             if cue.started_at_seconds <= cursor + _SPEECH_BOUNDARY_TOLERANCE_SECONDS:
                 safe_end = max(safe_end, cue.ended_at_seconds)
                 cursor = max(cursor, cue.ended_at_seconds)
+                if _SENTENCE_TERMINAL_RE.search(cue.text.strip()):
+                    break
                 continue
             if cue.started_at_seconds <= cursor + _SPEECH_CHAIN_GAP_SECONDS and safe_end > end_seconds:
                 safe_end = max(safe_end, cue.ended_at_seconds)
                 cursor = max(cursor, cue.ended_at_seconds)
+                if _SENTENCE_TERMINAL_RE.search(cue.text.strip()):
+                    break
                 continue
             break
         return min(match_duration_seconds, safe_end)

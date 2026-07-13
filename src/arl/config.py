@@ -288,7 +288,7 @@ class HighlightSettings(BaseModel):
     # to speech-safe boundaries) until the plan fits or bottoms out.
     condensed_budget_shrink_enabled: bool = True
     condensed_budget_trim_step_seconds: float = 15.0
-    condensed_budget_max_speech_extension_seconds: float = 3.0
+    condensed_budget_max_speech_extension_seconds: float = 12.0
 
     # 用户自定义术语
     custom_tactical_keywords: list[str] = Field(default_factory=list)
@@ -1428,7 +1428,7 @@ def load_settings() -> Settings:
                 0.0,
                 _env_float(
                     "ARL_HIGHLIGHT_CONDENSED_BUDGET_MAX_SPEECH_EXTENSION_SECONDS",
-                    3.0,
+                    12.0,
                 ),
             ),
         ),

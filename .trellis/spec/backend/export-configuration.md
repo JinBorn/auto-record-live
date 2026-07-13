@@ -1965,7 +1965,7 @@ def _video_quality_args(self) -> list[str]:
 | `ARL_QUALITY_REPORT_DURATION_BUDGET_ENFORCED` | bool | True | Warn when condensed main duration exceeds the plan budget without a recorded exception |
 | `ARL_HIGHLIGHT_CONDENSED_BUDGET_SHRINK_ENABLED` | bool | True | Final-stage condensed budget shrinking (rollback switch for the 07-10 duration tuning) |
 | `ARL_HIGHLIGHT_CONDENSED_BUDGET_TRIM_STEP_SECONDS` | float | 15.0 | Per-iteration trim step of the budget shrinker, min 3.0 |
-| `ARL_HIGHLIGHT_CONDENSED_BUDGET_MAX_SPEECH_EXTENSION_SECONDS` | float | 3.0 | Cap on post-shrink speech-boundary extension per window |
+| `ARL_HIGHLIGHT_CONDENSED_BUDGET_MAX_SPEECH_EXTENSION_SECONDS` | float | 12.0 | Pathological safety cap on post-shrink sentence completion per window; terminal punctuation permits cuts between adjacent sentences |
 | `ARL_EDIT_TEASER_IMPACT_SFX_GAIN_DB` | float | -10.0 | Teaser opening impact SFX gain in dB (library category `teaser_impact`), clamped to `[-60.0, 6.0]` |
 | `ARL_EDIT_ZOOM_FALLBACK_ENABLED` | bool | False | Mid-segment fallback close-ups with no KDA/chat-burst anchor (disabled after 2026-07-10 human review: zooms landed on uninteresting content) |
 | `ARL_COPY_COVER_MAX_CANDIDATES` | int | `1` | Cover image candidates rendered per match (human review 2026-07-10: one cover is enough) |

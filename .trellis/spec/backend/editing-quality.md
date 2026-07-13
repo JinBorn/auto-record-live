@@ -73,7 +73,11 @@ pipeline stage (after the KDA-restore/bridge fixpoint):
   protection); floor is bridge size.
 - Boundary edge anchors are locked: the edit planner rejects plans whose
   windows do not touch both boundary edges (`no_valid_main_windows`).
-- Post-shrink speech protection is extension-capped (<=3s, never retreats a
+- Post-shrink speech protection finishes the current subtitle sentence before
+  cutting. Terminal punctuation ends the protected sentence even when the next
+  cue begins within the normal speech-chain gap, so long continuous commentary
+  remains trimmable between sentences. A 12s configurable safety cap bounds
+  punctuation-poor/pathological ASR chains; protection never retreats a
   boundary — a retreat could cut back into a protected KDA span).
 - When protected content + 45s-gap bridging exceed the budget, the plan keeps
   quality guarantees and records `budget_exception_reason` instead.
@@ -88,7 +92,8 @@ pipeline stage (after the KDA-restore/bridge fixpoint):
 
 Env knobs: `ARL_HIGHLIGHT_CONDENSED_BUDGET_SHRINK_ENABLED` (rollback switch),
 `..._BUDGET_TRIM_STEP_SECONDS` (15), `..._BUDGET_MAX_SPEECH_EXTENSION_SECONDS`
-(3), `ARL_QUALITY_REPORT_DURATION_BUDGET_ENFORCED`.
+(12, pathological sentence-chain safety cap),
+`ARL_QUALITY_REPORT_DURATION_BUDGET_ENFORCED`.
 
 Combat continuity knobs: `ARL_HIGHLIGHT_CONDENSED_COMBAT_CONTINUITY_ENABLED`,
 `..._COMBAT_SAMPLE_INTERVAL_SECONDS`, `..._COMBAT_ENTER_ACTIVITY_THRESHOLD`,

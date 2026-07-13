@@ -1003,6 +1003,76 @@ class HighlightPlannerServiceTest(unittest.TestCase):
         self.assertEqual(protected[0].started_at_seconds, 10.0)
         self.assertEqual(protected[0].ended_at_seconds, 34.0)
 
+    def test_budget_speech_protection_finishes_sentence_beyond_old_cap(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        windows = [
+            HighlightClipWindow(
+                started_at_seconds=10.0,
+                ended_at_seconds=20.0,
+                reason="condensed_key_event",
+            )
+        ]
+        speech_cues = [
+            _SrtCue(19.5, 22.0, "我今天中午"),
+            _SrtCue(22.2, 25.5, "还没有吃饭。"),
+            _SrtCue(25.7, 29.0, "然后准备点外卖。"),
+        ]
+
+        protected = service._protect_speech_boundaries(
+            windows,
+            speech_cues=speech_cues,
+            match_duration_seconds=40.0,
+            max_extension_seconds=12.0,
+        )
+
+        self.assertEqual(protected[0].ended_at_seconds, 25.5)
+
+    def test_budget_speech_protection_can_cut_between_adjacent_sentences(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        windows = [
+            HighlightClipWindow(
+                started_at_seconds=10.0,
+                ended_at_seconds=20.0,
+                reason="condensed_key_event",
+            )
+        ]
+        speech_cues = [
+            _SrtCue(19.5, 22.0, "第一句话说完了。"),
+            _SrtCue(22.1, 26.0, "第二句话也在继续。"),
+        ]
+
+        protected = service._protect_speech_boundaries(
+            windows,
+            speech_cues=speech_cues,
+            match_duration_seconds=40.0,
+            max_extension_seconds=12.0,
+        )
+
+        self.assertEqual(protected[0].ended_at_seconds, 22.0)
+
+    def test_budget_speech_protection_keeps_pathological_chain_bounded(self) -> None:
+        service = HighlightPlannerService(self.settings)
+        windows = [
+            HighlightClipWindow(
+                started_at_seconds=10.0,
+                ended_at_seconds=20.0,
+                reason="condensed_key_event",
+            )
+        ]
+        speech_cues = [
+            _SrtCue(19.5, 23.0, "没有句号的连续讲话"),
+            _SrtCue(23.1, 28.0, "仍然没有可用句界"),
+        ]
+
+        protected = service._protect_speech_boundaries(
+            windows,
+            speech_cues=speech_cues,
+            match_duration_seconds=40.0,
+            max_extension_seconds=4.0,
+        )
+
+        self.assertEqual(protected[0].ended_at_seconds, 24.0)
+
     def test_condensed_duration_budget_keeps_dense_content_short(self) -> None:
         service = HighlightPlannerService(self.settings)
         windows = [
