@@ -1,0 +1,52 @@
+{
+  "_使用说明": "把音效文件下载后放到 data/sfx/tracks/ 目录（或在 path 里填绝对路径），文件名和下面 tracks 里登记的 path 对应即可。某个文件不存在时该类音效自动跳过；整个清单缺失时回退到内置合成金币音。建议使用 .wav 或 .mp3，短音效（0.5~2 秒）效果最佳。",
+  "_schema": {
+    "category": "必填。音效用途：kill_coin=单杀金币掉落；multi_kill=双杀及以上的金币变奏（可以更华丽/更长）；transition_whoosh=片头精彩预告切回正片时的转场呼啸声；teaser_impact=片头卡点重音（可选）。",
+    "path": "必填。相对本 JSON 文件的路径，或绝对路径。",
+    "gain_db": "可选。相对默认音量的增益微调，负数更小声，例如 -3。",
+    "description": "可选。给自己看的备注。"
+  },
+  "_推荐下载建议": [
+    "kill_coin：金币掉落/入袋声，类似马里奥金币或收银机，0.5~1 秒",
+    "multi_kill：一串金币倾泻声或升调连击音，1~2 秒",
+    "transition_whoosh：短促风声/呼啸转场音，0.5~1 秒",
+    "teaser_impact：低音鼓点/Boom 重音，用于片头开场（可选）"
+  ],
+  "tracks": [
+    {
+      "category": "kill_coin",
+      "path": "tracks/coin-single.wav",
+      "description": "单杀金币掉落声"
+    },
+    {
+      "category": "transition_whoosh",
+      "path": "tracks/whoosh.wav",
+      "description": "teaser 切回正片转场音"
+    },
+    {
+      "category": "teaser_impact",
+      "path": "tracks/quack.wav",
+      "description": "片头卡点重音"
+    },
+    {
+      "category": "mistake",
+      "path": "tracks/quack.wav",
+      "description": "操作失误配音"
+    },
+    {
+      "category": "boom",
+      "path": "tracks/boom.wav",
+      "description": "伤害很高、爆炸音"
+    },
+    {
+      "category": "pew",
+      "path": "tracks/pew.wav",
+      "description": "丢过去东西的声音"
+    },
+    {
+      "category": "transition_bruh",
+      "path": "tracks/bruh.wav",
+      "description": "无聊、没劲转场"
+    }
+  ]
+}
