@@ -933,3 +933,36 @@ Created the unified vision-analysis task tree and implemented the first child: t
 ### Next Steps
 
 - None - task complete
+
+
+## Session 76: Shared timer and KDA OCR migration
+
+**Date**: 2026-07-13
+**Task**: Shared timer and KDA OCR migration
+**Branch**: `main`
+
+### Summary
+
+Registered timer, scene, and KDA adapters on the shared vision scan; preserved KDA plausibility and three-frame refinement; added typed asset views; made segmenter/highlight planner prefer durable evidence with legacy fallback; retained compatibility KDA plan events; updated specs; and passed 747 tests.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4ed8787` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 75
+- **Total Sessions**: 76
 - **Last Active**: 2026-07-13
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~935 | Active |
+| `journal-2.md` | ~968 | Active |
 | `journal-1.md` | ~1986 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 76 | 2026-07-13 | Shared timer and KDA OCR migration | `4ed8787` | `main` |
 | 75 | 2026-07-13 | Shared vision analysis foundation | `939012c` | `main` |
 | 74 | 2026-07-13 | Sentence-safe condensed cuts | `10fa273` | `main` |
 | 73 | 2026-07-12 | Add LLM-guided semantic SFX | `33675c9` | `main` |
