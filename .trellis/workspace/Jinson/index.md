@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 73
-- **Last Active**: 2026-07-12
+- **Total Sessions**: 74
+- **Last Active**: 2026-07-13
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~869 | Active |
+| `journal-2.md` | ~902 | Active |
 | `journal-1.md` | ~1986 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 74 | 2026-07-13 | Sentence-safe condensed cuts | `10fa273` | `main` |
 | 73 | 2026-07-12 | Add LLM-guided semantic SFX | `33675c9` | `main` |
 | 72 | 2026-07-12 | Remove duplicate published cover | `ea47915` | `main` |
 | 71 | 2026-07-12 | Protect combat continuity in condensed highlights | `f577e20` | `main` |

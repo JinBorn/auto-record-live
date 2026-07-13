@@ -867,3 +867,36 @@ Added bounded streamer-centric semantic SFX candidates to the existing per-match
 ### Next Steps
 
 - None - task complete
+
+
+## Session 74: Sentence-safe condensed cuts
+
+**Date**: 2026-07-13
+**Task**: Sentence-safe condensed cuts
+**Branch**: `main`
+
+### Summary
+
+Made condensed highlight cuts finish the current subtitle sentence, raised the pathological speech-extension safety cap to 12 seconds, added regressions for partial sentences, adjacent sentences, and punctuation-poor chains, updated backend specs, and passed 735 tests.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `10fa273` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
