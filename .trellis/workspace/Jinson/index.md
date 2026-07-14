@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 76
-- **Last Active**: 2026-07-13
+- **Total Sessions**: 77
+- **Last Active**: 2026-07-14
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~968 | Active |
+| `journal-2.md` | ~1002 | Active |
 | `journal-1.md` | ~1986 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 77 | 2026-07-14 | Death and result OCR shadow validation | `79e1c6e`, `8305147` | `main` |
 | 76 | 2026-07-13 | Shared timer and KDA OCR migration | `4ed8787` | `main` |
 | 75 | 2026-07-13 | Shared vision analysis foundation | `939012c` | `main` |
 | 74 | 2026-07-13 | Sentence-safe condensed cuts | `10fa273` | `main` |

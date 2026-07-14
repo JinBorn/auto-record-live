@@ -966,3 +966,37 @@ Registered timer, scene, and KDA adapters on the shared vision scan; preserved K
 ### Next Steps
 
 - None - task complete
+
+
+## Session 77: Death and result OCR shadow validation
+
+**Date**: 2026-07-14
+**Task**: Death and result OCR shadow validation
+**Branch**: `main`
+
+### Summary
+
+Implemented shadow-only respawn and Chinese match-result detectors, shadow reports, config/reset/status/spec wiring, and real-session validation. Shadow review found and fixed false digits/results, converted coarse/refined sampling to streaming (memory from 3.3-5.3GB to ~290-383MB), and finalized KDA-triggered HP-bar death/respawn transitions on two accepted sessions plus one safe rejection. Full suite passed 756 tests.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `79e1c6e` | (see git log) |
+| `8305147` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
