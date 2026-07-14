@@ -44,6 +44,8 @@ def read_match_result(
     frame: Any,
     crop_region: tuple[int, int, int, int],
 ) -> tuple[str | None, float]:
+    if not _tesseract_chinese_available():
+        return None, 0.0
     crop = _crop(frame, crop_region)
     if crop is None:
         return None, 0.0
@@ -51,8 +53,6 @@ def read_match_result(
     gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
     text = ""
     try:
-        if not _tesseract_available():
-            raise RuntimeError("tesseract unavailable")
         import pytesseract
 
         text = pytesseract.image_to_string(gray, lang="chi_sim", config="--psm 6")
@@ -116,3 +116,15 @@ def _template_digits(crop: Any) -> str:
 @lru_cache(maxsize=1)
 def _tesseract_available() -> bool:
     return shutil.which("tesseract") is not None
+
+
+@lru_cache(maxsize=1)
+def _tesseract_chinese_available() -> bool:
+    if not _tesseract_available():
+        return False
+    try:
+        import pytesseract
+
+        return "chi_sim" in pytesseract.get_languages(config="")
+    except Exception:
+        return False

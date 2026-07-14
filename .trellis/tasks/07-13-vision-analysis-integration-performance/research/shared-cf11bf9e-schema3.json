@@ -1,0 +1,643 @@
+{
+  "session_id": "session-20260617073651-cf11bf9e",
+  "schema_version": 3,
+  "status": "ok",
+  "source_duration_seconds": 7140.533311,
+  "metrics": {
+    "coarse_decoded_frames": 715,
+    "refined_decoded_frames": 16231,
+    "refinement_candidate_count": 35,
+    "refinement_range_count": 31,
+    "refinement_source_seconds": 1071.08,
+    "refinement_cap_seconds": 1071.08,
+    "refinement_cap_exhausted": true,
+    "cache_hit": false,
+    "cache_reason": "miss",
+    "wall_time_seconds": 237.779
+  },
+  "detector_health": [
+    {
+      "detector": "kda",
+      "status": "ok",
+      "detail": null,
+      "invocations": 16890,
+      "accepted_readings": 715
+    },
+    {
+      "detector": "match_result",
+      "status": "ok",
+      "detail": null,
+      "invocations": 715,
+      "accepted_readings": 715
+    },
+    {
+      "detector": "respawn",
+      "status": "ok",
+      "detail": null,
+      "invocations": 771,
+      "accepted_readings": 771
+    },
+    {
+      "detector": "scene",
+      "status": "ok",
+      "detail": null,
+      "invocations": 358,
+      "accepted_readings": 358
+    },
+    {
+      "detector": "timer",
+      "status": "ok",
+      "detail": null,
+      "invocations": 358,
+      "accepted_readings": 358
+    }
+  ],
+  "event_count_by_kind": {
+    "death_respawn_state": 1,
+    "kda_change": 26
+  },
+  "events": [
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 1129.4999472691538,
+      "ended_at_seconds": 1129.4999472691538,
+      "attributes": {
+        "previous_kills": 0,
+        "current_kills": 1,
+        "previous_deaths": 0,
+        "current_deaths": 0,
+        "previous_assists": 0,
+        "current_assists": 0
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 1293.766606267011,
+      "ended_at_seconds": 1293.766606267011,
+      "attributes": {
+        "previous_kills": 1,
+        "current_kills": 2,
+        "previous_deaths": 0,
+        "current_deaths": 0,
+        "previous_assists": 1,
+        "current_assists": 1
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 1331.1666045209874,
+      "ended_at_seconds": 1331.1666045209874,
+      "attributes": {
+        "previous_kills": 2,
+        "current_kills": 4,
+        "previous_deaths": 0,
+        "current_deaths": 0,
+        "previous_assists": 1,
+        "current_assists": 1
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 1477.7499310110597,
+      "ended_at_seconds": 1477.7499310110597,
+      "attributes": {
+        "previous_kills": 4,
+        "current_kills": 5,
+        "previous_deaths": 0,
+        "current_deaths": 0,
+        "previous_assists": 1,
+        "current_assists": 1
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 1555.4832607154028,
+      "ended_at_seconds": 1555.4832607154028,
+      "attributes": {
+        "previous_kills": 5,
+        "current_kills": 6,
+        "previous_deaths": 0,
+        "current_deaths": 1,
+        "previous_assists": 1,
+        "current_assists": 1
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 1627.7499240082914,
+      "ended_at_seconds": 1627.7499240082914,
+      "attributes": {
+        "previous_kills": 6,
+        "current_kills": 8,
+        "previous_deaths": 1,
+        "current_deaths": 1,
+        "previous_assists": 1,
+        "current_assists": 1
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 1696.6832541234635,
+      "ended_at_seconds": 1696.6832541234635,
+      "attributes": {
+        "previous_kills": 8,
+        "current_kills": 8,
+        "previous_deaths": 1,
+        "current_deaths": 2,
+        "previous_assists": 1,
+        "current_assists": 1
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 1839.4999141227165,
+      "ended_at_seconds": 1839.4999141227165,
+      "attributes": {
+        "previous_kills": 8,
+        "current_kills": 9,
+        "previous_deaths": 2,
+        "current_deaths": 2,
+        "previous_assists": 1,
+        "current_assists": 2
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 2521.1998822974683,
+      "ended_at_seconds": 2521.1998822974683,
+      "attributes": {
+        "previous_kills": 0,
+        "current_kills": 0,
+        "previous_deaths": 0,
+        "current_deaths": 1,
+        "previous_assists": 0,
+        "current_assists": 0
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 2918.8165304013523,
+      "ended_at_seconds": 2918.8165304013523,
+      "attributes": {
+        "previous_kills": 0,
+        "current_kills": 0,
+        "previous_deaths": 1,
+        "current_deaths": 2,
+        "previous_assists": 2,
+        "current_assists": 2
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 3521.6498355913373,
+      "ended_at_seconds": 3521.6498355913373,
+      "attributes": {
+        "previous_kills": 0,
+        "current_kills": 1,
+        "previous_deaths": 4,
+        "current_deaths": 4,
+        "previous_assists": 4,
+        "current_assists": 4
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 3531.71650178804,
+      "ended_at_seconds": 3531.71650178804,
+      "attributes": {
+        "previous_kills": 1,
+        "current_kills": 2,
+        "previous_deaths": 4,
+        "current_deaths": 4,
+        "previous_assists": 4,
+        "current_assists": 4
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 3646.5831630921425,
+      "ended_at_seconds": 3646.5831630921425,
+      "attributes": {
+        "previous_kills": 2,
+        "current_kills": 2,
+        "previous_deaths": 4,
+        "current_deaths": 5,
+        "previous_assists": 4,
+        "current_assists": 4
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 3848.349820339308,
+      "ended_at_seconds": 3848.349820339308,
+      "attributes": {
+        "previous_kills": 2,
+        "current_kills": 4,
+        "previous_deaths": 5,
+        "current_deaths": 6,
+        "previous_assists": 4,
+        "current_assists": 4
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 4489.933123720244,
+      "ended_at_seconds": 4489.933123720244,
+      "attributes": {
+        "previous_kills": 0,
+        "current_kills": 1,
+        "previous_deaths": 0,
+        "current_deaths": 0,
+        "previous_assists": 0,
+        "current_assists": 0
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 4493.566456883955,
+      "ended_at_seconds": 4493.566456883955,
+      "attributes": {
+        "previous_kills": 1,
+        "current_kills": 1,
+        "previous_deaths": 0,
+        "current_deaths": 1,
+        "previous_assists": 0,
+        "current_assists": 0
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 4692.199780944067,
+      "ended_at_seconds": 4692.199780944067,
+      "attributes": {
+        "previous_kills": 1,
+        "current_kills": 2,
+        "previous_deaths": 1,
+        "current_deaths": 1,
+        "previous_assists": 0,
+        "current_assists": 0
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 5559.749740442388,
+      "ended_at_seconds": 5559.749740442388,
+      "attributes": {
+        "previous_kills": 4,
+        "current_kills": 5,
+        "previous_deaths": 1,
+        "current_deaths": 1,
+        "previous_assists": 0,
+        "current_assists": 0
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 5562.3664069868955,
+      "ended_at_seconds": 5562.3664069868955,
+      "attributes": {
+        "previous_kills": 5,
+        "current_kills": 6,
+        "previous_deaths": 1,
+        "current_deaths": 1,
+        "previous_assists": 0,
+        "current_assists": 0
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 5649.383069591178,
+      "ended_at_seconds": 5649.383069591178,
+      "attributes": {
+        "previous_kills": 6,
+        "current_kills": 8,
+        "previous_deaths": 1,
+        "current_deaths": 4,
+        "previous_assists": 0,
+        "current_assists": 0
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 5846.466393723653,
+      "ended_at_seconds": 5846.466393723653,
+      "attributes": {
+        "previous_kills": 8,
+        "current_kills": 9,
+        "previous_deaths": 4,
+        "current_deaths": 4,
+        "previous_assists": 1,
+        "current_assists": 1
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 5852.783060095425,
+      "ended_at_seconds": 5852.783060095425,
+      "attributes": {
+        "previous_kills": 9,
+        "current_kills": 10,
+        "previous_deaths": 4,
+        "current_deaths": 4,
+        "previous_assists": 1,
+        "current_assists": 1
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 5937.499722807083,
+      "ended_at_seconds": 5937.499722807083,
+      "attributes": {
+        "previous_kills": 10,
+        "current_kills": 11,
+        "previous_deaths": 4,
+        "current_deaths": 4,
+        "previous_assists": 1,
+        "current_assists": 1
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 6035.066384918839,
+      "ended_at_seconds": 6035.066384918839,
+      "attributes": {
+        "previous_kills": 11,
+        "current_kills": 11,
+        "previous_deaths": 4,
+        "current_deaths": 5,
+        "previous_assists": 4,
+        "current_assists": 5
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 6414.73303386072,
+      "ended_at_seconds": 6414.73303386072,
+      "attributes": {
+        "previous_kills": 11,
+        "current_kills": 12,
+        "previous_deaths": 5,
+        "current_deaths": 5,
+        "previous_assists": 6,
+        "current_assists": 6
+      }
+    },
+    {
+      "kind": "kda_change",
+      "observed_at_seconds": 6852.599680085527,
+      "ended_at_seconds": 6852.599680085527,
+      "attributes": {
+        "previous_kills": 0,
+        "current_kills": 1,
+        "previous_deaths": 0,
+        "current_deaths": 0,
+        "previous_assists": 0,
+        "current_assists": 0
+      }
+    },
+    {
+      "kind": "death_respawn_state",
+      "observed_at_seconds": 1560.0,
+      "ended_at_seconds": 1583.8500000000024,
+      "attributes": {
+        "proposed_respawn_at": 1583.8500000000024,
+        "state_source": "death_screen_transition"
+      }
+    }
+  ],
+  "refinement": {
+    "candidate_count_by_detector": {
+      "kda": 26,
+      "respawn": 9
+    },
+    "candidate_seconds_by_detector": {
+      "kda": 370.0,
+      "respawn": 1080.0
+    },
+    "merged_seconds_by_detector": {
+      "kda": 370.0,
+      "respawn": 741.08
+    },
+    "merged_ranges": [
+      {
+        "started_at_seconds": 1120.0,
+        "ended_at_seconds": 1130.0,
+        "detectors": [
+          "kda"
+        ]
+      },
+      {
+        "started_at_seconds": 1290.0,
+        "ended_at_seconds": 1300.0,
+        "detectors": [
+          "kda"
+        ]
+      },
+      {
+        "started_at_seconds": 1320.0,
+        "ended_at_seconds": 1340.0,
+        "detectors": [
+          "kda"
+        ]
+      },
+      {
+        "started_at_seconds": 1470.0,
+        "ended_at_seconds": 1480.0,
+        "detectors": [
+          "kda"
+        ]
+      },
+      {
+        "started_at_seconds": 1550.0,
+        "ended_at_seconds": 1560.0,
+        "detectors": [
+          "kda"
+        ]
+      },
+      {
+        "started_at_seconds": 1560.0,
+        "ended_at_seconds": 1620.0,
+        "detectors": [
+          "respawn"
+        ]
+      },
+      {
+        "started_at_seconds": 1620.0,
+        "ended_at_seconds": 1630.0,
+        "detectors": [
+          "kda",
+          "respawn"
+        ]
+      },
+      {
+        "started_at_seconds": 1630.0,
+        "ended_at_seconds": 1680.0,
+        "detectors": [
+          "respawn"
+        ]
+      },
+      {
+        "started_at_seconds": 1690.0,
+        "ended_at_seconds": 1700.0,
+        "detectors": [
+          "kda"
+        ]
+      },
+      {
+        "started_at_seconds": 1700.0,
+        "ended_at_seconds": 1820.0,
+        "detectors": [
+          "respawn"
+        ]
+      },
+      {
+        "started_at_seconds": 1830.0,
+        "ended_at_seconds": 1840.0,
+        "detectors": [
+          "kda"
+        ]
+      },
+      {
+        "started_at_seconds": 2520.0,
+        "ended_at_seconds": 2530.0,
+        "detectors": [
+          "kda"
+        ]
+      },
+      {
+        "started_at_seconds": 2530.0,
+        "ended_at_seconds": 2650.0,
+        "detectors": [
+          "respawn"
+        ]
+      },
+      {
+        "started_at_seconds": 2910.0,
+        "ended_at_seconds": 2920.0,
+        "detectors": [
+          "kda"
+        ]
+      },
+      {
+        "started_at_seconds": 2920.0,
+        "ended_at_seconds": 3040.0,
+        "detectors": [
+          "respawn"
+        ]
+      },
+      {
+        "started_at_seconds": 3520.0,
+        "ended_at_seconds": 3540.0,
+        "detectors": [
+          "kda"
+        ]
+      },
+      {
+        "started_at_seconds": 3640.0,
+        "ended_at_seconds": 3650.0,
+        "detectors": [
+          "kda"
+        ]
+      },
+      {
+        "started_at_seconds": 3650.0,
+        "ended_at_seconds": 3740.0,
+        "detectors": [
+          "respawn"
+        ]
+      },
+      {
+        "started_at_seconds": 3740.0,
+        "ended_at_seconds": 3770.0,
+        "detectors": [
+          "kda",
+          "respawn"
+        ]
+      },
+      {
+        "started_at_seconds": 3770.0,
+        "ended_at_seconds": 3850.0,
+        "detectors": [
+          "kda"
+        ]
+      },
+      {
+        "started_at_seconds": 3850.0,
+        "ended_at_seconds": 3970.0,
+        "detectors": [
+          "respawn"
+        ]
+      },
+      {
+        "started_at_seconds": 4480.0,
+        "ended_at_seconds": 4500.0,
+        "detectors": [
+          "kda"
+        ]
+      },
+      {
+        "started_at_seconds": 4500.0,
+        "ended_at_seconds": 4521.08,
+        "detectors": [
+          "respawn"
+        ]
+      },
+      {
+        "started_at_seconds": 4690.0,
+        "ended_at_seconds": 4700.0,
+        "detectors": [
+          "kda"
+        ]
+      },
+      {
+        "started_at_seconds": 5550.0,
+        "ended_at_seconds": 5570.0,
+        "detectors": [
+          "kda"
+        ]
+      },
+      {
+        "started_at_seconds": 5640.0,
+        "ended_at_seconds": 5650.0,
+        "detectors": [
+          "kda"
+        ]
+      },
+      {
+        "started_at_seconds": 5840.0,
+        "ended_at_seconds": 5860.0,
+        "detectors": [
+          "kda"
+        ]
+      },
+      {
+        "started_at_seconds": 5930.0,
+        "ended_at_seconds": 5940.0,
+        "detectors": [
+          "kda"
+        ]
+      },
+      {
+        "started_at_seconds": 6030.0,
+        "ended_at_seconds": 6040.0,
+        "detectors": [
+          "kda"
+        ]
+      },
+      {
+        "started_at_seconds": 6410.0,
+        "ended_at_seconds": 6420.0,
+        "detectors": [
+          "kda"
+        ]
+      },
+      {
+        "started_at_seconds": 6850.0,
+        "ended_at_seconds": 6860.0,
+        "detectors": [
+          "kda"
+        ]
+      }
+    ]
+  }
+}

@@ -307,7 +307,7 @@ class HighlightPlannerServiceTest(unittest.TestCase):
         ]
         with (
             patch(
-                "arl.vision.frame_sampler.sample_frame_window",
+                "arl.vision.frame_sampler.iter_frame_window",
                 return_value=[(95.0, object()), (100.0, object()), (105.0, object())],
             ),
             patch("arl.vision.kda_ocr.read_kda", side_effect=readings),
@@ -396,7 +396,7 @@ class HighlightPlannerServiceTest(unittest.TestCase):
 
         with (
             patch(
-                "arl.vision.frame_sampler.sample_frame_window",
+                "arl.vision.frame_sampler.iter_frame_window",
                 side_effect=_sample_frame_window,
             ),
             patch("arl.vision.kda_ocr.read_kda", side_effect=_read_kda),
@@ -444,7 +444,7 @@ class HighlightPlannerServiceTest(unittest.TestCase):
 
         with (
             patch(
-                "arl.vision.frame_sampler.sample_frame_window",
+                "arl.vision.frame_sampler.iter_frame_window",
                 return_value=[(95.0, object()), (100.0, object()), (190.0, object())],
             ),
             patch("arl.vision.kda_ocr.read_kda", side_effect=readings),
@@ -489,7 +489,7 @@ class HighlightPlannerServiceTest(unittest.TestCase):
 
         with (
             patch(
-                "arl.vision.frame_sampler.sample_frame_window",
+                "arl.vision.frame_sampler.iter_frame_window",
                 return_value=[
                     (90.0, object()),
                     (100.0, object()),

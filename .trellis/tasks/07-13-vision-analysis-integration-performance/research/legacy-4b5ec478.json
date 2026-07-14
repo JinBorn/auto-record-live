@@ -1,0 +1,368 @@
+{
+  "session_id": "session-20260617073649-4b5ec478",
+  "recording_path": "data\\raw\\session-20260617073649-4b5ec478\\recording-source.mp4",
+  "source_duration_seconds": 5528.897606,
+  "boundary_count": 3,
+  "legacy_timer": {
+    "wall_time_seconds": 44.099,
+    "detected_segments": [
+      {
+        "start_seconds": 60.0,
+        "end_seconds": 2760.0,
+        "timer_trace": [
+          [
+            60.0,
+            "in_game"
+          ],
+          [
+            140.0,
+            "in_game"
+          ],
+          [
+            200.0,
+            "in_game"
+          ],
+          [
+            280.0,
+            "in_game"
+          ],
+          [
+            380.0,
+            "in_game"
+          ],
+          [
+            720.0,
+            "in_game"
+          ],
+          [
+            1040.0,
+            "in_game"
+          ],
+          [
+            1260.0,
+            "in_game"
+          ],
+          [
+            1320.0,
+            "in_game"
+          ],
+          [
+            1680.0,
+            "in_game"
+          ],
+          [
+            1760.0,
+            "in_game"
+          ],
+          [
+            2020.0,
+            "in_game"
+          ],
+          [
+            2060.0,
+            "in_game"
+          ],
+          [
+            2180.0,
+            "in_game"
+          ],
+          [
+            2240.0,
+            "in_game"
+          ],
+          [
+            2280.0,
+            "in_game"
+          ],
+          [
+            2480.0,
+            "in_game"
+          ],
+          [
+            2500.0,
+            "in_game"
+          ],
+          [
+            2540.0,
+            "in_game"
+          ],
+          [
+            2560.0,
+            "in_game"
+          ],
+          [
+            2600.0,
+            "in_game"
+          ],
+          [
+            2660.0,
+            "in_game"
+          ],
+          [
+            2720.0,
+            "in_game"
+          ],
+          [
+            2740.0,
+            "in_game"
+          ]
+        ],
+        "is_complete": false,
+        "confidence": 0.45,
+        "reason": "incomplete_no_start"
+      },
+      {
+        "start_seconds": 3080.0,
+        "end_seconds": 4440.0,
+        "timer_trace": [
+          [
+            3080.0,
+            "in_game"
+          ],
+          [
+            3160.0,
+            "in_game"
+          ],
+          [
+            3180.0,
+            "in_game"
+          ],
+          [
+            3340.0,
+            "in_game"
+          ],
+          [
+            3400.0,
+            "in_game"
+          ],
+          [
+            3440.0,
+            "in_game"
+          ],
+          [
+            3520.0,
+            "in_game"
+          ],
+          [
+            3680.0,
+            "in_game"
+          ],
+          [
+            3780.0,
+            "in_game"
+          ],
+          [
+            3860.0,
+            "in_game"
+          ],
+          [
+            4040.0,
+            "in_game"
+          ],
+          [
+            4060.0,
+            "in_game"
+          ],
+          [
+            4140.0,
+            "in_game"
+          ],
+          [
+            4160.0,
+            "in_game"
+          ],
+          [
+            4180.0,
+            "in_game"
+          ],
+          [
+            4220.0,
+            "in_game"
+          ],
+          [
+            4240.0,
+            "in_game"
+          ],
+          [
+            4280.0,
+            "in_game"
+          ],
+          [
+            4420.0,
+            "in_game"
+          ]
+        ],
+        "is_complete": true,
+        "confidence": 0.8,
+        "reason": "complete"
+      },
+      {
+        "start_seconds": 4760.0,
+        "end_seconds": 5500.0,
+        "timer_trace": [
+          [
+            4760.0,
+            "in_game"
+          ],
+          [
+            4780.0,
+            "in_game"
+          ],
+          [
+            4820.0,
+            "in_game"
+          ],
+          [
+            4860.0,
+            "in_game"
+          ],
+          [
+            4900.0,
+            "in_game"
+          ],
+          [
+            4940.0,
+            "in_game"
+          ],
+          [
+            4980.0,
+            "in_game"
+          ],
+          [
+            5020.0,
+            "in_game"
+          ],
+          [
+            5040.0,
+            "in_game"
+          ],
+          [
+            5140.0,
+            "in_game"
+          ],
+          [
+            5180.0,
+            "in_game"
+          ],
+          [
+            5200.0,
+            "in_game"
+          ],
+          [
+            5220.0,
+            "in_game"
+          ],
+          [
+            5240.0,
+            "in_game"
+          ],
+          [
+            5260.0,
+            "in_game"
+          ],
+          [
+            5320.0,
+            "in_game"
+          ],
+          [
+            5360.0,
+            "in_game"
+          ],
+          [
+            5380.0,
+            "in_game"
+          ],
+          [
+            5420.0,
+            "in_game"
+          ],
+          [
+            5480.0,
+            "in_game"
+          ]
+        ],
+        "is_complete": false,
+        "confidence": 0.45,
+        "reason": "incomplete_timer_too_early"
+      }
+    ],
+    "coarse_frames": 277,
+    "refined_frames": 44,
+    "ocr_calls": 302
+  },
+  "legacy_kda": {
+    "wall_time_seconds": 144.877,
+    "events_by_match": {
+      "1": [
+        {
+          "started_at_seconds": 155.0,
+          "ended_at_seconds": 178.36665259253675,
+          "text": "kda_change kills=1->2 deaths=0->0 previous_at=170.000 current_at=173.367"
+        },
+        {
+          "started_at_seconds": 605.0,
+          "ended_at_seconds": 642.2499579494911,
+          "text": "kda_change kills=2->3 deaths=0->0 previous_at=620.000 current_at=637.250"
+        },
+        {
+          "started_at_seconds": 2230.0,
+          "ended_at_seconds": 2270.366526425933,
+          "text": "kda_change kills=4->5 deaths=5->6 previous_at=2260.000 current_at=2265.367"
+        }
+      ],
+      "2": [
+        {
+          "started_at_seconds": 155.0,
+          "ended_at_seconds": 181.7664702540519,
+          "text": "kda_change kills=0->1 deaths=0->0 previous_at=170.000 current_at=176.766"
+        },
+        {
+          "started_at_seconds": 505.0,
+          "ended_at_seconds": 527.2497827516017,
+          "text": "kda_change kills=1->2 deaths=0->0 previous_at=520.000 current_at=522.250"
+        },
+        {
+          "started_at_seconds": 530.0,
+          "ended_at_seconds": 598.9997784244251,
+          "text": "kda_change kills=2->3 deaths=0->1 previous_at=560.000 current_at=594.000"
+        },
+        {
+          "started_at_seconds": 725.0,
+          "ended_at_seconds": 793.8164333418767,
+          "text": "kda_change kills=3->4 deaths=1->1 previous_at=740.000 current_at=788.816"
+        },
+        {
+          "started_at_seconds": 845.0,
+          "ended_at_seconds": 867.5330955627592,
+          "text": "kda_change kills=4->5 deaths=1->1 previous_at=860.000 current_at=862.533"
+        },
+        {
+          "started_at_seconds": 955.0,
+          "ended_at_seconds": 977.699755585375,
+          "text": "kda_change kills=5->6 deaths=1->1 previous_at=970.000 current_at=972.700"
+        },
+        {
+          "started_at_seconds": 950.0,
+          "ended_at_seconds": 994.5497545691669,
+          "text": "kda_change kills=6->6 deaths=1->2 previous_at=980.000 current_at=989.550"
+        },
+        {
+          "started_at_seconds": 1025.0,
+          "ended_at_seconds": 1049.4164179268746,
+          "text": "kda_change kills=6->8 deaths=2->2 previous_at=1040.000 current_at=1044.416"
+        },
+        {
+          "started_at_seconds": 1055.0,
+          "ended_at_seconds": 1082.8330825782132,
+          "text": "kda_change kills=8->9 deaths=2->2 previous_at=1070.000 current_at=1077.833"
+        }
+      ],
+      "3": []
+    },
+    "event_count": 12,
+    "coarse_frames": 483,
+    "refined_frames": 8727,
+    "ocr_calls": 9210
+  },
+  "combined_wall_time_seconds": 188.976
+}

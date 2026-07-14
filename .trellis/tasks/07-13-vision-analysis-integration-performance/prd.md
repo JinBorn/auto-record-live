@@ -17,16 +17,18 @@ Complete cross-stage integration, prove cache/performance behavior, validate rep
 
 ## Acceptance Criteria
 
-- [ ] Full test and compile checks pass.
-- [ ] One coarse decode pass serves all enabled coarse detectors.
-- [ ] Cached downstream reruns perform zero coarse OCR calls.
-- [ ] Refinement frame count is bounded and attributable to candidate windows.
-- [ ] Initial representative publish wall time is <=1.25x the legacy combined timer/KDA scan baseline.
-- [ ] Refinement union is <=15% of source duration unless an explicit override is tested and reported.
-- [ ] No regression in boundary count, KDA coverage, SFX timing, or export warnings.
-- [ ] Human-reviewed samples improve death/ending continuity.
-- [ ] A documented rollout decision enables or defers removal of legacy scans.
-- [ ] Missing/degraded assets exercise the legacy timer/KDA fallback during the rollout release.
+- [x] Full test and compile checks pass. (769 passed)
+- [x] One coarse decode pass serves all enabled coarse detectors. (single coarse schedule feeds timer/scene/kda/match_result/respawn)
+- [x] Cached downstream reruns perform zero coarse OCR calls. (cache_hit=compatible_asset; segmenter/highlight force-reprocess consumed shared_asset with no coarse decode)
+- [x] Refinement frame count is bounded and attributable to candidate windows. (refinement_max_frames cap + per-range candidate attribution)
+- [x] Initial representative publish wall time is <=1.25x the legacy combined timer/KDA scan baseline. (1.09x / 1.02x / 0.96x across three sessions)
+- [x] Refinement union is <=15% of source duration unless an explicit override is tested and reported. (15.0% at cap, cap_exhausted persisted)
+- [x] No regression in boundary count, KDA coverage, SFX timing, or export warnings. (boundaries 3/4/4 parity; KDA equal-or-higher; quality report only pre-existing subtitle-gap warning)
+- [x] Human-reviewed samples improve death/ending continuity. (accepted in sibling death/respawn task; shadow-only this release)
+- [x] A documented rollout decision enables or defers removal of legacy scans. (validation-report.md §7: enable schema-3 in publish, keep legacy fallback this release)
+- [x] Missing/degraded assets exercise the legacy timer/KDA fallback during the rollout release. (segmenter falls back to legacy timer scan when shared evidence missing/degraded/empty; spec: orchestration-contracts.md)
+
+See `validation-report.md` for full evidence.
 
 ## Out of Scope
 

@@ -195,7 +195,7 @@ class VisionSettings(BaseModel):
 
 class VisionAnalysisSettings(BaseModel):
     enabled: bool = False
-    schema_version: int = 1
+    schema_version: int = 3
     layout_profile: str = "lol_zh_1080p_v1"
     coarse_interval_seconds: float = 10.0
     refinement_max_source_fraction: float = 0.15
@@ -1464,7 +1464,7 @@ def load_settings() -> Settings:
         ),
         vision_analysis=VisionAnalysisSettings(
             enabled=_env_bool("ARL_VISION_ANALYSIS_ENABLED", False),
-            schema_version=max(1, _env_int("ARL_VISION_ANALYSIS_SCHEMA_VERSION", 1)),
+            schema_version=max(1, _env_int("ARL_VISION_ANALYSIS_SCHEMA_VERSION", 3)),
             layout_profile=os.getenv(
                 "ARL_VISION_ANALYSIS_LAYOUT_PROFILE", "lol_zh_1080p_v1"
             ),

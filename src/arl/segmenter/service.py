@@ -306,7 +306,7 @@ class SegmenterService:
                 timer_readings=view.timer_readings(),
                 scene_readings=view.scene_readings(),
             )
-            if candidate_segments and all(item.is_complete for item in candidate_segments):
+            if candidate_segments:
                 segments = candidate_segments
                 log(
                     "segmenter",

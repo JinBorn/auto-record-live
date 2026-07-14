@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -794,14 +795,14 @@ class HighlightPlannerService:
             f"session_id={boundary.session_id} match_index={boundary.match_index}",
         )
 
-        from arl.vision.frame_sampler import sample_every_frame_window, sample_frame_window
+        from arl.vision.frame_sampler import iter_every_frame_window, iter_frame_window
         from arl.vision.kda_ocr import read_kda
 
         try:
             samples = self._sample_kda_frames(
                 recording,
                 boundary=boundary,
-                sample_frame_window=sample_frame_window,
+                sample_frame_window=iter_frame_window,
             )
         except RuntimeError as exc:
             log(
@@ -873,7 +874,7 @@ class HighlightPlannerService:
                         recording,
                         previous=previous,
                         current=current,
-                        sample_every_frame_window=sample_every_frame_window,
+                        sample_every_frame_window=iter_every_frame_window,
                         read_kda=read_kda,
                     )
                 if refined is None:
@@ -1082,7 +1083,7 @@ class HighlightPlannerService:
         *,
         boundary: MatchBoundary,
         sample_frame_window,
-    ) -> list[tuple[float, object]]:
+    ) -> Iterator[tuple[float, object]]:
         spans = resolve_recording_window(
             recording,
             start_seconds=boundary.started_at_seconds,
@@ -1095,9 +1096,8 @@ class HighlightPlannerService:
                 f"session_id={boundary.session_id} match_index={boundary.match_index} "
                 "reason=recording_window_unavailable",
             )
-            return []
+            return
 
-        samples: list[tuple[float, object]] = []
         for span in spans:
             span_path = Path(span.path)
             if not span_path.exists():
@@ -1116,13 +1116,20 @@ class HighlightPlannerService:
                     self.settings.highlights.condensed_kda_sample_interval_seconds
                 ),
             )
-            for local_timestamp_seconds, frame in span_samples:
-                source_timestamp_seconds = span.source_start_seconds + (
-                    local_timestamp_seconds - span.local_start_seconds
+            try:
+                for local_timestamp_seconds, frame in span_samples:
+                    source_timestamp_seconds = span.source_start_seconds + (
+                        local_timestamp_seconds - span.local_start_seconds
+                    )
+                    yield source_timestamp_seconds, frame
+            except RuntimeError as exc:
+                log(
+                    "highlights",
+                    "skip KDA span sampling "
+                    f"session_id={boundary.session_id} match_index={boundary.match_index} "
+                    f"reason=sample_failed path={span_path} detail={exc}",
                 )
-                samples.append((source_timestamp_seconds, frame))
-        samples.sort(key=lambda item: item[0])
-        return samples
+                return
 
     def _trim_silent_kda_death_waits(
         self,

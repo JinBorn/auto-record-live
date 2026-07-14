@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..config import VisionSettings
-from .frame_sampler import sample_frame_window, sample_frames
+from .frame_sampler import iter_frame_window, sample_frame_window
 from .match_stitcher import stitch_matches, stitch_scene_readings
 from .models import MatchSegment, SceneReading, TimerReading
 from .scene_classifier import classify_scene
@@ -38,8 +38,10 @@ class VisionMatchDetector:
             List of MatchSegment with completeness analysis
         """
         # ── Coarse pass ──────────────────────────────────────────
-        frames = sample_frames(
+        frames = iter_frame_window(
             video_path,
+            0.0,
+            float("inf"),
             interval_seconds=self.settings.frame_sample_interval_seconds,
         )
 
@@ -85,9 +87,10 @@ class VisionMatchDetector:
     ) -> list[MatchSegment]:
         """Build match segments from durable shared-analysis evidence.
 
-        Local adaptive refinement remains owned by ``detect`` during rollout;
-        callers fall back to that path when persisted coarse evidence does not
-        yield complete segments.
+        Local adaptive refinement remains owned by ``detect`` for legacy
+        fallback. Shared consumers accept non-empty persisted candidates,
+        including explicitly incomplete edge matches, and fall back only when
+        the shared detector is unavailable or yields no segments.
         """
         segments = stitch_scene_readings(
             scene_readings,

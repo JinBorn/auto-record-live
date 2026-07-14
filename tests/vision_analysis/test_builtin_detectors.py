@@ -64,12 +64,69 @@ class BuiltinDetectorTests(TestCase):
             "arl.vision_analysis.builtin_detectors.read_kda",
             side_effect=lambda *args, **kwargs: next(refined),
         ):
+            detector.begin_refinement_range(10.0, 20.0)
+            refined_outputs = []
             for at_seconds in (10.0, 15.0, 16.0, 16.1, 16.2):
-                detector.analyze(object(), at_seconds, provenance="refined")
+                refined_outputs.append(
+                    detector.analyze(object(), at_seconds, provenance="refined")
+                )
+
+        events = detector.finalize().events
+        self.assertTrue(detector.refinement_range_complete())
+        self.assertTrue(all(not output.readings for output in refined_outputs))
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].observed_at_seconds, 16.0)
+        self.assertEqual(events[0].attributes["current_kills"], 1)
+
+    def test_kda_adapter_ignores_counter_regression_without_rebaselining(self) -> None:
+        settings = Settings()
+        settings.highlights.condensed_kda_frame_refinement_enabled = False
+        detector = KdaVisionDetector(settings)
+        coarse = iter(
+            [
+                KdaReading(10.0, 2, 1, 1, 0.9),
+                KdaReading(20.0, 1, 0, 1, 0.9),
+                KdaReading(30.0, 3, 1, 1, 0.9),
+            ]
+        )
+        with patch(
+            "arl.vision_analysis.builtin_detectors.read_kda",
+            side_effect=lambda *args, **kwargs: next(coarse),
+        ):
+            detector.analyze(object(), 10.0, provenance="coarse")
+            detector.analyze(object(), 20.0, provenance="coarse")
+            detector.analyze(object(), 30.0, provenance="coarse")
 
         events = detector.finalize().events
         self.assertEqual(len(events), 1)
-        self.assertEqual(events[0].observed_at_seconds, 16.0)
+        self.assertEqual(events[0].attributes["previous_kills"], 2)
+        self.assertEqual(events[0].attributes["current_kills"], 3)
+        self.assertEqual(events[0].attributes["previous_deaths"], 1)
+        self.assertEqual(events[0].attributes["current_deaths"], 1)
+
+    def test_kda_adapter_rebaselines_after_stable_zero_new_match_reset(self) -> None:
+        settings = Settings()
+        settings.highlights.condensed_kda_frame_refinement_enabled = False
+        detector = KdaVisionDetector(settings)
+        coarse = iter(
+            [
+                KdaReading(10.0, 5, 2, 3, 0.9),
+                KdaReading(20.0, 0, 0, 0, 0.9),
+                KdaReading(30.0, 0, 0, 0, 0.9),
+                KdaReading(40.0, 0, 0, 0, 0.9),
+                KdaReading(50.0, 1, 0, 0, 0.9),
+            ]
+        )
+        with patch(
+            "arl.vision_analysis.builtin_detectors.read_kda",
+            side_effect=lambda *args, **kwargs: next(coarse),
+        ):
+            for at_seconds in (10.0, 20.0, 30.0, 40.0, 50.0):
+                detector.analyze(object(), at_seconds, provenance="coarse")
+
+        events = detector.finalize().events
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].attributes["previous_kills"], 0)
         self.assertEqual(events[0].attributes["current_kills"], 1)
 
     def test_respawn_requires_monotonic_multiple_readings(self) -> None:
@@ -90,6 +147,7 @@ class BuiltinDetectorTests(TestCase):
                 detector.analyze(object(), at_seconds, provenance="refined")
 
         events = detector.finalize().events
+        self.assertTrue(detector.refinement_range_complete())
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].kind, "death_respawn_state")
         self.assertEqual(events[0].attributes["first_countdown"], 30)

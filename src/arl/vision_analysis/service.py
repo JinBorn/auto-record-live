@@ -67,11 +67,20 @@ class VisionAnalysisService:
         latest_recordings: dict[str, RecordingAsset] = {}
         for recording in load_models(self.recordings_path, RecordingAsset):
             latest_recordings[recording.session_id] = recording
+        existing_assets = (
+            []
+            if force_reprocess
+            else load_models(self.assets_path, VisionAnalysisAsset)
+        )
         outputs: list[VisionAnalysisAsset] = []
         for session_id, recording in latest_recordings.items():
             if session_ids is not None and session_id not in session_ids:
                 continue
-            asset = self._run_recording(recording, force_reprocess=force_reprocess)
+            asset = self._run_recording(
+                recording,
+                force_reprocess=force_reprocess,
+                existing_assets=existing_assets,
+            )
             if asset is not None:
                 outputs.append(asset)
         return outputs
@@ -81,6 +90,7 @@ class VisionAnalysisService:
         recording: RecordingAsset,
         *,
         force_reprocess: bool,
+        existing_assets: Iterable[VisionAnalysisAsset],
     ) -> VisionAnalysisAsset | None:
         for detector in self.detectors:
             reset = getattr(detector, "reset", None)
@@ -94,6 +104,7 @@ class VisionAnalysisService:
             recording.session_id,
             input_fingerprint=input_fingerprint,
             config_fingerprint=config_fingerprint,
+            assets=existing_assets,
         )
         if existing is not None and not force_reprocess:
             cached = existing.model_copy(deep=True)
@@ -172,29 +183,60 @@ class VisionAnalysisService:
         if metrics.refinement_source_seconds >= metrics.refinement_cap_seconds > 0:
             metrics.refinement_cap_exhausted = True
         detector_by_name = {detector.name: detector for detector in self.detectors}
+        frame_cap_exhausted = False
         for range_start, range_end, detector_names in merged_requests:
+            for detector_name in detector_names:
+                detector = detector_by_name.get(detector_name)
+                begin_refinement_range = getattr(
+                    detector,
+                    "begin_refinement_range",
+                    None,
+                )
+                if begin_refinement_range is not None:
+                    begin_refinement_range(range_start, range_end)
             for span in resolve_recording_window(
                 recording,
                 start_seconds=range_start,
                 end_seconds=range_end,
             ):
+                if self._refinement_range_complete(
+                    detector_names,
+                    detector_by_name=detector_by_name,
+                ):
+                    break
                 path = Path(span.path)
                 if not path.exists():
                     continue
-                frames = self.sample_every_frame(
-                    path,
-                    span.local_start_seconds,
-                    span.local_end_seconds,
+                refinement_interval = self._refinement_interval_seconds(
+                    detector_names,
+                    detector_by_name=detector_by_name,
                 )
+                if refinement_interval > 0.0:
+                    frames = self.sample_window(
+                        path,
+                        span.local_start_seconds,
+                        span.local_end_seconds,
+                        interval_seconds=refinement_interval,
+                    )
+                else:
+                    frames = self.sample_every_frame(
+                        path,
+                        span.local_start_seconds,
+                        span.local_end_seconds,
+                    )
                 for local_at, frame in frames:
-                    metrics.refined_decoded_frames += 1
-                    if metrics.refined_decoded_frames > self.settings.vision_analysis.refinement_max_frames:
+                    if (
+                        metrics.refined_decoded_frames
+                        >= self.settings.vision_analysis.refinement_max_frames
+                    ):
                         metrics.refinement_cap_exhausted = True
+                        frame_cap_exhausted = True
                         break
+                    metrics.refined_decoded_frames += 1
                     source_at = span.source_start_seconds + (local_at - span.local_start_seconds)
                     for detector_name in detector_names:
                         detector = detector_by_name.get(detector_name)
-                        if detector is None:
+                        if detector is None or self._detector_refinement_complete(detector):
                             continue
                         item = health[detector_name]
                         item.invocations += 1
@@ -208,9 +250,14 @@ class VisionAnalysisService:
                         item.accepted_readings += len(output.readings)
                         readings.extend(output.readings)
                         events.extend(output.events)
-                if metrics.refinement_cap_exhausted:
+                    if self._refinement_range_complete(
+                        detector_names,
+                        detector_by_name=detector_by_name,
+                    ):
+                        break
+                if frame_cap_exhausted:
                     break
-            if metrics.refinement_cap_exhausted:
+            if frame_cap_exhausted:
                 break
 
         for detector in self.detectors:
@@ -321,27 +368,96 @@ class VisionAnalysisService:
             for request in requests
             if request.ended_at_seconds > request.started_at_seconds
         )
-        merged: list[tuple[float, float, set[str]]] = []
-        used = 0.0
-        for start, end, detector in normalized:
-            if merged and start <= merged[-1][1] + 0.001:
-                previous_start, previous_end, names = merged[-1]
-                candidate_end = max(previous_end, end)
-                extra = candidate_end - previous_end
-                if used + extra > cap:
-                    candidate_end = previous_end + max(0.0, cap - used)
-                    extra = candidate_end - previous_end
-                names.add(detector)
-                merged[-1] = (previous_start, candidate_end, names)
-                used += extra
-            elif used < cap:
-                allowed_end = min(end, start + (cap - used))
-                if allowed_end > start:
-                    merged.append((start, allowed_end, {detector}))
-                    used += allowed_end - start
-            if used >= cap:
+        if not normalized or cap <= 0.0:
+            return []
+        boundaries = sorted(
+            {point for start, end, _ in normalized for point in (start, end)}
+        )
+        atomic_ranges: list[tuple[float, float, set[str]]] = []
+        for start, end in zip(boundaries, boundaries[1:]):
+            names = {
+                detector
+                for request_start, request_end, detector in normalized
+                if request_start < end - 0.001 and request_end > start + 0.001
+            }
+            if not names:
+                continue
+            atomic_ranges.append((start, end, names))
+
+        detector_priority = {"kda": 0, "match_result": 1, "respawn": 2}
+        selected: list[tuple[float, float, set[str]]] = []
+        remaining = cap
+        for start, end, names in sorted(
+            atomic_ranges,
+            key=lambda item: (
+                min(detector_priority.get(name, 1) for name in item[2]),
+                item[0],
+            ),
+        ):
+            if remaining <= 0.0:
                 break
+            allowed_end = min(end, start + remaining)
+            if allowed_end > start:
+                selected.append((start, allowed_end, names))
+                remaining -= allowed_end - start
+
+        merged: list[tuple[float, float, set[str]]] = []
+        for start, allowed_end, names in sorted(selected, key=lambda item: item[0]):
+            if (
+                merged
+                and abs(merged[-1][1] - start) <= 0.001
+                and merged[-1][2] == names
+            ):
+                previous_start, _, previous_names = merged[-1]
+                merged[-1] = (previous_start, allowed_end, previous_names)
+            else:
+                merged.append((start, allowed_end, names))
         return merged
+
+    @staticmethod
+    def _refinement_interval_seconds(
+        detector_names: set[str],
+        *,
+        detector_by_name: dict[str, VisionDetector],
+    ) -> float:
+        intervals = [
+            max(
+                0.0,
+                float(
+                    getattr(
+                        detector_by_name[detector_name],
+                        "refinement_interval_seconds",
+                        0.0,
+                    )
+                ),
+            )
+            for detector_name in detector_names
+            if detector_name in detector_by_name
+        ]
+        if not intervals or any(interval <= 0.0 for interval in intervals):
+            return 0.0
+        return min(intervals)
+
+    @staticmethod
+    def _detector_refinement_complete(detector: VisionDetector) -> bool:
+        check = getattr(detector, "refinement_range_complete", None)
+        return bool(check()) if check is not None else False
+
+    @classmethod
+    def _refinement_range_complete(
+        cls,
+        detector_names: set[str],
+        *,
+        detector_by_name: dict[str, VisionDetector],
+    ) -> bool:
+        detectors = [
+            detector_by_name[name]
+            for name in detector_names
+            if name in detector_by_name
+        ]
+        return bool(detectors) and all(
+            cls._detector_refinement_complete(detector) for detector in detectors
+        )
 
     @staticmethod
     def _is_due(at_seconds: float, interval_seconds: float) -> bool:
@@ -355,9 +471,10 @@ class VisionAnalysisService:
         *,
         input_fingerprint: str,
         config_fingerprint: str,
+        assets: Iterable[VisionAnalysisAsset],
     ) -> VisionAnalysisAsset | None:
         result = None
-        for asset in load_models(self.assets_path, VisionAnalysisAsset):
+        for asset in assets:
             if (
                 asset.session_id == session_id
                 and asset.input_fingerprint == input_fingerprint

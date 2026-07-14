@@ -35,11 +35,13 @@ class _Detector:
         *,
         request: tuple[float, float] | None = None,
         fail: bool = False,
+        refinement_interval: float = 0.0,
     ) -> None:
         self.name = name
         self.coarse_interval_seconds = interval
         self.request = request
         self.fail = fail
+        self.refinement_interval_seconds = refinement_interval
         self.calls: list[tuple[float, str]] = []
 
     def analyze(self, frame, at_seconds: float, *, provenance: str) -> DetectorOutput:
@@ -61,6 +63,24 @@ class _Detector:
             ],
             refinement_requests=requests,
         )
+
+
+class _CompletingDetector(_Detector):
+    def __init__(self, name: str, interval: float, *, request: tuple[float, float]) -> None:
+        super().__init__(name, interval, request=request)
+        self._complete = False
+
+    def begin_refinement_range(self, start_seconds: float, end_seconds: float) -> None:
+        self._complete = False
+
+    def refinement_range_complete(self) -> bool:
+        return self._complete
+
+    def analyze(self, frame, at_seconds: float, *, provenance: str) -> DetectorOutput:
+        output = super().analyze(frame, at_seconds, provenance=provenance)
+        if provenance == "refined":
+            self._complete = True
+        return output
 
 
 class VisionAnalysisServiceTests(TestCase):
@@ -137,6 +157,39 @@ class VisionAnalysisServiceTests(TestCase):
             2,
         )
 
+    def test_multi_session_cache_loads_asset_manifest_once(self) -> None:
+        append_model(
+            self.settings.storage.temp_dir / "recording-assets.jsonl",
+            RecordingAsset(
+                session_id="session-b",
+                source_type=SourceType.DIRECT_STREAM,
+                path=str(self.video),
+                started_at=datetime.now(timezone.utc),
+            ),
+        )
+        detector = _Detector("timer", 10.0)
+        service = VisionAnalysisService(
+            self.settings,
+            detectors=[detector],
+            sample_window=lambda *args, **kwargs: [(0.0, FRAME)],
+        )
+        with patch("arl.vision_analysis.service.recording_duration_seconds", return_value=20.0):
+            service.run()
+            with patch(
+                "arl.vision_analysis.service.load_models",
+                wraps=load_models,
+            ) as mocked_load_models:
+                cached = service.run()
+
+        asset_manifest_loads = [
+            call
+            for call in mocked_load_models.call_args_list
+            if call.args[0] == service.assets_path
+        ]
+        self.assertEqual(len(asset_manifest_loads), 1)
+        self.assertEqual(len(cached), 2)
+        self.assertTrue(all(asset.metrics.cache_hit for asset in cached))
+
     def test_detector_failure_is_isolated(self) -> None:
         good = _Detector("good", 10.0)
         bad = _Detector("bad", 10.0, fail=True)
@@ -173,9 +226,128 @@ class VisionAnalysisServiceTests(TestCase):
         with patch("arl.vision_analysis.service.recording_duration_seconds", return_value=100.0):
             asset = service.run()[0]
 
-        self.assertEqual(refined_ranges, [(10.0, 25.0)])
+        self.assertEqual(
+            refined_ranges,
+            [(10.0, 20.0), (20.0, 22.0), (22.0, 25.0)],
+        )
         self.assertEqual(asset.metrics.refinement_source_seconds, 15.0)
         self.assertTrue(asset.metrics.refinement_cap_exhausted)
+
+    def test_source_fraction_cap_does_not_skip_allowed_refinement_ranges(self) -> None:
+        self.settings.vision_analysis.refinement_max_source_fraction = 0.15
+        first = _Detector("first", 10.0, request=(0.0, 5.0))
+        second = _Detector("second", 10.0, request=(10.0, 20.0))
+        refined_ranges = []
+
+        def sample_every(path, start, end):
+            refined_ranges.append((start, end))
+            return [(start, FRAME)]
+
+        service = VisionAnalysisService(
+            self.settings,
+            detectors=[first, second],
+            sample_window=lambda *args, **kwargs: [(0.0, FRAME)],
+            sample_every_frame=sample_every,
+        )
+        with patch("arl.vision_analysis.service.recording_duration_seconds", return_value=100.0):
+            asset = service.run()[0]
+
+        self.assertEqual(refined_ranges, [(0.0, 5.0), (10.0, 20.0)])
+        self.assertEqual(asset.metrics.refined_decoded_frames, 2)
+        self.assertEqual(asset.metrics.refinement_source_seconds, 15.0)
+        self.assertTrue(asset.metrics.refinement_cap_exhausted)
+
+    def test_refinement_budget_prioritizes_late_kda_over_early_shadow_range(self) -> None:
+        self.settings.vision_analysis.refinement_max_source_fraction = 0.15
+        respawn = _Detector("respawn", 10.0, request=(0.0, 20.0))
+        kda = _Detector("kda", 10.0, request=(80.0, 90.0))
+        refined_ranges = []
+
+        service = VisionAnalysisService(
+            self.settings,
+            detectors=[respawn, kda],
+            sample_window=lambda *args, **kwargs: [(0.0, FRAME)],
+            sample_every_frame=lambda path, start, end: refined_ranges.append(
+                (start, end)
+            )
+            or [],
+        )
+        with patch("arl.vision_analysis.service.recording_duration_seconds", return_value=100.0):
+            asset = service.run()[0]
+
+        self.assertEqual(refined_ranges, [(0.0, 5.0), (80.0, 90.0)])
+        self.assertEqual(asset.metrics.refinement_source_seconds, 15.0)
+
+    def test_refinement_frame_cap_never_overcounts_decoded_frames(self) -> None:
+        self.settings.vision_analysis.refinement_max_source_fraction = 1.0
+        self.settings.vision_analysis.refinement_max_frames = 2
+        detector = _Detector("timer", 10.0, request=(0.0, 10.0))
+
+        service = VisionAnalysisService(
+            self.settings,
+            detectors=[detector],
+            sample_window=lambda *args, **kwargs: [(0.0, FRAME)],
+            sample_every_frame=lambda *args, **kwargs: [
+                (0.0, FRAME),
+                (1.0, FRAME),
+                (2.0, FRAME),
+            ],
+        )
+        with patch("arl.vision_analysis.service.recording_duration_seconds", return_value=10.0):
+            asset = service.run()[0]
+
+        self.assertEqual(asset.metrics.refined_decoded_frames, 2)
+        self.assertTrue(asset.metrics.refinement_cap_exhausted)
+
+    def test_sparse_refinement_uses_detector_interval_without_every_frame_decode(self) -> None:
+        detector = _Detector(
+            "respawn",
+            10.0,
+            request=(10.0, 20.0),
+            refinement_interval=0.5,
+        )
+        sample_calls = []
+
+        def sample_window(path, start, end, *, interval_seconds):
+            sample_calls.append((start, end, interval_seconds))
+            if interval_seconds == 0.5:
+                return [(10.0, FRAME), (10.5, FRAME)]
+            return [(0.0, FRAME)]
+
+        service = VisionAnalysisService(
+            self.settings,
+            detectors=[detector],
+            sample_window=sample_window,
+            sample_every_frame=lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("sparse refinement should not decode every frame")
+            ),
+        )
+        with patch("arl.vision_analysis.service.recording_duration_seconds", return_value=100.0):
+            asset = service.run()[0]
+
+        self.assertIn((10.0, 20.0, 0.5), sample_calls)
+        self.assertEqual(asset.metrics.refined_decoded_frames, 2)
+
+    def test_completed_refinement_range_stops_decoding_remaining_frames(self) -> None:
+        detector = _CompletingDetector("kda", 10.0, request=(0.0, 10.0))
+        service = VisionAnalysisService(
+            self.settings,
+            detectors=[detector],
+            sample_window=lambda *args, **kwargs: [(0.0, FRAME)],
+            sample_every_frame=lambda *args, **kwargs: [
+                (0.0, FRAME),
+                (1.0, FRAME),
+                (2.0, FRAME),
+            ],
+        )
+        with patch("arl.vision_analysis.service.recording_duration_seconds", return_value=10.0):
+            asset = service.run()[0]
+
+        self.assertEqual(asset.metrics.refined_decoded_frames, 1)
+        self.assertEqual(
+            [provenance for _, provenance in detector.calls].count("refined"),
+            1,
+        )
 
     def test_segmented_recording_maps_local_frames_to_source_time(self) -> None:
         root = Path(self.temp.name)

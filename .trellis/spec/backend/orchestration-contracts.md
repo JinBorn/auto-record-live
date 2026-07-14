@@ -1800,6 +1800,10 @@ subtitle_path.write_text(build_srt(entries), encoding="utf-8")
   timestamps.
 - Detector exceptions degrade only that detector and do not discard successful
   readings from other detectors.
+- Segmenter consumes any non-empty healthy shared timer/scene candidate set,
+  including explicitly incomplete edge matches. It runs the legacy timer scan
+  only when shared evidence is missing/degraded or produces no candidates;
+  incompleteness alone must not trigger a duplicate full-recording scan.
 - Overlapping refinement requests are unioned before decoding. The default
   union cap is 15% of recording/match source duration and a separate frame cap
   stops pathological refinement. Cap exhaustion is persisted in metrics.
@@ -1809,7 +1813,10 @@ subtitle_path.write_text(build_srt(entries), encoding="utf-8")
 ### Configuration / CLI
 
 - `ARL_VISION_ANALYSIS_ENABLED` (default `0`; publish preset enables it)
-- `ARL_VISION_ANALYSIS_SCHEMA_VERSION` (default `1`)
+- `ARL_VISION_ANALYSIS_SCHEMA_VERSION` (default `3`; schema 3 processes every
+  admitted atomic refinement range, prioritizes production KDA evidence over
+  shadow-only ranges when the 15% cap binds, and omits redundant per-frame KDA
+  readings from durable assets)
 - `ARL_VISION_ANALYSIS_LAYOUT_PROFILE` (default `lol_zh_1080p_v1`)
 - `ARL_VISION_ANALYSIS_COARSE_INTERVAL_SECONDS` (default `10`)
 - `ARL_VISION_ANALYSIS_REFINEMENT_MAX_SOURCE_FRACTION` (default `0.15`)

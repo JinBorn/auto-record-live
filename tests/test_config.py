@@ -1047,6 +1047,7 @@ class SettingsValidatorTests(unittest.TestCase):
         settings = Settings()
 
         self.assertFalse(settings.vision_analysis.enabled)
+        self.assertEqual(settings.vision_analysis.schema_version, 3)
         self.assertTrue(apply_publish_preset(settings).vision_analysis.enabled)
         self.assertFalse(settings.vision_analysis.enabled)
 

@@ -76,7 +76,8 @@ class SceneVisionDetector:
 
 class KdaVisionDetector:
     name = "kda"
-    version = "1"
+    version = "3"
+    refinement_interval_seconds = 0.0
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -88,13 +89,33 @@ class KdaVisionDetector:
         self._transitions: list[
             tuple[tuple[float, int, int, int, str], tuple[float, int, int, int, str]]
         ] = []
+        self._zero_reset_streak: list[tuple[float, int, int, int, str]] = []
+        self._confirmed_transition_at: dict[tuple[str, str], float] = {}
+        self._active_refinement_keys: set[tuple[str, str]] | None = None
 
     def reset(self) -> None:
         self._coarse_values.clear()
         self._refined_values.clear()
         self._transitions.clear()
+        self._zero_reset_streak.clear()
+        self._confirmed_transition_at.clear()
+        self._active_refinement_keys = None
+
+    def begin_refinement_range(self, start_seconds: float, end_seconds: float) -> None:
+        self._active_refinement_keys = {
+            (previous[4], current[4])
+            for previous, current in self._transitions
+            if previous[0] < end_seconds
+            and current[0] > start_seconds
+            and (previous[4], current[4]) not in self._confirmed_transition_at
+        }
+
+    def refinement_range_complete(self) -> bool:
+        return self._active_refinement_keys == set()
 
     def analyze(self, frame: Any, at_seconds: float, *, provenance: str) -> DetectorOutput:
+        if provenance == "refined" and self.refinement_range_complete():
+            return DetectorOutput()
         reading = read_kda(
             frame,
             at_seconds,
@@ -115,10 +136,36 @@ class KdaVisionDetector:
         value = self._usable_value(result)
         requests: list[RefinementRequest] = []
         if value is not None:
-            target = self._refined_values if provenance == "refined" else self._coarse_values
-            if provenance == "coarse" and target:
-                previous = target[-1]
-                if self._valid_transition(previous, value):
+            if provenance == "refined":
+                self._refined_values.append(value)
+                if self._active_refinement_keys is not None:
+                    for previous, current in self._transitions:
+                        key = (previous[4], current[4])
+                        if key not in self._active_refinement_keys:
+                            continue
+                        refined = self._stable_refined_timestamp(previous, current)
+                        if refined is not None:
+                            self._confirmed_transition_at[key] = refined
+                            self._active_refinement_keys.remove(key)
+            elif not self._coarse_values:
+                self._coarse_values.append(value)
+            else:
+                previous = self._coarse_values[-1]
+                action = self._coarse_value_action(previous, value)
+                if action == "ignore" and value[1:4] == (0, 0, 0):
+                    if (
+                        self._zero_reset_streak
+                        and value[0] - self._zero_reset_streak[-1][0]
+                        > self.settings.highlights.condensed_kda_max_reading_gap_seconds
+                    ):
+                        self._zero_reset_streak.clear()
+                    self._zero_reset_streak.append(value)
+                    if len(self._zero_reset_streak) >= 3:
+                        self._coarse_values.append(value)
+                        self._zero_reset_streak.clear()
+                else:
+                    self._zero_reset_streak.clear()
+                if action == "event":
                     self._transitions.append((previous, value))
                     if self.settings.highlights.condensed_kda_frame_refinement_enabled:
                         requests.append(
@@ -139,15 +186,21 @@ class KdaVisionDetector:
                                 ended_at_seconds=value[0] + 120.0,
                             )
                         )
-            target.append(value)
-        return DetectorOutput(readings=[result], refinement_requests=requests)
+                if action != "ignore":
+                    self._coarse_values.append(value)
+        return DetectorOutput(
+            readings=[] if provenance == "refined" else [result],
+            refinement_requests=requests,
+        )
 
     def finalize(self) -> DetectorOutput:
         events: list[VisionEvent] = []
         for previous, current in self._transitions:
             observed_at = current[0]
             if self.settings.highlights.condensed_kda_frame_refinement_enabled:
-                refined = self._stable_refined_timestamp(previous, current)
+                refined = self._confirmed_transition_at.get(
+                    (previous[4], current[4])
+                ) or self._stable_refined_timestamp(previous, current)
                 if refined is None:
                     continue
                 observed_at = refined
@@ -194,21 +247,24 @@ class KdaVisionDetector:
             reading.reading_id,
         )
 
-    def _valid_transition(
+    def _coarse_value_action(
         self,
         previous: tuple[float, int, int, int, str],
         current: tuple[float, int, int, int, str],
-    ) -> bool:
+    ) -> str:
         gap = current[0] - previous[0]
         deltas = tuple(current[index] - previous[index] for index in range(1, 4))
-        return (
-            gap > 0
-            and gap <= self.settings.highlights.condensed_kda_max_reading_gap_seconds
-            and all(delta >= 0 for delta in deltas)
-            and deltas[0] + deltas[1] > 0
-            and deltas[0] + deltas[1]
-            <= self.settings.highlights.condensed_kda_max_event_delta
-        )
+        if gap <= 0 or any(delta < 0 for delta in deltas):
+            return "ignore"
+        if (
+            gap > self.settings.highlights.condensed_kda_max_reading_gap_seconds
+            or deltas[0] + deltas[1]
+            > self.settings.highlights.condensed_kda_max_event_delta
+        ):
+            return "baseline"
+        if deltas[0] + deltas[1] > 0:
+            return "event"
+        return "baseline"
 
     def _stable_refined_timestamp(
         self,
@@ -244,7 +300,8 @@ class KdaVisionDetector:
 
 class RespawnVisionDetector:
     name = "respawn"
-    version = "1"
+    version = "2"
+    refinement_interval_seconds = 0.45
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -259,6 +316,18 @@ class RespawnVisionDetector:
         self._observations.clear()
         self._death_states.clear()
         self._last_refined_check = None
+
+    def begin_refinement_range(self, start_seconds: float, end_seconds: float) -> None:
+        return None
+
+    def refinement_range_complete(self) -> bool:
+        death_start = self._first_stable_state(True, start_index=0)
+        if death_start is None:
+            return False
+        return self._first_stable_state(
+            False,
+            start_index=death_start[0] + 3,
+        ) is not None
 
     def analyze(self, frame: Any, at_seconds: float, *, provenance: str) -> DetectorOutput:
         if (
@@ -388,7 +457,8 @@ class RespawnVisionDetector:
 
 class MatchResultVisionDetector:
     name = "match_result"
-    version = "1"
+    version = "2"
+    refinement_interval_seconds = 0.5
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
