@@ -30,18 +30,18 @@ Create a reusable visual-analysis stage that decodes each recording once for coa
 
 ## Acceptance Criteria
 
-- [ ] One coarse video sampling pass can produce timer and KDA readings from the same decoded frames.
-- [ ] Timer-based segmentation and KDA-based highlight/SFX behavior remain functionally equivalent on existing fixtures.
-- [ ] A forced downstream highlight/edit/export rerun reuses cached visual assets without repeating coarse OCR.
-- [ ] Candidate refinement scans only bounded source ranges and records its frame-processing cost.
-- [ ] Segmented recording timestamps remain correct across chunk boundaries.
-- [ ] Invalid or partial detector output is ignored safely and does not block unrelated detectors.
-- [ ] Typed visual assets are reset/status-aware and covered by unit plus pipeline tests.
-- [ ] Performance validation reports wall time, decoded coarse frames, OCR calls by detector, refined frames, and cache behavior on representative recordings.
-- [ ] Initial publish visual-analysis wall time is no more than 1.25x the current combined timer plus KDA scan baseline on representative recordings.
-- [ ] Enabling additional coarse detectors does not multiply decoded coarse-frame count by detector count.
-- [ ] Cache-hit downstream reruns perform zero coarse OCR calls.
-- [ ] Refined source ranges total no more than 15% of match source duration by default; hitting the cap records degradation and stops range expansion.
+- [x] One coarse video sampling pass can produce timer and KDA readings from the same decoded frames. (foundation + migration; single coarse schedule feeds all detectors)
+- [x] Timer-based segmentation and KDA-based highlight/SFX behavior remain functionally equivalent on existing fixtures. (migration task; boundary/KDA parity in integration validation)
+- [x] A forced downstream highlight/edit/export rerun reuses cached visual assets without repeating coarse OCR. (integration task: segmenter/highlight force-reprocess consumed shared_asset, zero coarse decode)
+- [x] Candidate refinement scans only bounded source ranges and records its frame-processing cost. (refinement union + refined_decoded_frames metrics)
+- [x] Segmented recording timestamps remain correct across chunk boundaries. (chunk→source timeline translation; covered by pipeline tests)
+- [x] Invalid or partial detector output is ignored safely and does not block unrelated detectors. (per-detector degradation; death/respawn safe-validation task)
+- [x] Typed visual assets are reset/status-aware and covered by unit plus pipeline tests. (769 tests incl. vision_analysis unit + pipeline suites)
+- [x] Performance validation reports wall time, decoded coarse frames, OCR calls by detector, refined frames, and cache behavior on representative recordings. (validation-report.md, three sessions)
+- [x] Initial publish visual-analysis wall time is no more than 1.25x the current combined timer plus KDA scan baseline on representative recordings. (1.09x/1.02x/0.96x)
+- [x] Enabling additional coarse detectors does not multiply decoded coarse-frame count by detector count. (coarse_decoded_frames constant per session regardless of detector count)
+- [x] Cache-hit downstream reruns perform zero coarse OCR calls. (cache_hit=compatible_asset; downstream force-reprocess reuse)
+- [x] Refined source ranges total no more than 15% of match source duration by default; hitting the cap records degradation and stops range expansion. (15.0% at cap, refinement_cap_exhausted persisted)
 
 ## Likely Delivery Shape
 
