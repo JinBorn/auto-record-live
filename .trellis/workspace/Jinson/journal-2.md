@@ -1000,3 +1000,36 @@ Implemented shadow-only respawn and Chinese match-result detectors, shadow repor
 ### Next Steps
 
 - None - task complete
+
+
+## Session 78: Vision analysis integration & performance validation
+
+**Date**: 2026-07-14
+**Task**: Vision analysis integration & performance validation
+**Branch**: `main`
+
+### Summary
+
+Set schema 3 as default and validated shared vision analysis on three 1080p sessions: initial wall time 1.09x/1.02x/0.96x of legacy combined timer+KDA baseline, refinement union at 15% cap, cached reruns hit compatible_asset with zero coarse OCR, downstream force-reprocess consumes shared asset. Segmenter accepts incomplete edge matches with legacy fallback. Rollout keeps legacy fallback and shadow-only death/result this release. 769 tests pass. Archived child task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0980508` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 77
+- **Total Sessions**: 78
 - **Last Active**: 2026-07-14
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~1002 | Active |
+| `journal-2.md` | ~1035 | Active |
 | `journal-1.md` | ~1986 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 78 | 2026-07-14 | Vision analysis integration & performance validation | `0980508` | `main` |
 | 77 | 2026-07-14 | Death and result OCR shadow validation | `79e1c6e`, `8305147` | `main` |
 | 76 | 2026-07-13 | Shared timer and KDA OCR migration | `4ed8787` | `main` |
 | 75 | 2026-07-13 | Shared vision analysis foundation | `939012c` | `main` |
