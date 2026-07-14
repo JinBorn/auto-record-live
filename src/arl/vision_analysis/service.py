@@ -13,7 +13,7 @@ from arl.media.recording_resolver import recording_duration_seconds, resolve_rec
 from arl.shared.contracts import RecordingAsset
 from arl.shared.jsonl_store import append_model, load_models
 from arl.shared.logging import log
-from arl.vision.frame_sampler import sample_every_frame_window, sample_frame_window
+from arl.vision.frame_sampler import iter_every_frame_window, iter_frame_window
 
 from .detectors import RefinementRequest, VisionDetector
 from .builtin_detectors import build_builtin_detectors
@@ -35,8 +35,8 @@ class VisionAnalysisService:
         *,
         detectors: Iterable[VisionDetector] | None = None,
         layout: VisionLayoutProfile = LOL_ZH_1080P,
-        sample_window: Callable[..., list[tuple[float, Any]]] = sample_frame_window,
-        sample_every_frame: Callable[..., list[tuple[float, Any]]] = sample_every_frame_window,
+        sample_window: Callable[..., Iterable[tuple[float, Any]]] = iter_frame_window,
+        sample_every_frame: Callable[..., Iterable[tuple[float, Any]]] = iter_every_frame_window,
     ) -> None:
         self.settings = settings
         resolved_detectors = (

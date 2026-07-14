@@ -77,6 +77,34 @@ def sample_frame_window(
     return result
 
 
+def iter_frame_window(
+    video_path: Path,
+    start_seconds: float,
+    end_seconds: float,
+    *,
+    interval_seconds: float = 5.0,
+):
+    """Yield regular samples without retaining the full coarse pass."""
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open video: {video_path}")
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        video_duration = total_frames / fps if fps > 0 else 0
+        timestamp = max(0.0, start_seconds)
+        clamped_end = min(video_duration, end_seconds)
+        while timestamp <= clamped_end:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(timestamp * fps))
+            ret, frame = cap.read()
+            if not ret:
+                break
+            yield timestamp, frame
+            timestamp += interval_seconds
+    finally:
+        cap.release()
+
+
 def sample_every_frame_window(
     video_path: Path,
     start_seconds: float,
@@ -104,6 +132,32 @@ def sample_every_frame_window(
         frames.append((frame_index / fps, frame))
     cap.release()
     return frames
+
+
+def iter_every_frame_window(
+    video_path: Path,
+    start_seconds: float,
+    end_seconds: float,
+):
+    """Yield decoded frames in a narrow window without retaining them all."""
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open video: {video_path}")
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps <= 0:
+            return
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        first_frame = max(0, int(start_seconds * fps))
+        last_frame = min(total_frames - 1, int(end_seconds * fps))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, first_frame)
+        for frame_index in range(first_frame, last_frame + 1):
+            ret, frame = cap.read()
+            if not ret:
+                break
+            yield frame_index / fps, frame
+    finally:
+        cap.release()
 
 
 def _sample_range(

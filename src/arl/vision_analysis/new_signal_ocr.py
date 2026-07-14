@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import re
+import shutil
+from functools import lru_cache
 from typing import Any
 
 import cv2
+from arl.vision.kda_ocr import _extract_char_boxes, _preprocess, _recognize_char
 
 
 def read_respawn_countdown(
@@ -13,17 +16,21 @@ def read_respawn_countdown(
     crop = _crop(frame, crop_region)
     if crop is None:
         return None, 0.0
-    try:
-        import pytesseract
-    except ImportError:
-        return None, 0.0
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
     _, binary = cv2.threshold(gray, 165, 255, cv2.THRESH_BINARY)
-    text = pytesseract.image_to_string(
-        binary,
-        config="--psm 7 -c tessedit_char_whitelist=0123456789秒",
-    )
+    text = ""
+    try:
+        if not _tesseract_available():
+            raise RuntimeError("tesseract unavailable")
+        import pytesseract
+
+        text = pytesseract.image_to_string(
+            binary,
+            config="--psm 7 -c tessedit_char_whitelist=0123456789秒",
+        )
+    except Exception:
+        text = _template_digits(crop)
     match = re.search(r"(?<!\d)(\d{1,3})(?!\d)", text)
     if match is None:
         return None, 0.0
@@ -40,19 +47,38 @@ def read_match_result(
     crop = _crop(frame, crop_region)
     if crop is None:
         return None, 0.0
-    try:
-        import pytesseract
-    except ImportError:
-        return None, 0.0
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-    text = pytesseract.image_to_string(gray, lang="chi_sim", config="--psm 6")
+    text = ""
+    try:
+        if not _tesseract_available():
+            raise RuntimeError("tesseract unavailable")
+        import pytesseract
+
+        text = pytesseract.image_to_string(gray, lang="chi_sim", config="--psm 6")
+    except Exception:
+        pass
     normalized = re.sub(r"\s+", "", text)
     if "胜利" in normalized:
         return "victory", 0.9
     if "失败" in normalized:
         return "defeat", 0.9
     return None, 0.0
+
+
+def looks_like_player_dead(frame: Any) -> bool:
+    """Detect zero-health player HUD on the supported 1080p layout."""
+    crop = _crop(frame, (750, 990, 400, 60))
+    if crop is None:
+        return False
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    green = (
+        (hsv[:, :, 0] >= 35)
+        & (hsv[:, :, 0] <= 85)
+        & (hsv[:, :, 1] >= 80)
+        & (hsv[:, :, 2] >= 60)
+    )
+    return float(green.mean()) <= 0.02
 
 
 def _crop(frame: Any, region: tuple[int, int, int, int]):
@@ -71,3 +97,22 @@ def _crop(frame: Any, region: tuple[int, int, int, int]):
     ):
         return None
     return frame[y : y + height, x : x + width]
+
+
+def _template_digits(crop: Any) -> str:
+    binary = _preprocess(crop)
+    digits: list[str] = []
+    scores: list[float] = []
+    for x, y, width, height in _extract_char_boxes(binary):
+        char, score = _recognize_char(binary[y : y + height, x : x + width])
+        if char is not None and char.isdigit():
+            digits.append(char)
+            scores.append(score)
+    if not digits or max(scores, default=0.0) < 0.45:
+        return ""
+    return "".join(digits[-3:])
+
+
+@lru_cache(maxsize=1)
+def _tesseract_available() -> bool:
+    return shutil.which("tesseract") is not None

@@ -22,7 +22,7 @@ Add the first new shared-vision signals: player death/respawn state and confirme
 - [x] Result recognition produces a shadow match-end proposal and win/loss fact.
 - [x] False single-frame result/countdown reads are rejected.
 - [x] Detector failures preserve legacy behavior.
-- [ ] Shadow reports for at least three representative sessions include accepted/rejected evidence and proposed downstream changes before active rollout.
+- [x] Shadow reports for at least three representative sessions include accepted/rejected evidence and proposed downstream changes before active rollout.
 
 ## Out of Scope
 

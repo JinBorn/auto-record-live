@@ -1855,11 +1855,26 @@ subtitle_path.write_text(build_srt(entries), encoding="utf-8")
   `death_respawn_state` requires at least two temporally plausible,
   non-increasing countdown readings; one frame or increasing/contradictory
   values produce no event.
+- Respawn refinement is gated by the fixed 1080p player health-bar state
+  (`750,990,400,60`): green-health pixel ratio <=2% means dead. Real review
+  showed whole-screen grayscale fails when colorful skills or the shop remain
+  visible, while the player HP bar stays empty through both camera and shop
+  views. This gate is evaluated only inside KDA-death-triggered refinement
+  ranges, so champion select is not treated as a death. The crop must stay
+  narrow: a wider bottom-HUD crop was contaminated by green item icons when
+  the shop opened and falsely signaled respawn.
+- The initial 1080p respawn crop is centered on the lower-middle countdown
+  (`760,700,400,180`), not the center announcement area. Real shadow review
+  showed the earlier upper crop read unrelated HUD/combat digits while the
+  actual `返回于 N` text was near y=800.
 - A coarse KDA death change may request a bounded respawn refinement window.
   The respawn detector throttles OCR inside frame-by-frame ranges and remains
   subject to the shared 15% source-range and frame budgets.
-- Chinese `胜利` / `失败` result OCR requires at least two matching observations
-  within three seconds. A single or contradictory read produces no event.
+- Chinese `胜利` / `失败` result OCR requires an available Chinese OCR backend
+  and at least two matching observations within three seconds. A single or
+  contradictory read produces no event. Generic blue/red UI color is not a
+  result fallback because real shadow validation showed early-game HUD colors
+  can remain stable across multiple frames and create false victories/defeats.
 - New signals default to shadow mode. `vision-analysis-shadow-reports.jsonl`
   records proposed death-wait trims and match-end/result facts; segmenter,
   highlights, editing, export, and publishing assets remain unchanged.

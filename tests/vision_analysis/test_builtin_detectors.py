@@ -75,31 +75,79 @@ class BuiltinDetectorTests(TestCase):
     def test_respawn_requires_monotonic_multiple_readings(self) -> None:
         settings = Settings()
         detector = RespawnVisionDetector(settings)
-        observations = iter([(30, 0.8), (29, 0.8), (None, 0.0), (28, 0.8)])
-        with patch(
-            "arl.vision_analysis.builtin_detectors.read_respawn_countdown",
-            side_effect=lambda *args, **kwargs: next(observations),
+        observations = iter([(30, 0.8), (29, 0.8), (28, 0.8)])
+        with (
+            patch(
+                "arl.vision_analysis.builtin_detectors.read_respawn_countdown",
+                side_effect=lambda *args, **kwargs: next(observations),
+            ),
+            patch(
+                "arl.vision_analysis.builtin_detectors.looks_like_player_dead",
+                side_effect=[True, True, True, False, False, False],
+            ),
         ):
-            for at_seconds in (100.0, 101.0, 102.0, 103.0):
-                detector.analyze(object(), at_seconds, provenance="coarse")
+            for at_seconds in (100.0, 101.0, 102.0, 103.0, 104.0, 105.0):
+                detector.analyze(object(), at_seconds, provenance="refined")
 
         events = detector.finalize().events
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].kind, "death_respawn_state")
         self.assertEqual(events[0].attributes["first_countdown"], 30)
+        self.assertEqual(events[0].attributes["proposed_respawn_at"], 103.0)
 
     def test_respawn_rejects_single_or_increasing_read(self) -> None:
         settings = Settings()
         detector = RespawnVisionDetector(settings)
         observations = iter([(20, 0.8), (25, 0.8)])
-        with patch(
-            "arl.vision_analysis.builtin_detectors.read_respawn_countdown",
-            side_effect=lambda *args, **kwargs: next(observations),
+        with (
+            patch(
+                "arl.vision_analysis.builtin_detectors.read_respawn_countdown",
+                side_effect=lambda *args, **kwargs: next(observations),
+            ),
+            patch(
+                "arl.vision_analysis.builtin_detectors.looks_like_player_dead",
+                return_value=True,
+            ),
         ):
             detector.analyze(object(), 100.0, provenance="coarse")
             detector.analyze(object(), 101.0, provenance="coarse")
 
         self.assertEqual(detector.finalize().events, [])
+
+    def test_respawn_does_not_merge_distant_repeated_digits(self) -> None:
+        settings = Settings()
+        detector = RespawnVisionDetector(settings)
+        observations = iter([(1, 0.8), (1, 0.8), (1, 0.8)])
+        with (
+            patch(
+                "arl.vision_analysis.builtin_detectors.read_respawn_countdown",
+                side_effect=lambda *args, **kwargs: next(observations),
+            ),
+            patch(
+                "arl.vision_analysis.builtin_detectors.looks_like_player_dead",
+                return_value=True,
+            ),
+        ):
+            for at_seconds in (10.0, 1000.0, 5000.0):
+                detector.analyze(object(), at_seconds, provenance="coarse")
+
+        self.assertEqual(detector.finalize().events, [])
+
+    def test_respawn_ignores_digits_when_frame_is_not_death_like(self) -> None:
+        detector = RespawnVisionDetector(Settings())
+        with (
+            patch(
+                "arl.vision_analysis.builtin_detectors.looks_like_player_dead",
+                return_value=False,
+            ),
+            patch(
+                "arl.vision_analysis.builtin_detectors.read_respawn_countdown"
+            ) as read_countdown,
+        ):
+            output = detector.analyze(object(), 100.0, provenance="coarse")
+
+        read_countdown.assert_not_called()
+        self.assertFalse(output.readings[0].payload["death_like"])
 
     def test_match_result_requires_two_confirming_reads(self) -> None:
         settings = Settings()

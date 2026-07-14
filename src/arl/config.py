@@ -203,7 +203,7 @@ class VisionAnalysisSettings(BaseModel):
     death_respawn_enabled: bool = True
     match_result_enabled: bool = True
     new_signals_shadow_mode: bool = True
-    respawn_crop_region: tuple[int, int, int, int] = (610, 270, 700, 170)
+    respawn_crop_region: tuple[int, int, int, int] = (760, 700, 400, 180)
     match_result_crop_region: tuple[int, int, int, int] = (560, 300, 800, 420)
     respawn_coarse_interval_seconds: float = 10.0
     match_result_coarse_interval_seconds: float = 10.0
@@ -1494,7 +1494,7 @@ def load_settings() -> Settings:
             ),
             respawn_crop_region=_env_int_tuple4(
                 "ARL_VISION_ANALYSIS_RESPAWN_CROP_REGION",
-                (610, 270, 700, 170),
+                (760, 700, 400, 180),
             ),
             match_result_crop_region=_env_int_tuple4(
                 "ARL_VISION_ANALYSIS_MATCH_RESULT_CROP_REGION",

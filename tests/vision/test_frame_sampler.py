@@ -10,7 +10,12 @@ import tempfile
 import cv2
 import numpy as np
 
-from arl.vision.frame_sampler import sample_frame_window, sample_frames
+from arl.vision.frame_sampler import (
+    iter_every_frame_window,
+    iter_frame_window,
+    sample_frame_window,
+    sample_frames,
+)
 
 
 def test_sample_frames_synthetic_video():
@@ -111,6 +116,35 @@ def test_sample_frame_window_clamped():
         )
         for ts, _ in frames:
             assert ts <= 10.0
+
+
+def test_streaming_samplers_are_lazy_and_bounded():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        video_path = Path(tmpdir) / "stream.mp4"
+        fps = 10.0
+        writer = cv2.VideoWriter(
+            str(video_path),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            fps,
+            (160, 90),
+        )
+        for index in range(30):
+            writer.write(np.full((90, 160, 3), index, dtype=np.uint8))
+        writer.release()
+
+        coarse = iter_frame_window(
+            video_path,
+            start_seconds=0.5,
+            end_seconds=2.5,
+            interval_seconds=1.0,
+        )
+        assert not isinstance(coarse, list)
+        assert [round(timestamp, 1) for timestamp, _ in coarse] == [0.5, 1.5, 2.5]
+
+        refined = iter_every_frame_window(video_path, 1.0, 1.2)
+        assert not isinstance(refined, list)
+        timestamps = [round(timestamp, 1) for timestamp, _ in refined]
+        assert timestamps == [1.0, 1.1, 1.2]
 
 
 if __name__ == "__main__":

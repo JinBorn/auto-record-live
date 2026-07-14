@@ -10,7 +10,11 @@ from arl.vision.timer_ocr import read_timer
 
 from .detectors import DetectorOutput, RefinementRequest
 from .models import VisionEvent, VisionReading
-from .new_signal_ocr import read_match_result, read_respawn_countdown
+from .new_signal_ocr import (
+    looks_like_player_dead,
+    read_match_result,
+    read_respawn_countdown,
+)
 
 
 def _reading_id(detector: str, at_seconds: float, provenance: str) -> str:
@@ -248,10 +252,12 @@ class RespawnVisionDetector:
             settings.vision_analysis.respawn_coarse_interval_seconds
         )
         self._observations: list[tuple[float, int, str]] = []
+        self._death_states: list[tuple[float, bool, str]] = []
         self._last_refined_check: float | None = None
 
     def reset(self) -> None:
         self._observations.clear()
+        self._death_states.clear()
         self._last_refined_check = None
 
     def analyze(self, frame: Any, at_seconds: float, *, provenance: str) -> DetectorOutput:
@@ -263,6 +269,22 @@ class RespawnVisionDetector:
             return DetectorOutput()
         if provenance == "refined":
             self._last_refined_check = at_seconds
+        try:
+            death_like = looks_like_player_dead(frame)
+        except (TypeError, ValueError):
+            death_like = False
+        if not death_like:
+            reading = VisionReading(
+                reading_id=_reading_id(self.name, at_seconds, provenance),
+                detector=self.name,
+                at_seconds=at_seconds,
+                confidence=0.8 if provenance == "refined" else 0.0,
+                payload={"seconds_remaining": None, "death_like": False},
+                provenance=provenance,
+            )
+            if provenance == "refined":
+                self._death_states.append((at_seconds, False, reading.reading_id))
+            return DetectorOutput(readings=[reading])
         seconds, confidence = read_respawn_countdown(
             frame,
             self.settings.vision_analysis.respawn_crop_region,
@@ -272,47 +294,96 @@ class RespawnVisionDetector:
             detector=self.name,
             at_seconds=at_seconds,
             confidence=confidence,
-            payload={"seconds_remaining": seconds},
+            payload={"seconds_remaining": seconds, "death_like": True},
             provenance=provenance,
         )
         if seconds is not None and confidence >= 0.7:
             self._observations.append((at_seconds, seconds, reading.reading_id))
+        if provenance == "refined":
+            self._death_states.append((at_seconds, True, reading.reading_id))
         return DetectorOutput(readings=[reading])
 
     def finalize(self) -> DetectorOutput:
-        accepted: list[tuple[float, int, str]] = []
+        sequences: list[list[tuple[float, int, str]]] = []
         for observation in sorted(self._observations):
-            if not accepted:
-                accepted.append(observation)
+            if not sequences:
+                sequences.append([observation])
                 continue
-            elapsed = observation[0] - accepted[-1][0]
-            expected_max = accepted[-1][1] - max(0, int(elapsed) - 2)
-            if observation[1] <= accepted[-1][1] and observation[1] >= expected_max - 3:
-                accepted.append(observation)
-        if len(accepted) < 2:
+            previous = sequences[-1][-1]
+            elapsed = observation[0] - previous[0]
+            countdown_drop = previous[1] - observation[1]
+            if (
+                0.0 < elapsed <= 12.0
+                and countdown_drop >= 0
+                and abs(countdown_drop - elapsed) <= 4.0
+            ):
+                sequences[-1].append(observation)
+            else:
+                sequences.append([observation])
+        accepted = max(sequences, key=len, default=[])
+        if (
+            len(accepted) < 3
+            or len({item[1] for item in accepted}) < 3
+            or accepted[0][1] - accepted[-1][1] < 2
+        ):
+            accepted = []
+
+        death_start = self._first_stable_state(True, start_index=0)
+        if death_start is None:
             return DetectorOutput()
-        start = accepted[0]
-        end = accepted[-1]
+        respawn = self._first_stable_state(False, start_index=death_start[0] + 3)
+        if respawn is None:
+            return DetectorOutput()
+        start_state = self._death_states[death_start[0]]
+        end_state = self._death_states[respawn[0]]
+        attributes = {
+            "proposed_respawn_at": end_state[0],
+            "state_source": "death_screen_transition",
+        }
+        evidence_ids = [item[2] for item in self._death_states[death_start[0] : respawn[0] + 3]]
+        if accepted:
+            attributes.update(
+                {
+                    "first_countdown": accepted[0][1],
+                    "last_countdown": accepted[-1][1],
+                }
+            )
+            evidence_ids.extend(item[2] for item in accepted)
         return DetectorOutput(
             events=[
                 VisionEvent(
                     event_id=hashlib.sha256(
-                        f"death_state:{start[2]}:{end[2]}".encode()
+                        f"death_state:{start_state[2]}:{end_state[2]}".encode()
                     ).hexdigest()[:24],
                     kind="death_respawn_state",
-                    started_at_seconds=start[0],
-                    ended_at_seconds=end[0] + end[1],
-                    observed_at_seconds=start[0],
-                    confidence=0.8,
-                    evidence_reading_ids=[item[2] for item in accepted],
-                    attributes={
-                        "first_countdown": start[1],
-                        "last_countdown": end[1],
-                        "proposed_respawn_at": end[0] + end[1],
-                    },
+                    started_at_seconds=start_state[0],
+                    ended_at_seconds=end_state[0],
+                    observed_at_seconds=start_state[0],
+                    confidence=0.9,
+                    evidence_reading_ids=list(dict.fromkeys(evidence_ids)),
+                    attributes=attributes,
                 )
             ]
         )
+
+    def _first_stable_state(
+        self,
+        value: bool,
+        *,
+        start_index: int,
+    ) -> tuple[int, float] | None:
+        consecutive = 0
+        first_index = 0
+        for index in range(start_index, len(self._death_states)):
+            if self._death_states[index][1] == value:
+                if consecutive == 0:
+                    first_index = index
+                consecutive += 1
+                if consecutive >= 3:
+                    return first_index, self._death_states[first_index][0]
+            else:
+                consecutive = 0
+        return None
 
 
 class MatchResultVisionDetector:
