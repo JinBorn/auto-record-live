@@ -1800,6 +1800,15 @@ subtitle_path.write_text(build_srt(entries), encoding="utf-8")
   timestamps.
 - Detector exceptions degrade only that detector and do not discard successful
   readings from other detectors.
+- KDA digit recognition uses real-font glyph templates
+  (`src/arl/vision/templates/lol_zh_1080p/`) ahead of synthetic fallbacks and
+  rejects ambiguous characters (top-1 vs top-2 IoU margin below threshold) as
+  missing readings rather than guessing. Refined `kda_change` confirmation must
+  survive to the end of its refinement range: a stable run that later reverts
+  to the baseline value is flicker and yields no event, while `finalize()`
+  still confirms a stable non-reverting run under partial (cap-truncated)
+  coverage. `KdaVisionDetector.version` participates in the detector/config
+  fingerprint, so bumping it invalidates incompatible cached assets.
 - Segmenter consumes any non-empty healthy shared timer/scene candidate set,
   including explicitly incomplete edge matches. It runs the legacy timer scan
   only when shared evidence is missing/degraded or produces no candidates;

@@ -2033,13 +2033,14 @@ class CopywriterService:
             edit_plan=edit_plan,
         )
         rendered_candidates: list[CoverCandidate] = []
+        cover_text_lines = self._title_cover_lines(package)
         for rank, (at_seconds, score, reasons) in enumerate(render_inputs, start=1):
             cover_path = self._cover_candidate_path(package, rank)
             try:
                 rendered = self.cover_renderer(
                     source_path,
                     cover_path,
-                    package.cover_lines,
+                    cover_text_lines,
                     at_seconds=at_seconds,
                 )
             except Exception as exc:
@@ -2069,6 +2070,19 @@ class CopywriterService:
                 "cover_candidates": rendered_candidates,
             }
         )
+
+    def _title_cover_lines(self, package: PublishingPackage) -> list[str]:
+        """Cover text follows the recommended title, split at punctuation.
+
+        Falls back to the package cover_lines when no usable title exists so
+        covers keep rendering for placeholder/legacy rows.
+        """
+        title = (package.recommended_title or "").strip()
+        if title:
+            lines = self._split_cover_lines(title, max_chars=12, max_lines=4)
+            if lines:
+                return lines
+        return package.cover_lines
 
     def _cover_render_inputs(
         self,

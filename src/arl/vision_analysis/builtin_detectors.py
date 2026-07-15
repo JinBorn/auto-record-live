@@ -22,6 +22,12 @@ def _reading_id(detector: str, at_seconds: float, provenance: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
+# Streaming kda-transition confirmation waits until the refined sweep has
+# reached this close to the range end, so flicker reversion frames later in
+# the range are seen before an event is confirmed.
+_REFINED_RANGE_COVERAGE_SLACK_SECONDS = 1.5
+
+
 class TimerVisionDetector:
     name = "timer"
     version = "1"
@@ -76,7 +82,10 @@ class SceneVisionDetector:
 
 class KdaVisionDetector:
     name = "kda"
-    version = "3"
+    # v4: real-font glyph templates + ambiguous-char rejection in read_kda,
+    # and anti-flicker refined-transition confirmation. Bump invalidates
+    # cached assets produced by the misread-prone v3 pipeline.
+    version = "4"
     refinement_interval_seconds = 0.0
 
     def __init__(self, settings: Settings) -> None:
@@ -142,6 +151,8 @@ class KdaVisionDetector:
                     for previous, current in self._transitions:
                         key = (previous[4], current[4])
                         if key not in self._active_refinement_keys:
+                            continue
+                        if not self._refined_range_end_covered(previous, current):
                             continue
                         refined = self._stable_refined_timestamp(previous, current)
                         if refined is not None:
@@ -266,6 +277,31 @@ class KdaVisionDetector:
             return "event"
         return "baseline"
 
+    def _refined_range_end_covered(
+        self,
+        previous: tuple[float, int, int, int, str],
+        current: tuple[float, int, int, int, str],
+    ) -> bool:
+        """True once the refined sweep has reached the end of this range.
+
+        Streaming confirmation must wait for range-end coverage; confirming on
+        the first stable run would miss later baseline reversion frames that
+        expose the run as OCR flicker. finalize() evaluates without this gate
+        so cap-truncated ranges can still confirm on partial coverage.
+        """
+        latest = max(
+            (
+                item[0]
+                for item in self._refined_values
+                if previous[0] <= item[0] <= current[0]
+            ),
+            default=None,
+        )
+        return (
+            latest is not None
+            and latest >= current[0] - _REFINED_RANGE_COVERAGE_SLACK_SECONDS
+        )
+
     def _stable_refined_timestamp(
         self,
         previous: tuple[float, int, int, int, str],
@@ -280,9 +316,14 @@ class KdaVisionDetector:
         saw_baseline = False
         consecutive = 0
         first_target_at: float | None = None
+        candidate_at: float | None = None
         for item in values:
             value = item[1:4]
             if value == baseline:
+                if candidate_at is not None:
+                    # The old value reappeared after the "stable" new-value
+                    # run: the run was OCR flicker, not a real transition.
+                    return None
                 saw_baseline = True
                 consecutive = 0
                 first_target_at = None
@@ -290,12 +331,13 @@ class KdaVisionDetector:
                 if consecutive == 0:
                     first_target_at = item[0]
                 consecutive += 1
-                if consecutive >= 3:
-                    return first_target_at
+                if consecutive >= 3 and candidate_at is None:
+                    candidate_at = first_target_at
             else:
                 consecutive = 0
-                first_target_at = None
-        return None
+                if candidate_at is None:
+                    first_target_at = None
+        return candidate_at
 
 
 class RespawnVisionDetector:

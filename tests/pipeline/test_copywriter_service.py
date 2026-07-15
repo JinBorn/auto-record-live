@@ -174,6 +174,112 @@ class CopywriterServiceTest(unittest.TestCase):
 
         self.assertEqual(package.cover_candidates, [])
 
+    def _publishing_package_for_cover(
+        self,
+        *,
+        session_id: str,
+        recommended_title: str,
+        cover_lines: list[str],
+    ) -> PublishingPackage:
+        return PublishingPackage.model_validate(
+            {
+                "session_id": session_id,
+                "match_index": 1,
+                "source_subtitle_path": "subtitle.srt",
+                "source_export_path": None,
+                "source_recording_path": None,
+                "transcript_excerpt": ["cue"],
+                "evidence": ["00:01 cue"],
+                "title_candidates": [recommended_title] if recommended_title else ["title"],
+                "recommended_title": recommended_title,
+                "summary": "summary",
+                "cover_lines": cover_lines,
+                "tags": ["tag"],
+                "cover_path": None,
+                "status": "generated",
+                "created_at": self._now().isoformat(),
+            }
+        )
+
+    def test_title_cover_lines_follow_recommended_title(self) -> None:
+        service = CopywriterService(self.settings)
+
+        punctuated = self._publishing_package_for_cover(
+            session_id="session-title-cover-lines-punctuated",
+            recommended_title="觅渡炒股哲学：缩哈不如快乐直播！小丑前排肉到没人敢打",
+            cover_lines=["缩哈？", "不如快乐直播", "小丑前排"],
+        )
+        self.assertEqual(
+            service._title_cover_lines(punctuated),
+            ["觅渡炒股哲学", "缩哈不如快乐直播", "小丑前排肉到没人敢打"],
+        )
+
+        unpunctuated = self._publishing_package_for_cover(
+            session_id="session-title-cover-lines-unpunctuated",
+            recommended_title="这是一个没有标点非常长的标题超过十二个字了",
+            cover_lines=["旧文案"],
+        )
+        lines = service._title_cover_lines(unpunctuated)
+        self.assertEqual(lines, ["这是一个没有标点非常长的", "标题超过十二个字了"])
+        self.assertTrue(all(len(line) <= 12 for line in lines))
+
+        empty_title = self._publishing_package_for_cover(
+            session_id="session-title-cover-lines-empty",
+            recommended_title="  ",
+            cover_lines=["回退文案", "第二行"],
+        )
+        self.assertEqual(
+            service._title_cover_lines(empty_title),
+            ["回退文案", "第二行"],
+        )
+
+    def test_cover_render_draws_title_lines_not_llm_cover_lines(self) -> None:
+        session_id = "session-copywriter-title-cover-render"
+        export_path = self._write_export(session_id)
+        captured_lines: list[list[str]] = []
+
+        def _cover_renderer(
+            source: Path,
+            output: Path,
+            cover_lines: list[str],
+            *,
+            at_seconds: float,
+        ) -> bool:
+            captured_lines.append(list(cover_lines))
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text("cover", encoding="utf-8")
+            return True
+
+        service = CopywriterService(self.settings, cover_renderer=_cover_renderer)
+        package = self._publishing_package_for_cover(
+            session_id=session_id,
+            recommended_title="觅渡炒股哲学：缩哈不如快乐直播！小丑前排肉到没人敢打",
+            cover_lines=["缩哈？", "不如快乐直播", "小丑前排"],
+        )
+        export = ExportAsset(
+            session_id=session_id,
+            match_index=1,
+            path=str(export_path),
+            subtitle_path="subtitle.srt",
+            created_at=self._now(),
+        )
+
+        updated = service._render_cover_if_possible(
+            package,
+            export=export,
+            recording=None,
+            boundary=None,
+            highlight_plan=None,
+            edit_plan=None,
+        )
+
+        self.assertEqual(
+            captured_lines,
+            [["觅渡炒股哲学", "缩哈不如快乐直播", "小丑前排肉到没人敢打"]],
+        )
+        self.assertIsNotNone(updated.cover_path)
+        self.assertEqual(updated.cover_lines, ["缩哈？", "不如快乐直播", "小丑前排"])
+
     def test_missing_copy_and_publishing_json_are_regenerated_without_duplicate_rows(
         self,
     ) -> None:

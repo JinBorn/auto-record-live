@@ -1706,8 +1706,13 @@ validation reports for regenerated exports.
   timestamps, edit-plan teaser/high-signal windows, highlight windows, scene
   classification, sharpness/brightness, and bottom-left chat-region activity.
   It must not OCR chat text or derive new cover copy from raw subtitles.
-- Cover text consumes `PublishingPackage.cover_lines` as produced by heuristic
-  or LLM copywriting. The cover renderer must not create its own title text.
+- Cover text follows `PublishingPackage.recommended_title`. The renderer input
+  is the title split into display lines at CJK/ASCII sentence punctuation
+  (`：！？，。、:!?,;；`) and hard-wrapped to <=12 chars per line, at most 4
+  lines (`CopywriterService._title_cover_lines`). When the title is empty it
+  falls back to `PublishingPackage.cover_lines`. The cover renderer must not
+  create its own title text. `cover_lines` stays in publishing metadata
+  (`upload.txt`, package JSON) but is no longer drawn onto the cover image.
 - Typography defaults to stacked left-aligned yellow (`#FFEE00`) headline lines
   with a heavy black stroke, fitted inside conservative safe margins for a
   1920x1080 JPEG at quality 92.

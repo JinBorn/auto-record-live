@@ -58,6 +58,9 @@ class BuiltinDetectorTests(TestCase):
                 KdaReading(16.0, 1, 0, 0, 0.9),
                 KdaReading(16.1, 1, 0, 0, 0.9),
                 KdaReading(16.2, 1, 0, 0, 0.9),
+                # Anti-flicker: confirmation waits for range-end coverage, so
+                # the sweep must reach the end of the [10, 20] range.
+                KdaReading(19.0, 1, 0, 0, 0.9),
             ]
         )
         with patch(
@@ -66,7 +69,7 @@ class BuiltinDetectorTests(TestCase):
         ):
             detector.begin_refinement_range(10.0, 20.0)
             refined_outputs = []
-            for at_seconds in (10.0, 15.0, 16.0, 16.1, 16.2):
+            for at_seconds in (10.0, 15.0, 16.0, 16.1, 16.2, 19.0):
                 refined_outputs.append(
                     detector.analyze(object(), at_seconds, provenance="refined")
                 )
@@ -77,6 +80,132 @@ class BuiltinDetectorTests(TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].observed_at_seconds, 16.0)
         self.assertEqual(events[0].attributes["current_kills"], 1)
+
+    def test_kda_adapter_rejects_flickered_refinement_run(self) -> None:
+        settings = Settings()
+        settings.highlights.condensed_kda_frame_refinement_enabled = True
+        detector = KdaVisionDetector(settings)
+        coarse = iter(
+            [
+                KdaReading(10.0, 6, 2, 2, 0.9),
+                KdaReading(20.0, 8, 2, 2, 0.9),
+            ]
+        )
+        with patch(
+            "arl.vision_analysis.builtin_detectors.read_kda",
+            side_effect=lambda *args, **kwargs: next(coarse),
+        ):
+            detector.analyze(object(), 10.0, provenance="coarse")
+            change = detector.analyze(object(), 20.0, provenance="coarse")
+        self.assertEqual(len(change.refinement_requests), 1)
+
+        # Three consecutive misread "8" frames would have confirmed a false
+        # transition under the old early-return rule; the true "6" frames
+        # afterwards expose the run as flicker.
+        refined = iter(
+            [
+                KdaReading(10.0, 6, 2, 2, 0.9),
+                KdaReading(14.0, 8, 2, 2, 0.9),
+                KdaReading(14.4, 8, 2, 2, 0.9),
+                KdaReading(14.8, 8, 2, 2, 0.9),
+                KdaReading(16.0, 6, 2, 2, 0.9),
+                KdaReading(19.0, 6, 2, 2, 0.9),
+            ]
+        )
+        with patch(
+            "arl.vision_analysis.builtin_detectors.read_kda",
+            side_effect=lambda *args, **kwargs: next(refined),
+        ):
+            detector.begin_refinement_range(10.0, 20.0)
+            for at_seconds in (10.0, 14.0, 14.4, 14.8, 16.0, 19.0):
+                detector.analyze(object(), at_seconds, provenance="refined")
+
+        events = detector.finalize().events
+        self.assertEqual(events, [])
+        self.assertFalse(detector.refinement_range_complete())
+
+    def test_kda_adapter_streaming_confirmation_waits_for_range_end(self) -> None:
+        settings = Settings()
+        settings.highlights.condensed_kda_frame_refinement_enabled = True
+        detector = KdaVisionDetector(settings)
+        coarse = iter(
+            [
+                KdaReading(10.0, 0, 0, 0, 0.9),
+                KdaReading(20.0, 1, 0, 0, 0.9),
+            ]
+        )
+        with patch(
+            "arl.vision_analysis.builtin_detectors.read_kda",
+            side_effect=lambda *args, **kwargs: next(coarse),
+        ):
+            detector.analyze(object(), 10.0, provenance="coarse")
+            detector.analyze(object(), 20.0, provenance="coarse")
+
+        refined = iter(
+            [
+                KdaReading(10.0, 0, 0, 0, 0.9),
+                KdaReading(15.0, 1, 0, 0, 0.9),
+                KdaReading(15.4, 1, 0, 0, 0.9),
+                KdaReading(15.8, 1, 0, 0, 0.9),
+                KdaReading(19.0, 1, 0, 0, 0.9),
+            ]
+        )
+        with patch(
+            "arl.vision_analysis.builtin_detectors.read_kda",
+            side_effect=lambda *args, **kwargs: next(refined),
+        ):
+            detector.begin_refinement_range(10.0, 20.0)
+            for at_seconds in (10.0, 15.0, 15.4, 15.8):
+                detector.analyze(object(), at_seconds, provenance="refined")
+            # Stable run exists, but the sweep has not reached the range end:
+            # the transition must stay unconfirmed.
+            self.assertFalse(detector.refinement_range_complete())
+            detector.analyze(object(), 19.0, provenance="refined")
+
+        self.assertTrue(detector.refinement_range_complete())
+        events = detector.finalize().events
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].observed_at_seconds, 15.0)
+
+    def test_kda_adapter_finalize_confirms_partial_coverage_run(self) -> None:
+        settings = Settings()
+        settings.highlights.condensed_kda_frame_refinement_enabled = True
+        detector = KdaVisionDetector(settings)
+        coarse = iter(
+            [
+                KdaReading(10.0, 0, 0, 0, 0.9),
+                KdaReading(20.0, 1, 0, 0, 0.9),
+            ]
+        )
+        with patch(
+            "arl.vision_analysis.builtin_detectors.read_kda",
+            side_effect=lambda *args, **kwargs: next(coarse),
+        ):
+            detector.analyze(object(), 10.0, provenance="coarse")
+            detector.analyze(object(), 20.0, provenance="coarse")
+
+        # Refinement cap exhausted mid-range: streaming never confirms, but
+        # finalize() accepts the stable non-reverting run on partial coverage.
+        refined = iter(
+            [
+                KdaReading(10.0, 0, 0, 0, 0.9),
+                KdaReading(15.0, 1, 0, 0, 0.9),
+                KdaReading(15.4, 1, 0, 0, 0.9),
+                KdaReading(15.8, 1, 0, 0, 0.9),
+            ]
+        )
+        with patch(
+            "arl.vision_analysis.builtin_detectors.read_kda",
+            side_effect=lambda *args, **kwargs: next(refined),
+        ):
+            detector.begin_refinement_range(10.0, 20.0)
+            for at_seconds in (10.0, 15.0, 15.4, 15.8):
+                detector.analyze(object(), at_seconds, provenance="refined")
+
+        self.assertFalse(detector.refinement_range_complete())
+        events = detector.finalize().events
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].observed_at_seconds, 15.0)
 
     def test_kda_adapter_ignores_counter_regression_without_rebaselining(self) -> None:
         settings = Settings()

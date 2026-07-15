@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -10,6 +11,25 @@ from .models import KdaReading
 
 
 DEFAULT_KDA_CROP_REGION = (1665, 0, 85, 32)
+
+# Below this top1-top2 char margin the recognizer treats the glyph as
+# ambiguous and rejects the char instead of guessing.
+_MIN_CHAR_MARGIN = 0.01
+
+_TEMPLATE_ASSET_DIR = Path(__file__).parent / "templates" / "lol_zh_1080p"
+_TEMPLATE_ASSET_CHARS: tuple[tuple[str, str], ...] = (
+    ("0", "0"),
+    ("1", "1"),
+    ("2", "2"),
+    ("3", "3"),
+    ("4", "4"),
+    ("5", "5"),
+    ("6", "6"),
+    ("7", "7"),
+    ("8", "8"),
+    ("9", "9"),
+    ("slash", "/"),
+)
 
 
 def read_kda(
@@ -117,12 +137,7 @@ def _recognize_char(char_img: np.ndarray) -> tuple[str | None, float]:
     if char_img.size == 0:
         return None, 0.0
 
-    narrow = _recognize_narrow_char(char_img)
-    if narrow is not None:
-        return narrow
-
-    best_char: str | None = None
-    best_score = 0.0
+    best_by_char: dict[str, float] = {}
     for candidate, template in _templates():
         resized = cv2.resize(
             char_img,
@@ -133,11 +148,27 @@ def _recognize_char(char_img: np.ndarray) -> tuple[str | None, float]:
         intersection = np.logical_and(resized > 0, template > 0).sum()
         union = np.logical_or(resized > 0, template > 0).sum()
         score = float(intersection / union) if union else 0.0
-        if score > best_score:
-            best_char = candidate
-            best_score = score
+        if score > best_by_char.get(candidate, 0.0):
+            best_by_char[candidate] = score
 
-    if best_char is None or best_score < 0.32:
+    ranked = sorted(best_by_char.items(), key=lambda item: -item[1])
+    best_char, best_score = ranked[0] if ranked else (None, 0.0)
+    runner_up = ranked[1][1] if len(ranked) > 1 else 0.0
+    margin = best_score - runner_up
+
+    # Confident template match wins outright; this keeps narrow glyphs like
+    # the real-font "3" (7px wide) away from the narrow-char heuristic.
+    if best_char is not None and best_score >= 0.6 and margin >= _MIN_CHAR_MARGIN:
+        return best_char, best_score
+
+    narrow = _recognize_narrow_char(char_img)
+    if narrow is not None:
+        return narrow
+
+    # Near-tied top candidates mean the glyph is too degraded to trust
+    # (e.g. a "6" whose gap was smeared shut reads within 0.004 of "8");
+    # rejecting the char turns a wrong reading into a missing reading.
+    if best_char is None or best_score < 0.32 or margin < _MIN_CHAR_MARGIN:
         return None, best_score
     return best_char, best_score
 
@@ -163,7 +194,10 @@ def _recognize_narrow_char(char_img: np.ndarray) -> tuple[str, float] | None:
 
 @lru_cache(maxsize=1)
 def _templates() -> tuple[tuple[str, np.ndarray], ...]:
-    templates: list[tuple[str, np.ndarray]] = []
+    # Real HUD glyphs (harvested from verified frames) lead the candidate
+    # list; synthetic Hershey glyphs remain as fallback for uncaptured
+    # variants. Matching is score-based, so order only breaks ties.
+    templates: list[tuple[str, np.ndarray]] = _real_font_templates()
     for char in "0123456789/":
         for font_scale in (0.5, 0.55, 0.6, 0.65, 0.7, 0.75):
             for thickness in (1, 2):
@@ -184,3 +218,20 @@ def _templates() -> tuple[tuple[str, np.ndarray], ...]:
                     continue
                 templates.append((char, img[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]))
     return tuple(templates)
+
+
+def _real_font_templates() -> list[tuple[str, np.ndarray]]:
+    templates: list[tuple[str, np.ndarray]] = []
+    for stem, char in _TEMPLATE_ASSET_CHARS:
+        path = _TEMPLATE_ASSET_DIR / f"{stem}.png"
+        if not path.exists():
+            continue
+        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if img is None or img.size == 0:
+            continue
+        _, binary = cv2.threshold(img, 128, 255, cv2.THRESH_BINARY)
+        ys, xs = np.where(binary > 0)
+        if len(xs) == 0:
+            continue
+        templates.append((char, binary[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]))
+    return templates

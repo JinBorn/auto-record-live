@@ -295,6 +295,54 @@ graph was fixed).
   recording again; compatibility plan events remain the durable downstream SFX
   and zoom contract during migration.
 
+## Lesson: KDA Digit OCR Needs Real-Font Templates and Ambiguity Rejection
+
+**Symptom**: A coin accent plays where no kill happened (session
+`session-20260617073649-4b5ec478` match 2, output ~591.6s). The scoreboard read
+6/2/2 on screen, but the detector emitted a 6->8 `kda_change`.
+
+**Cause**: `read_kda` matched digits against synthetic OpenCV Hershey glyphs,
+which do not match the LOL zh 1080p HUD font. On a compression-smeared "6" the
+top two template scores were `'8'`=0.760 vs `'6'`=0.755 — a 0.004 margin that
+flips with noise. The refined confirmation then early-returned on the first
+3-frame run of the misread value, so a ~1.35s flicker "confirmed" a false event
+at 4124.4s while the real 6->7->8 kills were swallowed by the corrupted
+baseline.
+
+**Fix (two layers)**:
+- Real-font glyph templates lead recognition. Harvest binary digit crops
+  (`0-9`, `/`) from human-verified frames into
+  `src/arl/vision/templates/lol_zh_1080p/` and load them first in
+  `_templates()`; Hershey synthetics remain only as fallback. On true digits
+  the real templates score ~0.9 IoU with wide margins.
+- Reject ambiguous glyphs. `_recognize_char` compares the top-1 vs top-2
+  per-character IoU; when the margin is below `_MIN_CHAR_MARGIN` (0.01) the
+  char is rejected (`None`), turning a wrong KDA value into a missing reading
+  that the detector safely ignores. A degraded true-6 frame now yields no
+  reading instead of a false 8.
+- Bump `KdaVisionDetector.version` (v3 -> v4) so cached vision assets from the
+  misread-prone pipeline are invalidated and reprocessed.
+
+## Lesson: Refined KDA Confirmation Must Survive to the Range End
+
+**Symptom**: Same false coin. Even with better OCR, a short misread run inside a
+refinement range could confirm a transition that later reverts.
+
+**Cause**: `_stable_refined_timestamp` returned as soon as the new value was
+seen for 3 consecutive frames, and streaming confirmation ran on every refined
+frame, so a transient run confirmed before later frames could contradict it.
+
+**Fix**:
+- `_stable_refined_timestamp` scans the whole refinement range: it records the
+  first stable 3-frame candidate but returns `None` if the baseline value
+  reappears after that candidate (the run was flicker, not a real change).
+- Streaming confirmation is gated by `_refined_range_end_covered` — a
+  transition confirms during the sweep only once refined coverage reaches
+  within `_REFINED_RANGE_COVERAGE_SLACK_SECONDS` (1.5s) of the range end.
+  `finalize()` evaluates without the gate so a cap-truncated range can still
+  confirm a stable, non-reverting run on partial coverage.
+
+
 ## Vision Death/Result Shadow Review
 
 - Death/respawn and Chinese victory/defeat signals are evidence-only during
