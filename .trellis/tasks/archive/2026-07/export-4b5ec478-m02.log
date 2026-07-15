@@ -1,0 +1,12 @@
+[exporter] starting
+[exporter] ffmpeg_enabled=True
+[exporter] ffmpeg_video_codec=h264
+[exporter] burn_subtitles=1
+[exporter] use_ass_subtitles=1
+[exporter] use_edit_plans=1
+[exporter] use_highlight_plans=1
+[exporter] filters total_boundaries=27 matched_boundaries=1 session_ids=session-20260617073649-4b5ec478 match_indices=2
+[exporter] force reprocessing export output session_id=session-20260617073649-4b5ec478 match_index=2
+[exporter] edit plan export session_id=session-20260617073649-4b5ec478 match_index=2 segments=25 teaser_inputs=3
+[exporter] export asset written session_id=session-20260617073649-4b5ec478 match_index=2
+[exporter] processed_exports=1

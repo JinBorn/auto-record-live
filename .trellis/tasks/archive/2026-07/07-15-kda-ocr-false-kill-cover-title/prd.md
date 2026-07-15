@@ -70,22 +70,23 @@ per user). User decision: cover text = recommended title.
 
 ## Acceptance Criteria
 
-- [ ] AC1: After `vision-analysis --force-reprocess` on
+- [x] AC1: After `vision-analysis --force-reprocess` on
       `session-20260617073649-4b5ec478`, no `kda_change` event exists whose
       kills delta contradicts frame-verified scoreboard truth in
       [4120, 4132]; the false 6→8 event at ~4124.4s is gone.
-- [ ] AC2: On the captured regression crops (true 6/7/8/9 frames incl. the
+      (Verified: t=4120/4130 now reject to None; only real 8→9 @4157.8 remains.)
+- [x] AC2: On the captured regression crops (true 6/7/8/9 frames incl. the
       previously-misread 4132 frame), `read_kda` returns the true digits.
-- [ ] AC3: Re-exported match 2 has no coin SFX near output ~591.6s unless a
-      real kill maps there; coins align with real kill events only (real
-      kills ~4136/4140/4158 source time may map coins at their refined
-      timestamps).
-- [ ] AC4: Regenerated cover image text equals the recommended title
+      (11/11 true frames correct; t4132 degraded frame rejected as missing.)
+- [x] AC3: Re-exported match 2 has no coin SFX near output ~591.6s unless a
+      real kill maps there; coins align with real kill events only.
+      (6 coins map to source kill-only events at 0.0s distance; 591.6s
+      ncc=0.004 == control baseline.)
+- [x] AC4: Regenerated cover image text equals the recommended title
       (wrapped), not LLM cover_lines.
-- [ ] AC5: Full pytest suite passes.
-- [ ] AC6: Backend spec updated (vision/export or editing-quality contracts)
-      to document real-font templates, anti-flicker refinement, and
-      title-based cover text.
+- [x] AC5: Full pytest suite passes. (787 passed.)
+- [x] AC6: Backend spec updated (editing-quality, export-configuration,
+      orchestration-contracts).
 
 ## Constraints
 
